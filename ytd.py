@@ -27,6 +27,8 @@ from ttkwidgets.autocomplete import AutocompleteEntry
 from bs4 import BeautifulSoup
 import re
 import json
+import psycopg2
+
 
 class AutocompleteEntry(ttk.Entry):
     def __init__(self, *args, **kwargs):
@@ -44,8 +46,129 @@ current_format = ""
 QUEUE_FILE = os.path.join(os.getcwd(), "download_queue.txt")
 log_box = None  # сюда мы потом передадим tkinter-виджет
 _log_box_ref = None  # ссылка на виджет логов
-# message = ""
+clipboard_monitor_disabled = False
+ignore_clipboard_url = None  # URL, который нужно игнорировать в мониторинге
+current_downloading_url = None  # URL текущей загрузки
+conn = None  # Глобальная переменная для подключения к базе данных
+cursor = None  # Глобальная переменная для курсора базы данных
 
+
+
+
+def prepare_tsquery(text):
+    # Преобразуем в tsquery формат: концерт & 1991
+    words = re.findall(r'\w+', text)
+    return ' & '.join(words)
+
+def log_message(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"{timestamp} - {message}"
+
+    # Запись в файл
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as log:
+            log.write(full_message + "\n")
+    except Exception as e:
+        pass
+        # print(f"Ошибка записи в лог: {e}")
+
+    # Отображение в tkinter, если лог-бокс подключён
+    try:
+        if _log_box_ref:
+            _log_box_ref.configure(state='normal')
+
+            # Определяем тег (цвет)
+            tag = "info"
+            msg_lower = message.lower()
+            if "error" in msg_lower or "ошибка" in msg_lower:
+                tag = "error"
+            elif "успешно" in msg_lower or "готов" in msg_lower or "success" in msg_lower:
+                tag = "success"
+            elif "предупреждение" in msg_lower or "warning" in msg_lower:
+                tag = "warning"
+
+            _log_box_ref.insert("end", full_message + "\n", tag)
+            _log_box_ref.see("end")
+            _log_box_ref.configure(state='disabled')
+    except Exception as e:
+        pass  
+        # print(f"Ошибка отображения лога в интерфейсе: {e}")
+
+def connect_to_database():
+    """Подключается к базе данных PostgreSQL"""
+    global conn, cursor
+    try:
+        with open("config.json", "r") as config_file:
+            config = json.load(config_file)
+
+        conn = psycopg2.connect(
+            dbname=config["dbname"],
+            user=config["user"],
+            password=config["password"],
+            host=config["host"],
+            port=config["port"]
+        )
+        cursor = conn.cursor()
+        log_message("✅ Подключение к базе данных ytd успешно.")
+    except Exception as e:
+        log_message(f"[ERROR] Ошибка при подключении к базе данных: {e}")
+        conn = None
+        cursor = None
+
+def insert_description(video_id, description):
+    """Добавляет описание видео в базу данных"""
+    try:
+        # Попробуем создать таблицу — если уже есть, будет ошибка, которую игнорируем
+        try:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS video_descriptions (
+                    video_id TEXT PRIMARY KEY,
+                    description TEXT,
+                    tsv_description tsvector
+                );
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_tsv_description
+                ON video_descriptions USING GIN (tsv_description);
+            """)
+            conn.commit()
+        except Exception as inner:
+            conn.rollback()
+            # log_message(f"[WARNING] Ошибка при создании таблицы или индекса (возможно, уже существуют): {inner}")
+
+        # Теперь вставка описания
+        cursor.execute("""
+            INSERT INTO video_descriptions (video_id, description, tsv_description)
+            VALUES (%s, %s, to_tsvector('russian', %s))
+            ON CONFLICT (video_id) DO UPDATE
+            SET description = EXCLUDED.description,
+                tsv_description = to_tsvector('russian', EXCLUDED.description);
+        """, (video_id, description, description))
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        log_message(f"[ERROR] Ошибка при добавлении описания: {e}")
+
+
+
+def search_in_database(query):
+    """Ищет видео по описаниям в базе данных с учетом словоформ"""
+    try:
+        # Преобразуем запрос в tsquery
+        cursor.execute("""
+            SELECT video_id, description
+            FROM video_descriptions
+            WHERE tsv_description @@ plainto_tsquery('russian', %s)
+        """, (query,))
+
+        results = cursor.fetchall()
+        log_message(f"Найдено совпадений в БД: {len(results)}")
+
+        return results
+    except Exception as e:
+        log_message(f"Ошибка при поиске в базе данных: {e}")
+        return []        
 
 def ensure_invidious_running():
     try:
@@ -101,7 +224,8 @@ try:
         # log.write("\n--- Программа запущена ---\n")
         pass
 except Exception as e:
-    print(f"ERROR Ошибка при создании лога: {e}")
+    pass  
+    # print(f"ERROR Ошибка при создании лога: {e}")
 
 def set_log_box(widget):
     global _log_box_ref
@@ -125,37 +249,6 @@ def clear_log():
     except Exception as e:
         log_message(f"ERROR Ошибка при очистке лога: {e}")
 
-def log_message(message):
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    full_message = f"{timestamp} - {message}"
-
-    # Запись в файл
-    try:
-        with open(LOG_FILE, "a", encoding="utf-8") as log:
-            log.write(full_message + "\n")
-    except Exception as e:
-        print(f"Ошибка записи в лог: {e}")
-
-    # Отображение в tkinter, если лог-бокс подключён
-    try:
-        if _log_box_ref:
-            _log_box_ref.configure(state='normal')
-
-            # Определяем тег (цвет)
-            tag = "info"
-            msg_lower = message.lower()
-            if "error" in msg_lower or "ошибка" in msg_lower:
-                tag = "error"
-            elif "успешно" in msg_lower or "готов" in msg_lower or "success" in msg_lower:
-                tag = "success"
-            elif "предупреждение" in msg_lower or "warning" in msg_lower:
-                tag = "warning"
-
-            _log_box_ref.insert("end", full_message + "\n", tag)
-            _log_box_ref.see("end")
-            _log_box_ref.configure(state='disabled')
-    except Exception as e:
-        print(f"Ошибка отображения лога в интерфейсе: {e}")
 
 def load_log_file():
     try:
@@ -241,8 +334,6 @@ def save_download_history(history):
     except Exception as e:
         log_message(f"ERROR Ошибка при сохранении истории: {e}")
 
-
-from bs4 import BeautifulSoup
 
 def fetch_description_with_bs(video_url):
     """Получает полное описание видео с YouTube с помощью BeautifulSoup"""
@@ -1397,8 +1488,11 @@ def is_clipboard_available():
 
 def detect_clipboard_change():
     """Отслеживание буфера обмена с обработкой ошибок"""
-    global last_clipboard
+    global last_clipboard, clipboard_monitor_disabled
 
+    if clipboard_monitor_disabled:
+        return None  # Пропускаем обработку, если мониторинг отключен
+   
     try:
         current_clipboard = pyperclip.paste()
         if current_clipboard and current_clipboard != last_clipboard and is_youtube_link(current_clipboard):
@@ -1643,7 +1737,7 @@ def clear_clipboard():
     for attempt in range(max_attempts):
         try:
             pyperclip.copy("")  # Очищаем буфер обмена
-            log_message("Буфер обмена успешно очищен.")
+            # log_message("Буфер обмена успешно очищен.")
             return
         except Exception as e:
             log_message(f"Ошибка при очистке буфера (попытка {attempt + 1}): {e}")
@@ -1850,7 +1944,7 @@ def download_video(url, from_queue=False):
                 format_type=settings["download_format"]
             )
             
-            log_message(f"Файл загружен: {downloaded_file}")
+            log_message(f"SUCCESS Файл загружен: {downloaded_file}")
         
         if settings["conversion_enabled"]:
             if settings["download_format"] == "mp3" and downloaded_file.endswith((".m4a", ".webm", ".mp4")):
@@ -1889,6 +1983,7 @@ def download_video(url, from_queue=False):
         is_downloading = False
         
         # После завершения загрузки проверяем очередь
+        current_downloading_url = None  # Сбрасываем текущую загружаемую ссылку
         queue_count = get_queue_count()
         if queue_count > 0:
             log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
@@ -1897,7 +1992,7 @@ def download_video(url, from_queue=False):
             threading.Thread(target=process_queue).start()
         else:
             # Если очередь пуста, явно это фиксируем
-            # log_message("Очередь пуста после завершения загрузки")
+            log_message("INFO Очередь пуста после завершения загрузки")
             clear_queue_file()
             # Обновляем иконку и меню
             update_download_status("Ожидание...", 100)
@@ -1943,53 +2038,63 @@ def update_download_status(status, progress=None):
 last_copy_time = 0
 
 def clipboard_monitor():
-    global last_clipboard
-    last_clipboard = ""
-    # log_message("Мониторинг буфера обмена запущен")
+    global last_clipboard, clipboard_monitor_disabled, ignore_clipboard_url, current_downloading_url
+    last_clipboard = ""  # Инициализируем переменную для хранения последнего содержимого буфера обмена
 
     while True:
-        time.sleep(1)  # Проверяем буфер каждую секунду
+        time.sleep(1)  # Проверяем буфер обмена каждую секунду
+
+        # Пропускаем мониторинг, если он отключен
+        if clipboard_monitor_disabled:
+            continue
+
+        # Пропускаем мониторинг, если автоперехват отключен
         if not auto_capture_enabled:
             continue
 
         try:
+            # Проверяем изменения в буфере обмена
             current_clipboard = detect_clipboard_change()
             if not current_clipboard or current_clipboard == last_clipboard:
                 continue  # Если буфер не изменился или ссылка уже обработана, ничего не делаем
 
+            # Игнорируем URL, который был скопирован через "Копировать URL"
+            if current_clipboard == ignore_clipboard_url:
+                ignore_clipboard_url = None  # Сбрасываем игнорируемый URL
+                last_clipboard = current_clipboard  # Обновляем last_clipboard, чтобы избежать повторной обработки
+                continue
+
+            # Проверяем, совпадает ли ссылка с текущей загружаемой
+            if current_clipboard == current_downloading_url:
+                # log_message(f"INFO Ссылка уже загружается: {current_clipboard}")
+                last_clipboard = current_clipboard  # Обновляем last_clipboard
+                continue
+
             # Обновляем last_clipboard, чтобы избежать повторной обработки
             last_clipboard = current_clipboard
 
+            # Проверяем, является ли ссылка YouTube
             if current_clipboard.startswith("https://www.youtube.com"):
                 log_message(f"INFO Обнаружена новая ссылка: {current_clipboard}")
-                
+
                 # Проверяем, является ли ссылка плейлистом
                 if "playlist?list=" in current_clipboard:
                     log_message("INFO Обнаружена ссылка на плейлист")
-                    # Запускаем функцию выбора видео из плейлиста в новом потоке
                     threading.Thread(target=download_playlist_with_selection, args=(current_clipboard,)).start()
-                # Проверяем, является ли ссылка каналом (варианты URL каналов YouTube)
                 elif "/channel/" in current_clipboard or "/c/" in current_clipboard or "/user/" in current_clipboard or "/@" in current_clipboard:
                     log_message("INFO Обнаружена ссылка на канал")
-                    # Запускаем функцию выбора видео с канала в новом потоке
                     threading.Thread(target=download_channel_with_selection, args=(current_clipboard,)).start()
                 else:
-                    # Обычная ссылка на видео
                     if is_downloading:
                         log_message("INFO Загрузка уже идет, добавляем в очередь")
                         add_to_queue(current_clipboard)
                     else:
                         log_message("INFO Запускаем загрузку напрямую")
+                        current_downloading_url = current_clipboard  # Устанавливаем текущую загружаемую ссылку
                         threading.Thread(target=download_video, args=(current_clipboard,)).start()
-                
-                if current_clipboard.startswith("https://www.youtube.com"):
-                    time.sleep(1)  # Пауза для стабилизации
-                    # last_clipboard = ""  # Сброс последнего значения
 
         except Exception as e:
             log_message(f"ERROR Ошибка при мониторинге буфера обмена: {e}")
-
-
 
 def start_monitoring():
     threading.Thread(target=clipboard_monitor, daemon=True).start()
@@ -2025,15 +2130,15 @@ def search_youtube_videos():
         # Создаем окно поиска
         root = tk.Tk()
         root.title("Расширенный поиск YouTube")
-        root.geometry("900x700")
+        root.geometry("1200x850")
         
         # Центрируем окно
         root.update_idletasks()
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
-        x = (screen_width - 900) // 2
-        y = (screen_height - 700) // 2
-        root.geometry(f"900x700+{x}+{y}")
+        x = (screen_width - 1200) // 2
+        y = (screen_height - 850) // 2
+        root.geometry(f"1200x850+{x}+{y}")
         
         # Делаем окно видимым и выводим на передний план
         root.deiconify()
@@ -2360,25 +2465,41 @@ def search_youtube_videos():
 
 
         # Функции для контекстного меню
+# Глобальный флаг для отключения мониторинга буфера обмена
+
+
         def copy_url():
             """Копирует URL выбранного видео в буфер обмена"""
+            global clipboard_monitor_disabled, ignore_clipboard_url
             selected = tree.selection()[0] if tree.selection() else None
             if selected and selected in video_urls:
                 url = video_urls[selected]
+                clipboard_monitor_disabled = True  # Отключаем мониторинг
+                ignore_clipboard_url = url  # Устанавливаем URL для игнорирования
                 pyperclip.copy(url)
                 status_var.set("URL скопирован в буфер обмена")
+                clipboard_monitor_disabled = False  # Включаем мониторинг обратно
 
         def add_to_download_queue():
-            """Добавляет выбранное видео в очередь загрузки"""
-            selected = tree.selection()[0] if tree.selection() else None
-            if selected and selected in video_urls:
-                url = video_urls[selected]
-                add_to_queue(url)
-                status_var.set("Добавлено в очередь загрузки")
-                
-                # Запускаем обработку очереди, если нет активной загрузки
-                if not is_downloading:
-                    threading.Thread(target=process_queue).start()
+            """Добавляет выбранные видео в очередь загрузки"""
+            selected_items = tree.selection()  # Получаем все выделенные элементы
+            if not selected_items:
+                status_var.set("Ничего не выбрано для добавления в очередь")
+                return
+
+            added_count = 0
+            for selected in selected_items:
+                if selected in video_urls:
+                    url = video_urls[selected]
+                    if add_to_queue(url):  # Добавляем в очередь только если URL ещё не добавлен
+                        added_count += 1
+
+            status_var.set(f"Добавлено в очередь загрузки: {added_count} видео")
+            log_message(f"INFO Добавлено {added_count} видео в очередь загрузки")
+
+            # Запускаем обработку очереди, если нет активной загрузки
+            if not is_downloading:
+                threading.Thread(target=process_queue).start()
 
         def open_in_browser():
             """Открывает выбранное видео в браузере"""
@@ -2413,9 +2534,9 @@ def search_youtube_videos():
                 return "00:00:00"    
             
 
-        def search_via_invidious():
+        def search_via_invidious(query):
             """Выполняет поиск видео через Invidious API"""
-            query = search_var.get().strip()
+            # query = search_var.get().strip()
             if not query:
                 status_var.set("Введите поисковый запрос")
                 return None
@@ -2461,6 +2582,7 @@ def search_youtube_videos():
              
                 # Формируем URL API запроса
                 api_endpoint = f"{invidious_url}/api/v1/search?"
+                
                 
                 # Определяем максимальное число страниц для запроса
                 # Обычно Invidious возвращает ~20 результатов на страницу, но это может варьироваться
@@ -2526,7 +2648,7 @@ def search_youtube_videos():
                 # Ограничиваем количество результатов
                 results = all_results[:max_results] if len(all_results) > max_results else all_results
                 
-                # log_message(f"Всего получено {len(all_results)} результатов от Invidious API, возвращается {len(results)}")
+                log_message(f"Всего получено {len(all_results)} результатов от Invidious API, возвращается {len(results)}")
                 return results
                 
             except Exception as e:
@@ -2539,6 +2661,7 @@ def search_youtube_videos():
 
         def search_via_youtube_api():
             """Выполняет поиск видео через официальный YouTube API с пагинацией"""
+
             query = search_var.get().strip()
             api_key = api_key_var.get().strip()
             
@@ -2550,6 +2673,7 @@ def search_youtube_videos():
                 status_var.set("Введите API Key для поиска")
                 return None
             
+           
             status_var.set("Выполняется поиск...")
             log_message(f"INFO Поиск по запросу: {query}")
             
@@ -2693,7 +2817,7 @@ def search_youtube_videos():
                     if use_alternative:
                         # Загружаем описание через BeautifulSoup
                         description = fetch_description_with_bs(video_url)
-                        log_message(f"Описание загружено через BS")
+                        log_message(f"Описание загружено через BS: {description}")
                     else:
                         # Загружаем описание через YouTube API
                         api_key = api_key_var.get().strip()
@@ -2851,101 +2975,143 @@ def search_youtube_videos():
 
         # Функция для выполнения поиска
 # Функция для выполнения поиска (выбирает API в зависимости от настроек)
+
+
         def perform_search():
             """Выполняет поиск видео через выбранный API"""
-            # Очищаем предыдущие результаты
-            for item in tree.get_children():
-                tree.delete(item)
-            video_urls.clear()
-            video_descriptions.clear()
-            # log_message("Очистка предыдущих результатов")
-            
-            # Определяем, какой метод поиска использовать
-            use_alternative = use_alternative_api_var.get()
-            
-            if use_alternative:
-                log_message("INFO Выбран поиск через Invidious API")
-                results = search_via_invidious()
-            else:
-                log_message("INFO Выбран поиск через официальный YouTube API")
-                results = search_via_youtube_api()
-            
-            if not results:
-                status_var.set("Поиск не дал результатов или произошла ошибка")
-                log_message("ERROR Поиск не дал результатов или произошла ошибка")
-                return
-            
-            # В зависимости от API разные форматы результатов
-            if use_alternative:
-                # Обработка результатов Invidious API
-                added_count = 0
-                for item in results:
-                    try:
-                        # log_message(f"Полный ответ API для видео: {item}")
-                        if item.get('type') != 'video':
-                            continue
-                            
-                        video_id = item.get('videoId')
-                        title = decode_html_entities(item.get('title', 'Без названия'))
-                        channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
-                        
-                        # В Invidious API длительность в секундах
-                        duration = format_invidious_duration(item.get('lengthSeconds', 0))
-                        
-                        # Сохраняем URL видео
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        added_count = added_count + 1
-                        
-                        # Получаем описание через BeautifulSoup
-                        # description = fetch_description_with_bs(video_url)
-                        # video_descriptions[video_id] = description
-                        # log_message(f"Описание для видео {video_id}: {description}")
-        
-                        
-                        # Добавляем в таблицу
-                        item_id = tree.insert('', tk.END, values=(title, channel, duration))
-                        video_urls[item_id] = video_url
-                    except Exception as e:
-                        log_message(f"ERROR Ошибка при обработке результата Invidious: {e}")
-                
-                status_var.set(f"Найдено результатов: {added_count}")
-                # log_message(f"Добавлено {added_count} видео в таблицу (Invidious API)")
-            else:
-                # Обработка результатов YouTube API
-                youtube_items = results.get('items', [])
-                video_stats = results.get('video_stats', {})
-                
-                filtered_items = []
-                for item in youtube_items:
-                    try:
-                        if item['id'].get('kind') != 'youtube#video':
-                            continue
-                            
-                        video_id = item['id']['videoId']
-                        title = decode_html_entities(item['snippet']['title'])
-                        channel = decode_html_entities(item['snippet']['channelTitle'])
-                        
-                        # Если включен поиск по описаниям, проверяем наличие запроса
-                        query = search_var.get().strip().lower()
-                        if search_in_descriptions_var.get():
-                            description = decode_html_entities(video_descriptions.get(video_id, ''))
-                            if not description or query not in description.lower():
-                                continue
-                                
-                        # Получаем длительность
-                        # duration = format_duration(video_stats.get(video_id, {}).get('duration', ''))
-                        duration = item.get('duration', 'N/A')
-                        
-                        # Сохраняем URL видео
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        item_id = tree.insert('', tk.END, values=(title, channel, duration))
-                        video_urls[item_id] = video_url
-                        filtered_items.append(item)
-                    except Exception as e:
-                        log_message(f"ERROR Ошибка при обработке результата YouTube API: {e}")
+            global conn, cursor  # Указываем, что используем глобальные переменные conn и cursor
+            log_message("DEBUG: Начало выполнения perform_search")
+            try:
+                # Очистка интерфейса
+                for item in tree.get_children():
+                    tree.delete(item)
+                video_urls.clear()
+                video_descriptions.clear()
 
-                status_var.set(f"Найдено результатов: {len(filtered_items)}")
-                log_message(f"INFO Добавлено {len(filtered_items)} видео в таблицу (YouTube API)")
+                # Определяем, какой метод использовать
+                use_alternative = use_alternative_api_var.get()
+                search_in_descriptions = search_in_descriptions_var.get()
+                query = search_var.get().strip()
+
+                # Подключаемся к базе данных, если включён поиск по описаниям
+                if search_in_descriptions:
+                    if not conn or not cursor:  # Проверяем, есть ли активное подключение
+                        log_message("DEBUG: Подключение к базе данных отсутствует, вызываем connect_to_database")
+                        connect_to_database()
+                    if not conn or not cursor:  # Если подключение не удалось
+                        log_message("ERROR: Подключение к базе данных не удалось")
+                        status_var.set("Ошибка подключения к базе данных")
+                        return
+
+
+                if use_alternative:
+                    log_message("INFO Выбран поиск через Invidious API")
+                    results = search_via_invidious(query) or []
+                    log_message(f"DEBUG: Получено {len(results)} результатов, начинаем обработку...")
+
+                    if search_in_descriptions:
+                        log_message("INFO Загрузка описаний в базу данных (Invidious API)")
+                        try:
+                            cursor.execute("DELETE FROM video_descriptions;")
+                            conn.commit()
+                            log_message("INFO Таблица video_descriptions очищена перед новым поиском.")
+                        except Exception as e:
+                            conn.rollback()
+                            log_message(f"[ERROR] Не удалось очистить таблицу: {e}")
+                        
+                        for item in results:
+                            video_id = item.get("videoId")
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            description = fetch_description_with_bs(video_url)
+                            insert_description(video_id, description)
+
+                        query_ts = prepare_tsquery(query)
+                        db_results = search_in_database(query_ts)
+                        log_message(f"INFO Найдено совпадений в базе: {len(db_results)}")
+
+                        results_dict = {item.get("videoId"): item for item in results}
+                        filtered_results = []
+                        for video_id, _ in db_results:
+                            item = results_dict.get(video_id)
+                            if item:
+                                filtered_results.append(item)
+                            else:
+                                log_message(f"[WARNING] Видео {video_id} найдено в БД, но отсутствует в API-результатах")
+                        results = filtered_results
+
+                    # Вывод результатов Invidious
+                    added_count = 0
+                    for item in results:
+                        try:
+                            if item.get('type') != 'video':
+                                continue
+                            video_id = item.get('videoId')
+                            title = decode_html_entities(item.get('title', 'Без названия'))
+                            channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
+                            duration = format_invidious_duration(item.get('lengthSeconds', 0))
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                            video_urls[item_id] = video_url
+                            added_count += 1
+                        except Exception as e:
+                            log_message(f"[ERROR] Ошибка при отображении видео: {e}")
+                    status_var.set(f"Найдено результатов: {added_count}")
+                    log_message(f"Добавлено {added_count} видео в таблицу (Invidious API)")
+
+                else:
+                    log_message("INFO Выбран поиск через официальный YouTube API")
+                    results = search_via_youtube_api() or []
+
+                    if search_in_descriptions:
+                        log_message("INFO Загрузка описаний в базу данных (YouTube API)")
+                        for item in results.get('items', []):
+                            video_id = item['id']['videoId']
+                            description = video_descriptions.get(video_id, '')
+                            insert_description(video_id, description)
+
+                        query_ts = prepare_tsquery(query)
+                        db_results = search_in_database(query_ts)
+                        filtered_items = []
+                        for video_id, _ in db_results:
+                            for item in results.get('items', []):
+                                if item['id']['videoId'] == video_id:
+                                    filtered_items.append(item)
+                                    break
+                        results['items'] = filtered_items
+
+                    # Вывод результатов YouTube API
+                    youtube_items = results.get('items', [])
+                    video_stats = results.get('video_stats', {})
+                    filtered_items = []
+                    for item in youtube_items:
+                        try:
+                            if item['id'].get('kind') != 'youtube#video':
+                                continue
+                            video_id = item['id']['videoId']
+                            title = decode_html_entities(item['snippet']['title'])
+                            channel = decode_html_entities(item['snippet']['channelTitle'])
+
+                            if search_in_descriptions:
+                                description = video_descriptions.get(video_id, '')
+                                if not description or query.lower() not in description.lower():
+                                    continue
+
+                            duration = item.get('duration', 'N/A')
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                            video_urls[item_id] = video_url
+                            filtered_items.append(item)
+                        except Exception as e:
+                            log_message(f"ERROR Ошибка при обработке результата YouTube API: {e}")
+                    status_var.set(f"Найдено результатов: {len(filtered_items)}")
+                    log_message(f"INFO Добавлено {len(filtered_items)} видео в таблицу (YouTube API)")
+
+            except Exception as e:
+                log_message(f"ERROR Ошибка в perform_search: {e}")
+                log_message(f"Трассировка: {traceback.format_exc()}")
+                messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
+
+
 
   
 
