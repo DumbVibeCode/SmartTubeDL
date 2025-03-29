@@ -55,6 +55,9 @@ cursor = None  # Глобальная переменная для курсора
 
 
 
+
+
+
 def prepare_tsquery(text):
     # Преобразуем в tsquery формат: концерт & 1991
     words = re.findall(r'\w+', text)
@@ -468,6 +471,7 @@ def download_channel_with_selection(channel_url):
             'playlistend': 10000,     # Устанавливаем очень большое значение, чтобы получить все видео
             'max_downloads': 10000,   # Также увеличиваем максимальное число загрузок
             'lazy_playlist': False,   # Отключаем ленивую загрузку для получения полного списка
+            'no_color': True,  # Отключаем цветной вывод
         }
         
         # Функция для загрузки информации о канале в фоновом потоке
@@ -1024,6 +1028,8 @@ def download_playlist_with_selection(playlist_url):
             'quiet': True,
             'extract_flat': True,  # Не загружать видео, только получить информацию
             'skip_download': True,
+            'no_color': True,  # Отключаем цветной вывод
+
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -1751,6 +1757,7 @@ def progress_hook(d):
     global download_stages, current_stage, download_speed, global_file_size, global_downloaded, current_format
     
     if d["status"] == "downloading":
+        
         # При первом вызове или смене файла обновляем информацию об этапах
         if download_stages == 0 or current_stage == 0:
             # Определяем количество этапов на основе запрошенного формата
@@ -1911,6 +1918,8 @@ def download_video(url, from_queue=False):
         # Добавляем опции для корректной обработки не-ASCII символов
         'restrict_filenames': False,  # Отключаем ограничение на имена файлов
         'windowsfilenames': False,    # Не используем Windows-специфичные ограничения
+        'no_color': True,  # Отключаем цветной вывод
+
     }
     
     # Устанавливаем правильный формат в зависимости от настроек
@@ -2123,9 +2132,135 @@ def toggle_download_format(icon, item):
 
 from ttkwidgets.autocomplete import AutocompleteEntry
 
+def fetch_videos_from_youtube_api(video_ids):
+    """Получает данные о видео через YouTube API"""
+    log_message("DEBUG: Вызвана функция fetch_videos_from_youtube_api")
+    api_key = api_key_var.get().strip()
+    log_message(f"DEBUG: Используемый API Key: {api_key}")
+    if not api_key:
+        log_message("ERROR: API Key отсутствует")
+        return []
+
+    try:
+        videos_url = "https://www.googleapis.com/youtube/v3/videos"
+        results = []
+        for i in range(0, len(video_ids), 50):  # YouTube API ограничивает запросы до 50 видео за раз
+            chunk = video_ids[i:i+50]
+            log_message(f"DEBUG: Выполняется запрос к YouTube API для video_ids: {chunk}")
+            params = {
+                'key': api_key,
+                'part': 'snippet,contentDetails',
+                'id': ','.join(chunk)
+            }
+            response = requests.get(videos_url, params=params)
+            log_message(f"DEBUG: Ответ YouTube API: {response.status_code} - {response.text[:500]}")
+            if response.status_code == 200:
+                data = response.json()
+                for video in data.get('items', []):
+                    log_message(f"DEBUG: Обрабатывается видео: {video['id']}")
+                    results.append({
+                        "videoId": video['id'],
+                        "title": video['snippet']['title'],
+                        "channel": video['snippet']['channelTitle'],
+                        "duration": format_duration(video['contentDetails']['duration'])
+                    })
+            else:
+                log_message(f"ERROR: Ошибка YouTube API: {response.status_code}")
+        return results
+    except Exception as e:
+        log_message(f"ERROR Ошибка при получении данных через YouTube API: {e}")
+        return []
+
+def fetch_videos_from_invidious(video_ids):
+    """Получает данные о видео через Invidious API"""
+    log_message("DEBUG: Вызвана функция fetch_videos_from_invidious")
+    invidious_url = invidious_url_var.get().strip()
+    log_message(f"DEBUG: Используемый Invidious URL: {invidious_url}")
+    if not invidious_url:
+        log_message("ERROR: URL Invidious сервера отсутствует")
+        return []
+
+    try:
+        api_endpoint = f"{invidious_url}/api/v1/videos"
+        results = []
+        for video_id in video_ids:
+            log_message(f"DEBUG: Выполняется запрос к Invidious API для video_id: {video_id}")
+            response = requests.get(f"{api_endpoint}/{video_id}")
+            log_message(f"DEBUG: Ответ Invidious API для video_id {video_id}: {response.status_code} - {response.text[:500]}")
+            if response.status_code == 200:
+                data = response.json()
+                log_message(f"DEBUG: Обрабатывается видео: {video_id}")
+                results.append({
+                    "videoId": video_id,
+                    "title": data.get('title', 'Без названия'),
+                    "channel": data.get('author', 'Неизвестный канал'),
+                    "duration": format_invidious_duration(data.get('lengthSeconds', 0))
+                })
+            else:
+                log_message(f"ERROR: Ошибка Invidious API для видео {video_id}: {response.status_code}")
+        return results
+    except Exception as e:
+        log_message(f"ERROR Ошибка при получении данных через Invidious API: {e}")
+        return []
+
+def format_duration(duration):
+    """Преобразует ISO 8601 длительность в читаемый формат"""
+    if not duration:
+        return 'N/A'
+        
+    try:
+        # Убираем 'PT' в начале
+        duration = duration[2:]
+        
+        # Инициализируем переменные
+        hours = "00"
+        minutes = "00"
+        seconds = "00"
+        
+        # Обрабатываем часы
+        if 'H' in duration:
+            hours, duration = duration.split('H')
+            hours = hours.zfill(2)
+        
+        # Обрабатываем минуты
+        if 'M' in duration:
+            minutes, duration = duration.split('M')
+            minutes = minutes.zfill(2)
+        
+        # Обрабатываем секунды
+        if 'S' in duration:
+            seconds = duration.replace('S', '')
+            seconds = seconds.zfill(2)
+        
+        # Если длительность больше часа, возвращаем полный формат
+        if hours != "00":
+            return f"{hours}:{minutes}:{seconds}"
+        # Иначе возвращаем только минуты и секунды
+        else:
+            return f"{minutes}:{seconds}"
+            
+    except Exception as e:
+        log_message(f"Ошибка форматирования длительности '{duration}': {e}")
+        return 'N/A'
+
+def format_invidious_duration(seconds):
+    """Преобразует секунды в формат ЧЧ:ММ:СС"""
+    try:
+        if not seconds:
+            return "00:00:00"
+            
+        seconds = int(seconds)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    except Exception as e:
+        log_message(f"Ошибка форматирования времени Invidious: {e}")
+        return "00:00:00"
+
 def search_youtube_videos():
     """Отображает окно для поиска видео через YouTube API"""
-        
+    global api_key_var, invidious_url_var
     try:
         # Создаем окно поиска
         root = tk.Tk()
@@ -2192,6 +2327,8 @@ def search_youtube_videos():
 
         set_log_box(log_box)
         load_log_file()
+        
+
 
         paste_in_progress = False
 
@@ -2270,6 +2407,26 @@ def search_youtube_videos():
             variable=use_alternative_api_var
         )
         use_alternative_api_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Фрейм для расширенного поиска
+        advanced_search_frame = ttk.Frame(search_frame)
+        advanced_search_frame.pack(fill=tk.X, pady=5)
+
+        # Галочка "Расширенный поиск по описаниям"
+        advanced_search_var = tk.BooleanVar(value=False)
+        advanced_search_check = ttk.Checkbutton(
+            advanced_search_frame,
+            text="Расширенный поиск по описаниям",
+            variable=advanced_search_var,
+            command=lambda: advanced_query_entry.config(state=tk.NORMAL if advanced_search_var.get() else tk.DISABLED)
+        )
+        advanced_search_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Поле для ввода запроса
+        ttk.Label(advanced_search_frame, text="Запрос для поиска по описаниям:").pack(side=tk.LEFT, padx=(0, 5))
+        advanced_query_var = tk.StringVar()
+        advanced_query_entry = ttk.Entry(advanced_search_frame, textvariable=advanced_query_var, width=50, state=tk.DISABLED)
+        advanced_query_entry.pack(side=tk.LEFT, padx=(0, 10))
         
         # Тип контента
         ttk.Label(options_frame, text="Тип:").pack(side=tk.LEFT, padx=(0, 5))
@@ -2289,7 +2446,7 @@ def search_youtube_videos():
         ttk.Label(options_frame, text="Результатов:").pack(side=tk.LEFT, padx=(0, 5))
         max_results_var = tk.StringVar(value="10")
         max_results_combo = ttk.Combobox(options_frame, textvariable=max_results_var, width=10,
-                                         values=["10", "20", "30", "40", "50", "100"])
+                                         values=["10", "20", "30", "40", "50", "100", "200", "500", "1000"])
         max_results_combo.pack(side=tk.LEFT, padx=(0, 10))
         
         # API Key
@@ -2423,46 +2580,7 @@ def search_youtube_videos():
         # Словарь для хранения URL видео
         video_urls = {}
 
-        def format_duration(duration):
-            """Преобразует ISO 8601 длительность в читаемый формат"""
-            if not duration:
-                return 'N/A'
-                
-            try:
-                # Убираем 'PT' в начале
-                duration = duration[2:]
-                
-                # Инициализируем переменные
-                hours = "00"
-                minutes = "00"
-                seconds = "00"
-                
-                # Обрабатываем часы
-                if 'H' in duration:
-                    hours, duration = duration.split('H')
-                    hours = hours.zfill(2)
-                
-                # Обрабатываем минуты
-                if 'M' in duration:
-                    minutes, duration = duration.split('M')
-                    minutes = minutes.zfill(2)
-                
-                # Обрабатываем секунды
-                if 'S' in duration:
-                    seconds = duration.replace('S', '')
-                    seconds = seconds.zfill(2)
-                
-                # Если длительность больше часа, возвращаем полный формат
-                if hours != "00":
-                    return f"{hours}:{minutes}:{seconds}"
-                # Иначе возвращаем только минуты и секунды
-                else:
-                    return f"{minutes}:{seconds}"
-                    
-            except Exception as e:
-                log_message(f"Ошибка форматирования длительности '{duration}': {e}")
-                return 'N/A'
-
+        
 
         # Функции для контекстного меню
 # Глобальный флаг для отключения мониторинга буфера обмена
@@ -2518,20 +2636,7 @@ def search_youtube_videos():
                 return html.unescape(text)
             return text
 
-        def format_invidious_duration(seconds):
-            """Преобразует секунды в формат ЧЧ:ММ:СС"""
-            try:
-                if not seconds:
-                    return "00:00:00"
-                    
-                seconds = int(seconds)
-                hours = seconds // 3600
-                minutes = (seconds % 3600) // 60
-                secs = seconds % 60
-                return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-            except Exception as e:
-                log_message(f"Ошибка форматирования времени Invidious: {e}")
-                return "00:00:00"    
+ 
             
 
         def search_via_invidious(query):
@@ -2580,70 +2685,31 @@ def search_youtube_videos():
                 if "localhost" in invidious_url or "127.0.0.1" in invidious_url:
                     ensure_invidious_running()
              
-                # Формируем URL API запроса
-                api_endpoint = f"{invidious_url}/api/v1/search?"
-                
-                
-                # Определяем максимальное число страниц для запроса
-                # Обычно Invidious возвращает ~20 результатов на страницу, но это может варьироваться
-                pages_to_fetch = min(10, (max_results + 9) // 10)  # Максимум 10 страниц, чтобы избежать длительных запросов
-                # log_message(f"Запланировано запросить до {pages_to_fetch} страниц результатов Invidious")
+                api_endpoint = f"{invidious_url}/api/v1/search"
+                params = {
+                    'q': query,
+                    'type': search_type,
+                    'sort_by': sort_by,
+                    'page': 1
+                }
                 
                 all_results = []
-                empty_pages_count = 0  # Счетчик пустых страниц подряд
-                
-                for page in range(1, pages_to_fetch + 1):
-                    # Если у нас уже достаточно результатов, останавливаемся
-                    if len(all_results) >= max_results:
-                        log_message(f"Достигнуто требуемое количество результатов ({max_results}), прекращаем запросы")
-                        break
-                        
-                    # Подготавливаем параметры запроса для текущей страницы
-                    params = {
-                        'q': query,                 # Поисковый запрос
-                        'type': invidious_type,     # Тип контента
-                        'sort_by': invidious_sort,  # Порядок сортировки
-                        'page': page,               # Текущая страница результатов
-                    }
-                    
-                    # log_message(f"Invidious API запрос страницы {page}: {api_endpoint} с параметрами {params}")
-                    status_var.set(f"Отправка запроса к Invidious API (страница {page}/{pages_to_fetch})...")
-                    
-                    # Выполняем запрос с увеличенным таймаутом
-                    response = requests.get(api_endpoint, params=params, timeout=15)
-                    
-                    # log_message(f"Ответ от Invidious API получен (страница {page}). Код: {response.status_code}")
-                    
+                while len(all_results) < max_results:
+                    response = requests.get(api_endpoint, params=params)
                     if response.status_code != 200:
-                        status_var.set(f"Ошибка Invidious API: {response.status_code}")
-                        log_message(f"Ошибка Invidious API (страница {page}): {response.status_code}, {response.text}")
-                        break  # Прекращаем запросы при ошибке
+                        log_message(f"Ошибка Invidious API: {response.status_code}")
+                        break
                     
-                    # Разбираем JSON ответ
-                    page_data = response.json()
+                    page_results = response.json()
+                    if not page_results:
+                        break
                     
-                    if not page_data:
-                        log_message(f"Страница {page} не содержит результатов")
-                        empty_pages_count += 1
-                        
-                        # Если получили 2 пустые страницы подряд, прекращаем запросы
-                        if empty_pages_count >= 2:
-                            log_message("Получено 2 пустые страницы подряд, завершаем пагинацию")
-                            break
-                            
-                        # Иначе продолжаем запросы
-                        continue
-                    else:
-                        # Сбрасываем счетчик пустых страниц, если получены данные
-                        empty_pages_count = 0
+                    all_results.extend(page_results)
+                    params['page'] += 1
                     
-                    # Добавляем результаты страницы к общему списку
-                    all_results.extend(page_data)
-                    # log_message(f"Получено {len(page_data)} результатов со страницы {page}, всего: {len(all_results)}")
-                    
-                    # Делаем небольшую паузу между запросами, чтобы не перегружать сервер
-                    if page < pages_to_fetch:
-                        time.sleep(0.3)
+                    # Проверяем, достигли ли мы лимита
+                    if len(all_results) >= max_results:
+                        break
                 
                 # Ограничиваем количество результатов
                 results = all_results[:max_results] if len(all_results) > max_results else all_results
@@ -2705,40 +2771,27 @@ def search_youtube_videos():
                 iteration_count = 0
                 api_request_count = 0  # Глобальная переменная для подсчёта запросов
                 
-                while True:
-                    # log_message("Начало итерации цикла")
-                    iteration_count += 1
-
-                    if iteration_count > max_iterations:
-                        log_message("Цикл завершён из-за превышения максимального количества итераций")
-                        break
-
+        # Делаем запросы до тех пор, пока не достигнем максимального количества результатов
+                while len(all_items) < max_results:
                     if next_page_token:
                         params['pageToken'] = next_page_token
 
                     response = requests.get(base_url, params=params)
-                    api_request_count += 1  # Увеличиваем счётчик запросов
-                    # log_message(f"Запрос #{api_request_count} к API: {response.url}")
-                    log_message(f"SUCCESS Ответ от API получен. Код статуса: {response.status_code}")
-
                     if response.status_code != 200:
                         log_message(f"Ошибка API: {response.status_code}")
                         break
 
                     data = response.json()
                     items = data.get('items', [])
-                    total_results = data.get('pageInfo', {}).get('totalResults', 0)
-
-                    # Добавляем текущие результаты
                     all_items.extend(items)
 
                     # Проверяем, достигли ли мы максимального количества результатов
                     if len(all_items) >= max_results or not data.get('nextPageToken'):
-                        # log_message("Цикл завершён: достигнуто максимальное количество результатов или отсутствует токен следующей страницы")
                         break
-
+                    
                     # Получаем токен следующей страницы
                     next_page_token = data.get('nextPageToken')
+
                     log_message(f"Получен токен следующей страницы: {next_page_token}")
 
                 log_message(f"INFO Всего выполнено запросов к API: {api_request_count}")
@@ -2991,6 +3044,8 @@ def search_youtube_videos():
                 # Определяем, какой метод использовать
                 use_alternative = use_alternative_api_var.get()
                 search_in_descriptions = search_in_descriptions_var.get()
+                advanced_search = advanced_search_var.get()
+
                 query = search_var.get().strip()
 
                 # Подключаемся к базе данных, если включён поиск по описаниям
@@ -3002,6 +3057,51 @@ def search_youtube_videos():
                         log_message("ERROR: Подключение к базе данных не удалось")
                         status_var.set("Ошибка подключения к базе данных")
                         return
+                    
+                if advanced_search:
+                    if not conn or not cursor:  # Проверяем, есть ли активное подключение
+                        log_message("DEBUG: Подключение к базе данных отсутствует, вызываем connect_to_database")
+                        connect_to_database()
+                    if not conn or not cursor:  # Если подключение не удалось
+                        log_message("ERROR: Подключение к базе данных не удалось")
+                        status_var.set("Ошибка подключения к базе данных")
+                        return
+                    advanced_query = advanced_query_var.get().strip()
+                    if not advanced_query:
+                        status_var.set("Введите запрос для поиска по описаниям")
+                        return
+
+                    log_message(f"INFO Выполняется расширенный поиск по описаниям: {advanced_query}")
+                    db_results = search_in_database(advanced_query)
+                    log_message(f"INFO Найдено совпадений в базе: {len(db_results)}")
+
+                     # Получаем список video_id из результатов поиска
+                    video_ids = [video_id for video_id, _ in db_results]
+
+                    # Выполняем запрос к API для получения полной информации
+                    if use_alternative:
+                        log_message("INFO Подгружаем данные через Invidious API")
+                        log_message(f"DEBUG: Список video_ids для подгрузки (Invidious): {video_ids}")
+                        results = fetch_videos_from_invidious(video_ids)
+                    else:
+                        log_message("INFO Подгружаем данные через YouTube API")
+                        results = fetch_videos_from_youtube_api(video_ids)
+                        log_message(f"DEBUG: Список video_ids для подгрузки (Youtube): {video_ids}")
+
+
+
+                    # Отображаем результаты в интерфейсе
+                for video in results:
+                    video_id = video.get("videoId")
+                    title = video.get("title", "Без названия")
+                    channel = video.get("channel", "Неизвестный канал")
+                    duration = video.get("duration", "N/A")
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                    video_urls[item_id] = video_url
+
+                status_var.set(f"Найдено совпадений: {len(db_results)}")
+                return    
 
 
                 if use_alternative:
@@ -3064,6 +3164,14 @@ def search_youtube_videos():
 
                     if search_in_descriptions:
                         log_message("INFO Загрузка описаний в базу данных (YouTube API)")
+                        try:
+                            cursor.execute("DELETE FROM video_descriptions;")
+                            conn.commit()
+                            log_message("INFO Таблица video_descriptions очищена перед новым поиском.")
+                        except Exception as e:
+                            conn.rollback()
+                            log_message(f"[ERROR] Не удалось очистить таблицу: {e}")
+
                         for item in results.get('items', []):
                             video_id = item['id']['videoId']
                             description = video_descriptions.get(video_id, '')
