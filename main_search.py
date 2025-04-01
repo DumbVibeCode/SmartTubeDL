@@ -1,35 +1,83 @@
+import os
+import re
+import threading
+import tkinter as tk
+import tkinter
+from tkinter import messagebox, scrolledtext, Tk, ttk, BOTH
+import traceback
+import webbrowser
+import pyperclip
+import requests
+from ttkwidgets.autocomplete import AutocompleteEntry
+
+from config import ensure_invidious_running, format_duration, format_invidious_duration, initialize_settings, save_settings, is_downloading
+from config import is_downloading
+from database import connect_to_database, insert_description, search_in_database
+from logger import clear_log, load_log_file, log_message, set_log_box
+from queues import add_to_queue, process_queue
+from fetch import fetch_description_with_bs, fetch_videos_from_invidious
+from fetch import fetch_videos_from_youtube_api
+
+settings = initialize_settings()
+search_window = None
+
+def prepare_tsquery(text):
+    # Преобразуем в tsquery формат: концерт & 1991
+    words = re.findall(r'\w+', text)
+    return ' & '.join(words)
+
 def search_youtube_videos():
     """Отображает окно для поиска видео через YouTube API"""
-        
+    global search_window  # Используем глобальную переменную
+
+    # Проверяем, существует ли окно и активно ли оно
+    if search_window is not None and search_window.winfo_exists():
+        # Если окно уже существует, поднимаем его на передний план
+        search_window.deiconify()  # Делаем окно видимым, если оно было свернуто
+        search_window.lift()      # Поднимаем окно поверх других
+        search_window.focus_force()  # Устанавливаем фокус
+        if os.name == 'nt':       # Дополнительно для Windows
+            search_window.attributes('-topmost', True)
+            search_window.update()
+            search_window.attributes('-topmost', False)
+        return  # Выходим из функции, не создавая новое окно
+
     try:
-        # Создаем окно поиска
-        root = tk.Tk()
-        root.title("Расширенный поиск YouTube")
-        root.geometry("1200x850")
-        
+        # Создаем новое окно, только если его еще нет
+        search_window = tk.Tk()
+        search_window.title("Расширенный поиск YouTube")
+        search_window.geometry("1200x850")
+
         # Центрируем окно
-        root.update_idletasks()
-        screen_width = root.winfo_screenwidth()
-        screen_height = root.winfo_screenheight()
+        search_window.update_idletasks()
+        screen_width = search_window.winfo_screenwidth()
+        screen_height = search_window.winfo_screenheight()
         x = (screen_width - 1200) // 2
         y = (screen_height - 850) // 2
-        root.geometry(f"1200x850+{x}+{y}")
-        
+        search_window.geometry(f"1200x850+{x}+{y}")
+
         # Делаем окно видимым и выводим на передний план
-        root.deiconify()
-        root.lift()
-        root.focus_force()
-        
-        # На Windows также можно использовать:
+        search_window.deiconify()
+        search_window.lift()
+        search_window.focus_force()
+
         if os.name == 'nt':
-            root.attributes('-topmost', True)
-            root.update()
-            root.attributes('-topmost', False)
-        
+            search_window.attributes('-topmost', True)
+            search_window.update()
+            search_window.attributes('-topmost', False)
+
+        # При закрытии окна очищаем ссылку на него
+        def on_closing():
+            global search_window
+            search_window.destroy()
+            search_window = None  # Сбрасываем переменную после закрытия
+
+        search_window.protocol("WM_DELETE_WINDOW", on_closing)
+
         # Создаем фреймы
-        main_frame = ttk.Frame(root, padding=10)
+        main_frame = ttk.Frame(search_window, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         # Фрейм для верхней части с полями поиска
         search_frame = ttk.LabelFrame(main_frame, text="Параметры поиска", padding=10)
         search_frame.pack(fill=tk.X, pady=(0, 10))
@@ -37,7 +85,7 @@ def search_youtube_videos():
         # Первая строка - поисковый запрос
         query_frame = ttk.Frame(search_frame)
         query_frame.pack(fill=tk.X, pady=5)
-        
+
         ttk.Label(query_frame, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
         search_var = tk.StringVar()
         autocomplete_list = []  # Пустой список для автозаполнения
@@ -45,15 +93,14 @@ def search_youtube_videos():
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         search_entry.focus()  # Устанавливаем фокус на поле ввода
 
-        button_frame = tk.Frame(root)
+        button_frame = tk.Frame(search_window)
         button_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
 
         clear_button = tk.Button(button_frame, text="🗑 Очистить лог", command=clear_log)
         clear_button.pack(side=tk.RIGHT, padx=5)
 
-        log_frame = ttk.Frame(root)
+        log_frame = ttk.Frame(search_window)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
 
         global log_box  # обязательно, иначе создаётся локальная переменная
         log_box = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=10, state='disabled')
@@ -78,29 +125,29 @@ def search_youtube_videos():
                 # Отменяем стандартную вставку для английской раскладки, используем нашу собственную функцию
                 if not paste_in_progress:
                     paste_in_progress = True
-                    root.after(10, lambda: handle_paste())
+                    search_window.after(10, lambda: handle_paste())
                     return "break"  # Отменяем стандартную обработку
             # Обработка Shift+Insert (код 118)
             elif event.keysym == "Insert" and event.state & 0x0001:
                 if not paste_in_progress:
                     paste_in_progress = True
-                    root.after(10, lambda: handle_paste())
+                    search_window.after(10, lambda: handle_paste())
                     return "break"  # Отменяем стандартную обработку
-        
+
         def handle_paste():
             nonlocal paste_in_progress
             try:
-                clipboard_text = root.clipboard_get()
+                clipboard_text = search_window.clipboard_get()
                 # Сохраняем текущее положение курсора
                 cursor_pos = search_entry.index(tk.INSERT)
-                
+
                 # Получаем текущий текст из поля
                 current_text = search_var.get()
-                
+
                 # Вставляем текст из буфера в текущую позицию
                 new_text = current_text[:cursor_pos] + clipboard_text + current_text[cursor_pos:]
                 search_var.set(new_text)
-                
+
                 # Перемещаем курсор после вставленного текста
                 search_entry.icursor(cursor_pos + len(clipboard_text))
             except tk.TclError:
@@ -112,15 +159,14 @@ def search_youtube_videos():
         def show_context_menu(event):
             menu = tk.Menu(search_entry, tearoff=0)
             menu.add_command(label="Вставить", command=handle_paste)  # Исправлено: теперь без аргумента
-            menu.add_command(label="Копировать", 
+            menu.add_command(label="Копировать",
                             command=lambda: search_entry.event_generate("<<Copy>>"))
-            menu.tk_popup(event.x_root, event.y_root)
+            menu.tk_popup(event.x_search_window, event.y_search_window)
 
         # Привязка событий
         search_entry.bind("<Key>", on_key_press)  # Обработка всех клавиш
         search_entry.bind("<Button-3>", show_context_menu)  # Правый клик
-        
-        
+
         # Фрейм для дополнительных параметров поиска
         options_frame = ttk.Frame(search_frame)
         options_frame.pack(fill=tk.X, pady=5)
@@ -128,11 +174,11 @@ def search_youtube_videos():
         # Добавляем галочку "Поиск по описаниям"
         search_options_frame = ttk.Frame(search_frame)
         search_options_frame.pack(fill=tk.X, pady=5)
-        
+
         search_in_descriptions_var = tk.BooleanVar(value=False)
         search_in_descriptions_check = ttk.Checkbutton(
-            search_options_frame, 
-            text="Поиск по описаниям", 
+            search_options_frame,
+            text="Поиск по описаниям",
             variable=search_in_descriptions_var
         )
         search_in_descriptions_check.pack(side=tk.LEFT, padx=(0, 10))
@@ -145,32 +191,52 @@ def search_youtube_videos():
             variable=use_alternative_api_var
         )
         use_alternative_api_check.pack(side=tk.LEFT, padx=(0, 10))
-        
+
+        # Фрейм для расширенного поиска
+        advanced_search_frame = ttk.Frame(search_frame)
+        advanced_search_frame.pack(fill=tk.X, pady=5)
+
+        # Галочка "Расширенный поиск по описаниям"
+        advanced_search_var = tk.BooleanVar(value=False)
+        advanced_search_check = ttk.Checkbutton(
+            advanced_search_frame,
+            text="Расширенный поиск по описаниям",
+            variable=advanced_search_var,
+            command=lambda: advanced_query_entry.config(state=tk.NORMAL if advanced_search_var.get() else tk.DISABLED)
+        )
+        advanced_search_check.pack(side=tk.LEFT, padx=(0, 10))
+
+        # Поле для ввода запроса
+        ttk.Label(advanced_search_frame, text="Запрос для поиска по описаниям:").pack(side=tk.LEFT, padx=(0, 5))
+        advanced_query_var = tk.StringVar()
+        advanced_query_entry = ttk.Entry(advanced_search_frame, textvariable=advanced_query_var, width=50, state=tk.DISABLED)
+        advanced_query_entry.pack(side=tk.LEFT, padx=(0, 10))
+
         # Тип контента
         ttk.Label(options_frame, text="Тип:").pack(side=tk.LEFT, padx=(0, 5))
         type_var = tk.StringVar(value="video")
-        type_combo = ttk.Combobox(options_frame, textvariable=type_var, width=15, 
+        type_combo = ttk.Combobox(options_frame, textvariable=type_var, width=15,
                                   values=["video", "channel", "playlist"])
         type_combo.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         # Порядок сортировки
         ttk.Label(options_frame, text="Сортировка:").pack(side=tk.LEFT, padx=(0, 5))
         order_var = tk.StringVar(value="relevance")
         order_combo = ttk.Combobox(options_frame, textvariable=order_var, width=15,
                                    values=["relevance", "date", "rating", "viewCount", "title"])
         order_combo.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         # Максимальное количество результатов
         ttk.Label(options_frame, text="Результатов:").pack(side=tk.LEFT, padx=(0, 5))
         max_results_var = tk.StringVar(value="10")
         max_results_combo = ttk.Combobox(options_frame, textvariable=max_results_var, width=10,
-                                         values=["10", "20", "30", "40", "50", "100"])
+                                         values=["10", "20", "30", "40", "50", "100", "200", "500", "1000"])
         max_results_combo.pack(side=tk.LEFT, padx=(0, 10))
-        
+
         # API Key
         api_frame = ttk.Frame(search_frame)
         api_frame.pack(fill=tk.X, pady=5)
-        
+
         ttk.Label(api_frame, text="API Key:").pack(side=tk.LEFT, padx=(0, 5))
         api_key_var = tk.StringVar(value=settings.get("youtube_api_key", ""))
         api_key_entry = ttk.Entry(api_frame, textvariable=api_key_var, width=50)
@@ -180,8 +246,8 @@ def search_youtube_videos():
         ttk.Label(api_frame, text="Invidious URL:").pack(side=tk.LEFT, padx=(0, 5))
         invidious_url_var = tk.StringVar(value=settings.get("invidious_url", "http://localhost:3000"))
         invidious_url_entry = ttk.Entry(api_frame, textvariable=invidious_url_var, width=30)
-        invidious_url_entry.pack(side=tk.LEFT, padx=(0, 10))        
-        
+        invidious_url_entry.pack(side=tk.LEFT, padx=(0, 10))
+
         # Фрейм для кнопок управления
         button_frame = ttk.Frame(search_frame)
         button_frame.pack(fill=tk.X, pady=(10, 5))
@@ -195,37 +261,37 @@ def search_youtube_videos():
                 settings["youtube_api_key"] = api_key
 
             if invidious_url:
-                settings["invidious_url"] = invidious_url                
+                settings["invidious_url"] = invidious_url
 
                 save_settings(settings)
                 messagebox.showinfo("Сохранение API Key", "API Key успешно сохранен")
                 log_message("API Key сохранен в настройках")
             else:
                 messagebox.showwarning("Сохранение API Key", "Введите API Key для сохранения")
-        
+
         # Кнопка для сохранения API ключа
         ttk.Button(button_frame, text="Сохранить API Key", command=save_api_key).pack(side=tk.RIGHT, padx=5)
-        
+
         # Справка по получению API Key
         def show_api_help():
             help_text = """
             Для использования поиска необходимо получить API Key в Google Cloud Console:
-            
+
             1. Перейдите на сайт: https://console.cloud.google.com/
             2. Создайте новый проект
             3. Включите YouTube Data API v3
             4. Создайте учетные данные (API Key)
             5. Скопируйте ключ и вставьте его в поле API Key
-            
+
             Обратите внимание, что бесплатное использование API имеет суточные лимиты.
 
             Для альтернативного метода поиска:
-            Установите галочку "Искать альтернативным методом" и укажите URL 
+            Установите галочку "Искать альтернативным методом" и укажите URL
             публичного Invidious экземпляра. Например: https://invidious.fdn.fr
             """
-            
+
             messagebox.showinfo("Получение API Key", help_text)
-        
+
         ttk.Button(button_frame, text="Как получить API Key?", command=show_api_help).pack(side=tk.RIGHT, padx=5)
 
         def format_date(date_str):
@@ -238,7 +304,7 @@ def search_youtube_videos():
             except Exception as e:
                 log_message(f"Ошибка форматирования даты: {e}")
                 return date_str
-        
+
         # Функция для форматирования числа просмотров
         def format_views(views_count):
             """Форматирует число просмотров в более читабельный вид"""
@@ -253,7 +319,7 @@ def search_youtube_videos():
             except Exception as e:
                 log_message(f"Ошибка форматирования просмотров: {e}")
                 return views_count
-                   
+
         # Кнопка Поиск
         # search_button = ttk.Button(button_frame, text="Искать", command=lambda: [log_message("Кнопка 'Искать' нажата"), threading.Thread(target=perform_search).start()])
         # search_button.pack(side=tk.LEFT, padx=5)
@@ -264,15 +330,15 @@ def search_youtube_videos():
         # Фрейм для результатов поиска
         results_frame = ttk.LabelFrame(main_frame, text="Результаты поиска", padding=10)
         results_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         # Создаем контейнер с прокруткой для результатов
         container = ttk.Frame(results_frame)
         container.pack(fill=tk.BOTH, expand=True)
-        
+
         # Полоса прокрутки
         scrollbar = ttk.Scrollbar(container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
+
         # Поле для вывода сообщений
         status_var = tk.StringVar(value="Введите поисковый запрос и нажмите 'Искать'")
         status_label = ttk.Label(results_frame, textvariable=status_var, foreground="blue")
@@ -281,67 +347,25 @@ def search_youtube_videos():
         # Treeview для отображения результатов
         columns = ("title", "channel", "duration")
         tree = ttk.Treeview(container, columns=columns, show="headings", yscrollcommand=scrollbar.set)
-        
+
         # Настройка заголовков колонок
         tree.heading("title", text="Название")
         tree.heading("channel", text="Канал")
         tree.heading("duration", text="Длительность")
-        
+
         # Настройка ширина колонок
         tree.column("title", width=500, anchor=tk.W)
         tree.column("channel", width=200, anchor=tk.W)
         tree.column("duration", width=100, anchor=tk.CENTER)
-        
+
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=tree.yview)
-        
+
         # Словарь для хранения URL видео
         video_urls = {}
 
-        def format_duration(duration):
-            """Преобразует ISO 8601 длительность в читаемый формат"""
-            if not duration:
-                return 'N/A'
-                
-            try:
-                # Убираем 'PT' в начале
-                duration = duration[2:]
-                
-                # Инициализируем переменные
-                hours = "00"
-                minutes = "00"
-                seconds = "00"
-                
-                # Обрабатываем часы
-                if 'H' in duration:
-                    hours, duration = duration.split('H')
-                    hours = hours.zfill(2)
-                
-                # Обрабатываем минуты
-                if 'M' in duration:
-                    minutes, duration = duration.split('M')
-                    minutes = minutes.zfill(2)
-                
-                # Обрабатываем секунды
-                if 'S' in duration:
-                    seconds = duration.replace('S', '')
-                    seconds = seconds.zfill(2)
-                
-                # Если длительность больше часа, возвращаем полный формат
-                if hours != "00":
-                    return f"{hours}:{minutes}:{seconds}"
-                # Иначе возвращаем только минуты и секунды
-                else:
-                    return f"{minutes}:{seconds}"
-                    
-            except Exception as e:
-                log_message(f"Ошибка форматирования длительности '{duration}': {e}")
-                return 'N/A'
-
-
         # Функции для контекстного меню
 # Глобальный флаг для отключения мониторинга буфера обмена
-
 
         def copy_url():
             """Копирует URL выбранного видео в буфер обмена"""
@@ -356,16 +380,25 @@ def search_youtube_videos():
                 clipboard_monitor_disabled = False  # Включаем мониторинг обратно
 
         def add_to_download_queue():
-            """Добавляет выбранное видео в очередь загрузки"""
-            selected = tree.selection()[0] if tree.selection() else None
-            if selected and selected in video_urls:
-                url = video_urls[selected]
-                add_to_queue(url)
-                status_var.set("Добавлено в очередь загрузки")
-                
-                # Запускаем обработку очереди, если нет активной загрузки
-                if not is_downloading:
-                    threading.Thread(target=process_queue).start()
+            """Добавляет выбранные видео в очередь загрузки"""
+            selected_items = tree.selection()  # Получаем все выделенные элементы
+            if not selected_items:
+                status_var.set("Ничего не выбрано для добавления в очередь")
+                return
+
+            added_count = 0
+            for selected in selected_items:
+                if selected in video_urls:
+                    url = video_urls[selected]
+                    if add_to_queue(url):  # Добавляем в очередь только если URL ещё не добавлен
+                        added_count += 1
+
+            status_var.set(f"Добавлено в очередь загрузки: {added_count} видео")
+            log_message(f"INFO Добавлено {added_count} видео в очередь загрузки")
+
+            # Запускаем обработку очереди, если нет активной загрузки
+            if not is_downloading:
+                threading.Thread(target=process_queue).start()
 
         def open_in_browser():
             """Открывает выбранное видео в браузере"""
@@ -384,42 +417,26 @@ def search_youtube_videos():
                 return html.unescape(text)
             return text
 
-        def format_invidious_duration(seconds):
-            """Преобразует секунды в формат ЧЧ:ММ:СС"""
-            try:
-                if not seconds:
-                    return "00:00:00"
-                    
-                seconds = int(seconds)
-                hours = seconds // 3600
-                minutes = (seconds % 3600) // 60
-                secs = seconds % 60
-                return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-            except Exception as e:
-                log_message(f"Ошибка форматирования времени Invidious: {e}")
-                return "00:00:00"    
-            
-
         def search_via_invidious(query):
             """Выполняет поиск видео через Invidious API"""
             # query = search_var.get().strip()
             if not query:
                 status_var.set("Введите поисковый запрос")
                 return None
-                
+
             invidious_url = invidious_url_var.get().strip()
             if not invidious_url:
                 status_var.set("Введите URL Invidious сервера")
                 return None
-            
+
             # Убираем trailing slash если есть
             if invidious_url.endswith('/'):
                 invidious_url = invidious_url[:-1]
-            
+
             max_results = int(max_results_var.get().strip())
             search_type = type_var.get().strip()
             sort_by = order_var.get().strip()
-            
+
             # Преобразуем параметры сортировки в формат Invidious
             sort_map = {
                 "relevance": "relevance",  # По релевантности
@@ -428,126 +445,87 @@ def search_youtube_videos():
                 "viewCount": "views",      # По просмотрам
                 "title": "alphabetical"    # По алфавиту
             }
-            
+
             invidious_sort = sort_map.get(sort_by, "relevance")
-            
+
             # Преобразуем тип поиска в формат Invidious
             type_map = {
                 "video": "video",
                 "channel": "channel",
                 "playlist": "playlist",
             }
-            
+
             invidious_type = type_map.get(search_type, "video")
-            
+
             try:
-                
+
                 # Если используется локальный сервер Invidious — проверяем, запущен ли он
                 if "localhost" in invidious_url or "127.0.0.1" in invidious_url:
                     ensure_invidious_running()
-             
-                # Формируем URL API запроса
-                api_endpoint = f"{invidious_url}/api/v1/search?"
-                
-                
-                # Определяем максимальное число страниц для запроса
-                # Обычно Invidious возвращает ~20 результатов на страницу, но это может варьироваться
-                pages_to_fetch = min(10, (max_results + 9) // 10)  # Максимум 10 страниц, чтобы избежать длительных запросов
-                # log_message(f"Запланировано запросить до {pages_to_fetch} страниц результатов Invidious")
-                
+
+                api_endpoint = f"{invidious_url}/api/v1/search"
+                params = {
+                    'q': query,
+                    'type': search_type,
+                    'sort_by': sort_by,
+                    'page': 1
+                }
+
                 all_results = []
-                empty_pages_count = 0  # Счетчик пустых страниц подряд
-                
-                for page in range(1, pages_to_fetch + 1):
-                    # Если у нас уже достаточно результатов, останавливаемся
-                    if len(all_results) >= max_results:
-                        log_message(f"Достигнуто требуемое количество результатов ({max_results}), прекращаем запросы")
-                        break
-                        
-                    # Подготавливаем параметры запроса для текущей страницы
-                    params = {
-                        'q': query,                 # Поисковый запрос
-                        'type': invidious_type,     # Тип контента
-                        'sort_by': invidious_sort,  # Порядок сортировки
-                        'page': page,               # Текущая страница результатов
-                    }
-                    
-                    # log_message(f"Invidious API запрос страницы {page}: {api_endpoint} с параметрами {params}")
-                    status_var.set(f"Отправка запроса к Invidious API (страница {page}/{pages_to_fetch})...")
-                    
-                    # Выполняем запрос с увеличенным таймаутом
-                    response = requests.get(api_endpoint, params=params, timeout=15)
-                    
-                    # log_message(f"Ответ от Invidious API получен (страница {page}). Код: {response.status_code}")
-                    
+                while len(all_results) < max_results:
+                    response = requests.get(api_endpoint, params=params)
                     if response.status_code != 200:
-                        status_var.set(f"Ошибка Invidious API: {response.status_code}")
-                        log_message(f"Ошибка Invidious API (страница {page}): {response.status_code}, {response.text}")
-                        break  # Прекращаем запросы при ошибке
-                    
-                    # Разбираем JSON ответ
-                    page_data = response.json()
-                    
-                    if not page_data:
-                        log_message(f"Страница {page} не содержит результатов")
-                        empty_pages_count += 1
-                        
-                        # Если получили 2 пустые страницы подряд, прекращаем запросы
-                        if empty_pages_count >= 2:
-                            log_message("Получено 2 пустые страницы подряд, завершаем пагинацию")
-                            break
-                            
-                        # Иначе продолжаем запросы
-                        continue
-                    else:
-                        # Сбрасываем счетчик пустых страниц, если получены данные
-                        empty_pages_count = 0
-                    
-                    # Добавляем результаты страницы к общему списку
-                    all_results.extend(page_data)
-                    # log_message(f"Получено {len(page_data)} результатов со страницы {page}, всего: {len(all_results)}")
-                    
-                    # Делаем небольшую паузу между запросами, чтобы не перегружать сервер
-                    if page < pages_to_fetch:
-                        time.sleep(0.3)
-                
+                        log_message(f"Ошибка Invidious API: {response.status_code}")
+                        break
+
+                    page_results = response.json()
+                    if not page_results:
+                        break
+
+                    all_results.extend(page_results)
+                    params['page'] += 1
+
+                    # Проверяем, достигли ли мы лимита
+                    if len(all_results) >= max_results:
+                        break
+
                 # Ограничиваем количество результатов
                 results = all_results[:max_results] if len(all_results) > max_results else all_results
-                
+
                 log_message(f"Всего получено {len(all_results)} результатов от Invidious API, возвращается {len(results)}")
                 return results
-                
+
             except Exception as e:
                 log_message(f"Ошибка при поиске через Invidious API: {e}")
                 log_message(f"Трассировка: {traceback.format_exc()}")
                 status_var.set(f"Ошибка: {str(e)}")
                 return None
-        
+
         # Функция для поиска через официальный YouTube API
 
         def search_via_youtube_api():
             """Выполняет поиск видео через официальный YouTube API с пагинацией"""
-            log_message("🔥 Эта версия точно из .exe")
+
             query = search_var.get().strip()
             api_key = api_key_var.get().strip()
-            
+
             if not query:
                 status_var.set("Введите поисковый запрос")
                 return None
-            
+
             if not api_key:
                 status_var.set("Введите API Key для поиска")
                 return None
-            
+
             status_var.set("Выполняется поиск...")
             log_message(f"INFO Поиск по запросу: {query}")
-            
+
             # Параметры поиска
             search_type = type_var.get().strip()
             order = order_var.get().strip()
             max_results = int(max_results_var.get().strip())
             search_in_descriptions = search_in_descriptions_var.get()
-            
+
             try:
                 base_url = "https://www.googleapis.com/youtube/v3/search"
                 params = {
@@ -558,60 +536,47 @@ def search_youtube_videos():
                     'type': search_type,
                     'order': order
                 }
-                
+
                 all_items = []
                 next_page_token = None
                 total_results = 0
-                
+
                 # Делаем запросы до тех пор, пока не достигнем максимального количества результатов
                 # или пока API не вернет пустую страницу
-                
+
                 max_iterations = 10
                 iteration_count = 0
                 api_request_count = 0  # Глобальная переменная для подсчёта запросов
-                
-                while True:
-                    # log_message("Начало итерации цикла")
-                    iteration_count += 1
 
-                    if iteration_count > max_iterations:
-                        log_message("Цикл завершён из-за превышения максимального количества итераций")
-                        break
-
+        # Делаем запросы до тех пор, пока не достигнем максимального количества результатов
+                while len(all_items) < max_results:
                     if next_page_token:
                         params['pageToken'] = next_page_token
 
                     response = requests.get(base_url, params=params)
-                    api_request_count += 1  # Увеличиваем счётчик запросов
-                    # log_message(f"Запрос #{api_request_count} к API: {response.url}")
-                    log_message(f"SUCCESS Ответ от API получен. Код статуса: {response.status_code}")
-
                     if response.status_code != 200:
                         log_message(f"Ошибка API: {response.status_code}")
                         break
 
                     data = response.json()
                     items = data.get('items', [])
-                    total_results = data.get('pageInfo', {}).get('totalResults', 0)
-
-                    # Добавляем текущие результаты
                     all_items.extend(items)
 
                     # Проверяем, достигли ли мы максимального количества результатов
                     if len(all_items) >= max_results or not data.get('nextPageToken'):
-                        # log_message("Цикл завершён: достигнуто максимальное количество результатов или отсутствует токен следующей страницы")
                         break
 
                     # Получаем токен следующей страницы
                     next_page_token = data.get('nextPageToken')
+
                     log_message(f"Получен токен следующей страницы: {next_page_token}")
 
                 log_message(f"INFO Всего выполнено запросов к API: {api_request_count}")
-                
+
                 # Получаем описания и длительности для всех найденных видео
                 video_descriptions.clear()
                 video_durations = {}
-                
+
                 # Разбиваем video_ids на части по 50, так как API имеет ограничение
                 video_ids = [item['id']['videoId'] for item in all_items if item['id'].get('kind') == 'youtube#video']
                 for i in range(0, len(video_ids), 50):
@@ -632,40 +597,36 @@ def search_youtube_videos():
                             duration = video['contentDetails']['duration']
                             video_descriptions[video_id] = description
                             video_durations[video_id] = duration
-                            
-                
+
                 # Фильтруем результаты
                 filtered_items = []
                 for item in all_items:
                     if item['id'].get('kind') != 'youtube#video':
                         continue
-                        
+
                     video_id = item['id']['videoId']
                     if search_in_descriptions:
                         description = video_descriptions.get(video_id, '')
                         if query.lower() not in description.lower():
                             continue
-                            
+
                     # Добавляем длительность в данные о видео
                     duration = video_durations.get(video_id)
                     item['duration'] = format_duration(duration) if duration else 'N/A'
                     filtered_items.append(item)
                     if len(filtered_items) >= max_results:
                         break
-                
+
                 total_results = data.get('pageInfo', {}).get('totalResults', 0)
                 log_message(f"INFO Всего найдено результатов: {min(total_results, max_results)}")
                 log_message(f"INFO После фильтрации осталось: {len(filtered_items)}")
-                log_message(f"DEBUG Возвращается {len(filtered_items)} результатов")
                 return {'items': filtered_items, 'video_stats': {}}
 
-          
             except Exception as e:
                 log_message(f"ERROR Ошибка при выполнении поиска через YouTube API: {e}")
                 log_message(f"Трассировка: {traceback.format_exc()}")
                 status_var.set(f"Ошибка: {str(e)}")
                 return None
-
 
         def show_description():
             """Показывает описание выбранного видео в окне с возможностью копирования"""
@@ -673,7 +634,7 @@ def search_youtube_videos():
             if selected and selected in video_urls:
                 video_url = video_urls[selected]
                 video_id = video_url.split('v=')[1]
-                
+
                 # Проверяем, загружено ли описание
                 if video_id not in video_descriptions or video_descriptions[video_id] == "Описание будет загружено при запросе":
                     status_var.set("Загрузка описания...")
@@ -694,7 +655,7 @@ def search_youtube_videos():
                             'id': video_id
                         }
                         response = requests.get(videos_url, params=videos_params)
-                        
+
                         if response.status_code == 200:
                             video_data = response.json()
                             description = video_data['items'][0]['snippet']['description']
@@ -703,18 +664,17 @@ def search_youtube_videos():
                         else:
                             description = "Описание недоступно (ошибка загрузки)"
                             log_message(f"Ошибка при загрузке описания через YouTube API: {response.status_code}")
-                    
+
                     # Сохраняем описание
                     video_descriptions[video_id] = description
                 else:
                     description = video_descriptions[video_id]
-        
-                
+
                 # Создаем новое окно для отображения описания
-                desc_window = tk.Toplevel(root)
+                desc_window = tk.Toplevel(search_window)
                 desc_window.title("Описание видео")
                 desc_window.geometry("600x400")
-                
+
                 # Центрируем окно
                 desc_window.update_idletasks()
                 screen_width = desc_window.winfo_screenwidth()
@@ -722,43 +682,43 @@ def search_youtube_videos():
                 x = (screen_width - 600) // 2
                 y = (screen_height - 400) // 2
                 desc_window.geometry(f"600x400+{x}+{y}")
-                
+
                 # Делаем окно модальным
-                desc_window.transient(root)
+                desc_window.transient(search_window)
                 desc_window.grab_set()
-                
+
                 # Создаем текстовое поле с прокруткой
                 frame = ttk.Frame(desc_window, padding=10)
                 frame.pack(fill=tk.BOTH, expand=True)
-                
+
                 # Отображаем URL видео сверху
                 url_label = ttk.Label(frame, text=f"URL видео: {video_url}")
                 url_label.pack(anchor=tk.W, pady=(0, 10))
-                
+
                 # Текстовое поле с прокруткой
                 text_frame = ttk.Frame(frame)
                 text_frame.pack(fill=tk.BOTH, expand=True)
-                
+
                 scrollbar = ttk.Scrollbar(text_frame)
                 scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-                
+
                 text_widget = tk.Text(text_frame, wrap=tk.WORD, yscrollcommand=scrollbar.set)
                 text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-                
+
                 scrollbar.config(command=text_widget.yview)
-                
+
                 # Вставляем описание в текстовое поле
                 text_widget.insert(tk.END, description)
-                
+
                 # Делаем текстовое поле только для чтения, но с возможностью выделения и копирования
                 text_widget.config(state=tk.DISABLED)
-                
+
                 # Функция для копирования всего текста
                 def copy_all_text():
                     desc_window.clipboard_clear()
                     desc_window.clipboard_append(description)
                     status_label.config(text="Текст скопирован в буфер обмена")
-                    
+
                 # Функция для копирования выделенного текста
                 def copy_selected_text():
                     try:
@@ -769,43 +729,43 @@ def search_youtube_videos():
                             status_label.config(text="Выделенный текст скопирован")
                     except tk.TclError:
                         status_label.config(text="Ничего не выделено")
-                
+
                 # Добавляем кнопки и статусную строку
                 button_frame = ttk.Frame(frame)
                 button_frame.pack(fill=tk.X, pady=(10, 5))
-                
+
                 ttk.Button(button_frame, text="Копировать всё", command=copy_all_text).pack(side=tk.LEFT, padx=5)
                 ttk.Button(button_frame, text="Копировать выделенное", command=copy_selected_text).pack(side=tk.LEFT, padx=5)
                 ttk.Button(button_frame, text="Закрыть", command=desc_window.destroy).pack(side=tk.RIGHT, padx=5)
-                
+
                 # Статусная строка для сообщений
                 status_label = ttk.Label(frame, text="")
                 status_label.pack(anchor=tk.W, pady=(5, 0))
-                
+
                 # Включаем возможность выделения в текстовом поле, даже когда оно disabled
                 def make_text_selectable():
                     text_widget.config(state=tk.NORMAL)
                     text_widget.config(state=tk.DISABLED)
-                
+
                 # Перенастраиваем текстовое поле после того, как оно появится
                 desc_window.after(100, make_text_selectable)
-                
+
                 # Добавляем контекстное меню
                 context_menu = tk.Menu(text_widget, tearoff=0)
                 context_menu.add_command(label="Копировать", command=copy_selected_text)
                 context_menu.add_command(label="Копировать всё", command=copy_all_text)
-                
+
                 def show_context_menu(event):
-                    context_menu.post(event.x_root, event.y_root)
-                    
+                    context_menu.post(event.x_search_window, event.y_search_window)
+
                 text_widget.bind("<Button-3>", show_context_menu)
-                
+
                 # Разрешаем стандартные сочетания клавиш для копирования (Ctrl+C)
                 text_widget.bind("<Control-c>", lambda e: copy_selected_text())
-                
+
                 # Делаем текст копируемым
                 text_widget.bind("<<Copy>>", lambda e: "break")
-                
+
                 # Ждем, пока окно закроется
                 desc_window.wait_window()
 
@@ -817,7 +777,7 @@ def search_youtube_videos():
         context_menu.add_command(label="Показать описание", command=show_description)
 
         # Привязываем контекстное меню к правому клику
-        tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
+        tree.bind("<Button-3>", lambda event: context_menu.post(event.x_search_window, event.y_search_window))
 
         # Обработка двойного клика по результату поиска
         def on_double_click(event):
@@ -829,22 +789,23 @@ def search_youtube_videos():
                     log_message(f"Выбрано видео для загрузки: {video_url}")
                     # Добавляем в очередь загрузки
                     add_to_queue(video_url)
-                    messagebox.showinfo("Добавлено в очередь", 
+                    messagebox.showinfo("Добавлено в очередь",
                                        f"Видео добавлено в очередь загрузки.\n\nURL: {video_url}")
-                    
+
                     # Запускаем обработку очереди, если нет активной загрузки
                     if not is_downloading:
                         threading.Thread(target=process_queue).start()
-        
+
         # Привязываем двойной клик
         tree.bind("<Double-1>", on_double_click)
 
         # Функция для выполнения поиска
 # Функция для выполнения поиска (выбирает API в зависимости от настроек)
 
-
         def perform_search():
             """Выполняет поиск видео через выбранный API"""
+            global conn, cursor  # Указываем, что используем глобальные переменные conn и cursor
+            log_message("DEBUG: Начало выполнения perform_search")
             try:
                 # Очистка интерфейса
                 for item in tree.get_children():
@@ -855,7 +816,62 @@ def search_youtube_videos():
                 # Определяем, какой метод использовать
                 use_alternative = use_alternative_api_var.get()
                 search_in_descriptions = search_in_descriptions_var.get()
+                advanced_search = advanced_search_var.get()
+
                 query = search_var.get().strip()
+
+                # Подключаемся к базе данных, если включён поиск по описаниям
+                if search_in_descriptions:
+                    if not conn or not cursor:  # Проверяем, есть ли активное подключение
+                        log_message("DEBUG: Подключение к базе данных отсутствует, вызываем connect_to_database")
+                        connect_to_database()
+                    if not conn or not cursor:  # Если подключение не удалось
+                        log_message("ERROR: Подключение к базе данных не удалось")
+                        status_var.set("Ошибка подключения к базе данных")
+                        return
+
+                if advanced_search:
+                    if not conn or not cursor:  # Проверяем, есть ли активное подключение
+                        log_message("DEBUG: Подключение к базе данных отсутствует, вызываем connect_to_database")
+                        connect_to_database()
+                    if not conn or not cursor:  # Если подключение не удалось
+                        log_message("ERROR: Подключение к базе данных не удалось")
+                        status_var.set("Ошибка подключения к базе данных")
+                        return
+                    advanced_query = advanced_query_var.get().strip()
+                    if not advanced_query:
+                        status_var.set("Введите запрос для поиска по описаниям")
+                        return
+
+                    log_message(f"INFO Выполняется расширенный поиск по описаниям: {advanced_query}")
+                    db_results = search_in_database(advanced_query)
+                    log_message(f"INFO Найдено совпадений в базе: {len(db_results)}")
+
+                     # Получаем список video_id из результатов поиска
+                    video_ids = [video_id for video_id, _ in db_results]
+
+                    # Выполняем запрос к API для получения полной информации
+                    if use_alternative:
+                        log_message("INFO Подгружаем данные через Invidious API")
+                        # log_message(f"DEBUG: Список video_ids для подгрузки (Invidious): {video_ids}")
+                        results = fetch_videos_from_invidious(video_ids)
+                    else:
+                        log_message("INFO Подгружаем данные через YouTube API")
+                        results = fetch_videos_from_youtube_api(video_ids)
+                        #log_message(f"DEBUG: Список video_ids для подгрузки (Youtube): {video_ids}")
+
+                    # Отображаем результаты в интерфейсе
+                for video in results:
+                    video_id = video.get("videoId")
+                    title = video.get("title", "Без названия")
+                    channel = video.get("channel", "Неизвестный канал")
+                    duration = video.get("duration", "N/A")
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                    video_urls[item_id] = video_url
+
+                status_var.set(f"Найдено совпадений: {len(db_results)}")
+                
 
                 if use_alternative:
                     log_message("INFO Выбран поиск через Invidious API")
@@ -871,7 +887,7 @@ def search_youtube_videos():
                         except Exception as e:
                             conn.rollback()
                             log_message(f"[ERROR] Не удалось очистить таблицу: {e}")
-                        
+
                         for item in results:
                             video_id = item.get("videoId")
                             video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -917,6 +933,14 @@ def search_youtube_videos():
 
                     if search_in_descriptions:
                         log_message("INFO Загрузка описаний в базу данных (YouTube API)")
+                        try:
+                            cursor.execute("DELETE FROM video_descriptions;")
+                            conn.commit()
+                            log_message("INFO Таблица video_descriptions очищена перед новым поиском.")
+                        except Exception as e:
+                            conn.rollback()
+                            log_message(f"[ERROR] Не удалось очистить таблицу: {e}")
+
                         for item in results.get('items', []):
                             video_id = item['id']['videoId']
                             description = video_descriptions.get(video_id, '')
@@ -933,8 +957,6 @@ def search_youtube_videos():
                         results['items'] = filtered_items
 
                     # Вывод результатов YouTube API
-                    log_message(f"DEBUG Тип results: {type(results)}")
-                    log_message(f"DEBUG Содержимое results: {results}")
                     youtube_items = results.get('items', [])
                     video_stats = results.get('video_stats', {})
                     filtered_items = []
@@ -966,23 +988,22 @@ def search_youtube_videos():
                 log_message(f"Трассировка: {traceback.format_exc()}")
                 messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
 
-
-
-  
-
         # Кнопки в нижней части окна
         bottom_button_frame = ttk.Frame(main_frame)
         bottom_button_frame.pack(fill=tk.X, pady=10)
-        
-        ttk.Button(bottom_button_frame, text="Загрузить выбранное", 
+
+        ttk.Button(bottom_button_frame, text="Загрузить выбранное",
                   command=add_to_download_queue).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bottom_button_frame, text="Закрыть", 
-                  command=root.destroy).pack(side=tk.RIGHT, padx=5)
-        
+        ttk.Button(bottom_button_frame, text="Закрыть",
+                  command=search_window.destroy).pack(side=tk.RIGHT, padx=5)
+
         # Запускаем главный цикл
-        root.mainloop()
-        
+        search_window.mainloop()
+
     except Exception as e:
-        log_message(f"ERROR Ошибка в окне поиска YouTube: {e}")
-        log_message(f"Трассировка: {traceback.format_exc()}")
-        messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
+            log_message(f"ERROR Ошибка в окне поиска YouTube: {e}")
+            log_message(f"Трассировка: {traceback.format_exc()}")
+            messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
+            if search_window is not None and search_window.winfo_exists():
+                search_window.destroy()
+            search_window = None  # Сбрасываем переменную в случае ошибки
