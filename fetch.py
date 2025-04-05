@@ -2,51 +2,37 @@ import json
 import re
 from bs4 import BeautifulSoup
 import requests
-from config import format_duration, format_invidious_duration, api_key_var, invidious_url_var
+from config import format_duration, format_invidious_duration, api_key_var  # Убрали invidious_url_var
 from logger import log_message
 
-
-def fetch_videos_from_youtube_api(video_ids):
-    """Получает данные о видео через YouTube API"""
-    log_message("DEBUG: Вызвана функция fetch_videos_from_youtube_api")
-    api_key = api_key_var.get().strip()
-    log_message(f"DEBUG: Используемый API Key: {api_key}")
-    if not api_key:
-        log_message("ERROR: API Key отсутствует")
-        return []
-
+def fetch_videos_from_youtube_api(video_ids, api_key):
+    """Получает полные данные о видео через YouTube API"""
     try:
-        videos_url = "https://www.googleapis.com/youtube/v3/videos"
-        results = []
-        for i in range(0, len(video_ids), 50):  # YouTube API ограничивает запросы до 50 видео за раз
-            chunk = video_ids[i:i+50]
-            log_message(f"DEBUG: Выполняется запрос к YouTube API для video_ids: {chunk}")
-            params = {
-                'key': api_key,
-                'part': 'snippet,contentDetails',
-                'id': ','.join(chunk)
-            }
-            response = requests.get(videos_url, params=params)
-            log_message(f"DEBUG: Ответ YouTube API: {response.status_code} - {response.text[:500]}")
+        if not video_ids:
+            return {'items': []}
+
+        # Разбиваем на группы по 50 видео (максимальный размер запроса)
+        video_groups = [video_ids[i:i + 50] for i in range(0, len(video_ids), 50)]
+        all_videos = []
+
+        for group in video_groups:
+            video_ids_str = ','.join(group)
+            url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id={video_ids_str}&key={api_key}"
+            
+            response = requests.get(url)
             if response.status_code == 200:
                 data = response.json()
-                for video in data.get('items', []):
-                    log_message(f"DEBUG: Обрабатывается видео: {video['id']}")
-                    results.append({
-                        "videoId": video['id'],
-                        "title": video['snippet']['title'],
-                        "channel": video['snippet']['channelTitle'],
-                        "duration": format_duration(video['contentDetails']['duration'])
-                    })
+                all_videos.extend(data.get('items', []))
             else:
-                log_message(f"ERROR: Ошибка YouTube API: {response.status_code}")
-        return results
+                log_message(f"ERROR Ошибка при запросе к YouTube API: {response.status_code}")
+                return {'items': []}
+
+        return {'items': all_videos}
     except Exception as e:
         log_message(f"ERROR Ошибка при получении данных через YouTube API: {e}")
-        return []
-        
+        return {'items': []}
 
-def fetch_videos_from_invidious(video_ids):
+def fetch_videos_from_invidious(video_ids, invidious_url_var):
     """Получает данные о видео через Invidious API"""
     log_message("DEBUG: Вызвана функция fetch_videos_from_invidious")
     invidious_url = invidious_url_var.get().strip()

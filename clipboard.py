@@ -7,6 +7,7 @@ from logger import log_message
 from config import settings
 from queues import add_to_queue
 from config import is_downloading
+from clipboard_utils import get_last_copy_time
 
 last_clipboard = ""
 clipboard_monitor_disabled = False
@@ -39,6 +40,10 @@ def clear_clipboard():
 def clipboard_monitor():
     global last_clipboard, clipboard_monitor_disabled, ignore_clipboard_url, current_downloading_url
     last_clipboard = ""
+    
+    # Очищаем буфер обмена при запуске мониторинга
+    clear_clipboard()
+    log_message("INFO Мониторинг буфера обмена запущен, буфер очищен при старте")
 
     while True:
         time.sleep(1)
@@ -46,16 +51,23 @@ def clipboard_monitor():
             continue
         try:
             current_clipboard = detect_clipboard_change()
-            if not current_clipboard or current_clipboard == last_clipboard:
+            if not current_clipboard:
                 continue
-            if current_clipboard == ignore_clipboard_url:
-                ignore_clipboard_url = None
+
+            # Проверяем, не было ли копирования в последние 2 секунды
+            current_time = time.time()
+            if current_time - get_last_copy_time() < 2:
                 last_clipboard = current_clipboard
                 continue
-            if current_downloading_url and current_clipboard == current_downloading_url:
-                last_clipboard = current_clipboard
-                continue
+
+            # Если дошли сюда, обновляем last_clipboard
             last_clipboard = current_clipboard
+
+            # Проверяем текущую загружаемую ссылку
+            if current_downloading_url and current_clipboard == current_downloading_url:
+                continue
+
+            # Обрабатываем новую ссылку
             if current_clipboard.startswith("https://www.youtube.com"):
                 log_message(f"INFO Обнаружена новая ссылка: {current_clipboard}")
                 if "playlist?list=" in current_clipboard:
@@ -73,7 +85,6 @@ def clipboard_monitor():
                         current_downloading_url = current_clipboard
                         download_thread = threading.Thread(target=download_video, args=(current_clipboard,))
                         download_thread.start()
-                        # Ждём завершения загрузки
                         download_thread.join()  # Блокируем, пока загрузка не завершится
                         current_downloading_url = None
                         clear_clipboard()  # Очищаем буфер после завершения
