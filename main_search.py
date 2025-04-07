@@ -8,19 +8,59 @@ import traceback
 import webbrowser
 import pyperclip
 import requests
+import aiohttp
+import asyncio
+
 from ttkwidgets.autocomplete import AutocompleteEntry
 from clipboard_utils import update_last_copy_time
-
 from config import ensure_invidious_running, format_duration, format_invidious_duration, initialize_settings, save_settings, is_downloading
 from config import is_downloading
 from database import connect_to_database, insert_description, search_in_database, is_connected, clear_descriptions_table
 from logger import clear_log, load_log_file, log_message, set_log_box
 from queues import add_to_queue, process_queue
-from fetch import fetch_description_with_bs, fetch_videos_from_invidious
-from fetch import fetch_videos_from_youtube_api
+from fetch import fetch_description_with_bs
 
 settings = initialize_settings()
 search_window = None
+
+def decode_html_entities(text):
+    """Декодирует HTML-сущности в обычный текст"""
+    import html
+    if text:
+        return html.unescape(text)
+    return text
+
+async def fetch_playlist_author(session, invidious_url, playlist_id):
+    """Асинхронно запрашивает данные плейлиста для получения автора"""
+    playlist_endpoint = f"{invidious_url}/api/v1/playlists/{playlist_id}"
+    try:
+        async with session.get(playlist_endpoint) as response:
+            if response.status == 200:
+                data = await response.json()
+                author = decode_html_entities(data.get('author', 'Неизвестный канал'))
+                log_message(f"DEBUG Получен автор плейлиста {playlist_id}: {author}")
+                return playlist_id, author
+            else:
+                log_message(f"ERROR Ошибка при запросе плейлиста {playlist_id}: {response.status}")
+                return playlist_id, "Неизвестный канал"
+    except Exception as e:
+        log_message(f"ERROR Ошибка при асинхронном запросе плейлиста {playlist_id}: {e}")
+        return playlist_id, "Неизвестный канал"
+
+async def fetch_missing_authors(invidious_url, playlist_items):
+    """Собирает авторов для плейлистов с пустым author параллельно"""
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for item in playlist_items:
+            if not item['author']:  # Если author пустой
+                tasks.append(fetch_playlist_author(session, invidious_url, item['playlistId']))
+        
+        if tasks:
+            results = await asyncio.gather(*tasks)
+            author_map = dict(results)
+            for item in playlist_items:
+                if not item['author']:
+                    item['author'] = author_map.get(item['playlistId'], 'Неизвестный канал')
 
 def prepare_tsquery(text):
     # Преобразуем в tsquery формат: концерт & 1991
@@ -31,6 +71,8 @@ def search_youtube_videos():
     """Отображает окно для поиска видео через YouTube API"""
     global search_window  # Используем глобальную переменную
 
+
+    
     # Проверяем, существует ли окно и активно ли оно
     if search_window is not None and search_window.winfo_exists():
         # Если окно уже существует, поднимаем его на передний план
@@ -119,6 +161,8 @@ def search_youtube_videos():
         paste_in_progress = False
 
         # Обработчик нажатия клавиш для вставки текста
+
+       
         def on_key_press(event):
             nonlocal paste_in_progress
             # Проверяем комбинацию Ctrl/Cmd + V (код 86)
@@ -402,7 +446,10 @@ def search_youtube_videos():
         def sort_column(tree, col, reverse):
             """Сортирует таблицу по указанному столбцу"""
             data = [(tree.set(item, col), item) for item in tree.get_children('')]
-            if col == "duration":
+            if col == "duration" and type_var.get() == "channel":
+                # Сортировка по числу видео как числу
+                data.sort(key=lambda x: int(x[0]) if x[0].isdigit() else 0, reverse=reverse)
+            elif col == "duration":
                 def parse_duration(dur):
                     try:
                         parts = dur.split(':')
@@ -467,16 +514,10 @@ def search_youtube_videos():
 
         video_descriptions = {}
 
-        def decode_html_entities(text):
-            """Декодирует HTML-сущности в обычный текст"""
-            import html
-            if text:
-                return html.unescape(text)
-            return text
+
 
         def search_via_invidious(query):
             """Выполняет поиск видео через Invidious API"""
-            # query = search_var.get().strip()
             if not query:
                 status_var.set("Введите поисковый запрос")
                 return None
@@ -486,7 +527,6 @@ def search_youtube_videos():
                 status_var.set("Введите URL Invidious сервера")
                 return None
 
-            # Убираем trailing slash если есть
             if invidious_url.endswith('/'):
                 invidious_url = invidious_url[:-1]
 
@@ -495,28 +535,23 @@ def search_youtube_videos():
             sort_by = order_var.get().strip()
             search_in_descriptions = search_in_descriptions_var.get()
 
-            # Преобразуем параметры сортировки в формат Invidious
             sort_map = {
-                "relevance": "relevance",  # По релевантности
-                "date": "date",            # По дате
-                "rating": "rating",        # По рейтингу
-                "viewCount": "views",      # По просмотрам
-                "title": "alphabetical"    # По алфавиту
+                "relevance": "relevance",
+                "date": "date",
+                "rating": "rating",
+                "viewCount": "views",
+                "title": "alphabetical"
             }
-
             invidious_sort = sort_map.get(sort_by, "relevance")
 
-            # Преобразуем тип поиска в формат Invidious
             type_map = {
                 "video": "video",
                 "channel": "channel",
-                "playlist": "playlist",
+                "playlist": "playlist"
             }
-
             invidious_type = type_map.get(search_type, "video")
 
             try:
-                # Если используется локальный сервер Invidious — проверяем, запущен ли он
                 if "localhost" in invidious_url or "127.0.0.1" in invidious_url:
                     ensure_invidious_running()
 
@@ -526,14 +561,13 @@ def search_youtube_videos():
                     'sort_by': invidious_sort,
                     'page': 1
                 }
-
                 params['q'] = query
 
                 all_results = []
                 while len(all_results) < max_results:
                     response = requests.get(api_endpoint, params=params)
                     if response.status_code != 200:
-                        log_message(f"Ошибка Invidious API: {response.status_code}")
+                        log_message(f"ERROR Ошибка Invidious API: {response.status_code}")
                         break
 
                     page_results = response.json()
@@ -542,19 +576,16 @@ def search_youtube_videos():
 
                     all_results.extend(page_results)
                     params['page'] += 1
-
-                    # Проверяем, достигли ли мы лимита
                     if len(all_results) >= max_results:
                         break
 
-                # Ограничиваем количество результатов
                 results = all_results[:max_results] if len(all_results) > max_results else all_results
+                log_message(f"INFO Всего найдено результатов: {len(results)}")
 
-                # Обрабатываем результаты в зависимости от типа поиска
                 filtered_items = []
-                video_descriptions = {}  # Словарь для хранения описаний видео
-                seen_urls = set()  # Множество для отслеживания уже добавленных URL
-                seen_ids = set()   # Множество для отслеживания уже добавленных ID
+                video_descriptions = {}
+                seen_urls = set()
+                seen_ids = set()
 
                 for item in results:
                     try:
@@ -562,7 +593,7 @@ def search_youtube_videos():
                             if item.get('type') != 'video':
                                 continue
                             video_id = item.get('videoId')
-                            if video_id in seen_ids:  # Проверяем ID видео
+                            if video_id in seen_ids:
                                 continue
                             seen_ids.add(video_id)
                             title = decode_html_entities(item.get('title', 'Без названия'))
@@ -570,63 +601,80 @@ def search_youtube_videos():
                             duration = format_invidious_duration(item.get('lengthSeconds', 0))
                             video_url = f"https://www.youtube.com/watch?v={video_id}"
                             
-                            # Загружаем описание через BeautifulSoup
-                            description = fetch_description_with_bs(video_url)
-                            video_descriptions[video_id] = description
-                        elif search_type == 'playlist':
-                            if item.get('type') != 'playlist':
-                                continue
-                            playlist_id = item.get('playlistId')
-                            if playlist_id in seen_ids:  # Проверяем ID плейлиста
-                                continue
-                            seen_ids.add(playlist_id)
-                            title = decode_html_entities(item.get('title', 'Без названия'))
-                            channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
-                            duration = 'Плейлист'
-                            video_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+                            if search_in_descriptions:
+                                description = fetch_description_with_bs(video_url)
+                                video_descriptions[video_id] = description
+                                if query.lower() not in description.lower():
+                                    continue
+
                         elif search_type == 'channel':
                             if item.get('type') != 'channel':
                                 continue
                             channel_id = item.get('authorId')
-                            if channel_id in seen_ids:  # Проверяем ID канала
+                            if channel_id in seen_ids:
                                 continue
                             seen_ids.add(channel_id)
-                            title = decode_html_entities(item.get('title', 'Без названия'))
-                            channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
-                            duration = 'Канал'
+                            title = decode_html_entities(item.get('author', 'Без названия'))
+                            channel = title
                             video_url = f"https://www.youtube.com/channel/{channel_id}"
 
-                        # Если включен поиск по описаниям, фильтруем результаты
-                        if search_in_descriptions:
-                            description = video_descriptions.get(video_id, '')
-                            if query.lower() not in description.lower():
+                        elif search_type == 'playlist':
+                            if item.get('type') != 'playlist':
                                 continue
+                            playlist_id = item.get('playlistId')
+                            if playlist_id in seen_ids:
+                                continue
+                            seen_ids.add(playlist_id)
+                            title = decode_html_entities(item.get('title', 'Без названия'))
+                            channel = decode_html_entities(item.get('author', '').strip())
+                            video_count = item.get('videoCount', 'N/A')
+                            video_url = f"https://www.youtube.com/playlist?list={playlist_id}"
 
-                        # Проверяем, не был ли уже добавлен этот URL
-                        if video_url not in seen_urls:
+                            filtered_items.append({
+                                'type': search_type,
+                                'playlistId': playlist_id,
+                                'title': title,
+                                'author': channel,  # Оставляем как есть, заполним позже
+                                'video_count': video_count,
+                                'video_url': video_url
+                            })
+
+                        if search_type != 'playlist' and video_url not in seen_urls:
                             seen_urls.add(video_url)
-                            filtered_items.append(item)
-                            
+                            filtered_items.append({
+                                'type': search_type,
+                                'videoId': video_id if search_type == 'video' else None,
+                                'channelId': channel_id if search_type == 'channel' else None,
+                                'playlistId': playlist_id if search_type == 'playlist' else None,
+                                'title': title,
+                                'author': channel,
+                                'lengthSeconds': item.get('lengthSeconds', 0) if search_type == 'video' else None,
+                                'video_url': video_url
+                            })
+
                     except Exception as e:
                         log_message(f"ERROR Ошибка при обработке результата Invidious API: {e}")
                         log_message(f"DEBUG Данные элемента: {item}")
 
-                log_message(f"INFO Всего найдено результатов: {len(results)}")
+                # Если есть плейлисты, проверяем и заполняем авторов асинхронно
+                if search_type == 'playlist':
+                    log_message("DEBUG Запуск асинхронного запроса авторов плейлистов")
+                    asyncio.run(fetch_missing_authors(invidious_url, [item for item in filtered_items if item['type'] == 'playlist']))
+                    log_message("DEBUG Асинхронные запросы завершены")
+
                 log_message(f"INFO После фильтрации осталось: {len(filtered_items)}")
-                log_message(f"INFO Добавлено {len(filtered_items)} элементов в таблицу (Invidious API)")
                 status_var.set(f"Найдено результатов: {len(filtered_items)}")
 
-                return filtered_items
+                return {'items': filtered_items, 'channel_stats': {}}
 
             except Exception as e:
-                log_message(f"Ошибка при поиске через Invidious API: {e}")
+                log_message(f"ERROR Ошибка при поиске через Invidious API: {e}")
                 log_message(f"Трассировка: {traceback.format_exc()}")
                 status_var.set(f"Ошибка: {str(e)}")
                 return None
 
         def search_via_youtube_api():
             """Выполняет поиск видео через официальный YouTube API с пагинацией"""
-
             query = search_var.get().strip()
             api_key = api_key_var.get().strip()
 
@@ -652,74 +700,117 @@ def search_youtube_videos():
                 params = {
                     'key': api_key,
                     'part': 'snippet',
-                    'maxResults': min(50, max_results),  # Максимум 50 за один запрос
+                    'maxResults': min(50, max_results),
                     'type': search_type,
                     'order': order
                 }
-
                 params['q'] = query
 
                 all_items = []
                 next_page_token = None
 
-                # Делаем запросы до тех пор, пока не достигнем максимального количества результатов
-                # или пока API не вернет пустую страницу
                 while len(all_items) < max_results:
                     if next_page_token:
                         params['pageToken'] = next_page_token
 
                     response = requests.get(base_url, params=params)
                     if response.status_code != 200:
-                        log_message(f"Ошибка API: {response.status_code}")
+                        log_message(f"ERROR Ошибка API: {response.status_code}")
                         break
 
                     data = response.json()
                     items = data.get('items', [])
                     all_items.extend(items)
 
-                    # Проверяем, достигли ли мы максимального количества результатов
                     if len(all_items) >= max_results or not data.get('nextPageToken'):
                         break
 
-                    # Получаем токен следующей страницы
                     next_page_token = data.get('nextPageToken')
-
-                    log_message(f"Получен токен следующей страницы: {next_page_token}")
+                    log_message(f"DEBUG Получен токен следующей страницы: {next_page_token}")
 
                 log_message(f"INFO Всего найдено результатов: {len(all_items)}")
 
                 # Обрабатываем результаты в зависимости от типа поиска
-                filtered_items = []
-                video_descriptions = {}  # Словарь для хранения описаний видео
+                channel_stats = {}
+                playlist_stats = {}
 
-                # Собираем результаты без отображения в таблице
+                if search_type == 'channel':
+                    channel_ids = [item['id']['channelId'] for item in all_items]
+                    channels_url = "https://www.googleapis.com/youtube/v3/channels"
+                    channels_params = {
+                        'key': api_key,
+                        'part': 'statistics',
+                        'id': ','.join(channel_ids)
+                    }
+                    response = requests.get(channels_url, params=channels_params)
+                    if response.status_code == 200:
+                        channel_data = response.json()
+                        for channel in channel_data.get('items', []):
+                            channel_id = channel['id']
+                            video_count = channel['statistics'].get('videoCount', 'N/A')
+                            channel_stats[channel_id] = video_count
+                    else:
+                        log_message(f"ERROR Ошибка при получении статистики каналов: {response.status_code}")
+
+                elif search_type == 'playlist':
+                    playlist_ids = [item['id']['playlistId'] for item in all_items]
+                    playlists_url = "https://www.googleapis.com/youtube/v3/playlists"
+                    playlists_params = {
+                        'key': api_key,
+                        'part': 'contentDetails',
+                        'id': ','.join(playlist_ids)
+                    }
+                    response = requests.get(playlists_url, params=playlists_params)
+                    if response.status_code == 200:
+                        playlist_data = response.json()
+                        log_message(f"DEBUG Получено данных плейлистов: {len(playlist_data.get('items', []))}")
+                        for playlist in playlist_data.get('items', []):
+                            playlist_id = playlist['id']
+                            video_count = playlist['contentDetails'].get('itemCount', 'N/A')
+                            playlist_stats[playlist_id] = video_count
+                            log_message(f"DEBUG Плейлист {playlist_id}: video_count = {video_count}")
+                    else:
+                        log_message(f"ERROR Ошибка при получении статистики плейлистов: {response.status_code}")
+
+                filtered_items = []
+                video_descriptions = {}
+
                 for item in all_items:
-                    video_id = item['id']['videoId']
+                    if search_type == 'video':
+                        video_id = item['id']['videoId']
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    elif search_type == 'channel':
+                        video_id = item['id']['channelId']
+                        video_url = f"https://www.youtube.com/channel/{video_id}"
+                    elif search_type == 'playlist':
+                        video_id = item['id']['playlistId']
+                        video_url = f"https://www.youtube.com/playlist?list={video_id}"
+
                     title = decode_html_entities(item['snippet']['title'])
                     channel = decode_html_entities(item['snippet']['channelTitle'])
-                    video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    
-                    # Если включен поиск по описаниям, загружаем описание
-                    if search_in_descriptions:
+
+                    if search_in_descriptions and search_type == 'video':
                         description = item['snippet'].get('description', '')
                         video_descriptions[video_id] = description
-                        # Фильтруем по описанию
                         if query.lower() not in description.lower():
+                            log_message(f"DEBUG Отфильтровано видео '{title}' - запрос '{query}' не найден в описании")
                             continue
-                    
-                    filtered_items.append({
-                        'id': {'videoId': video_id},
-                        'snippet': {
-                            'title': title,
-                            'channelTitle': channel
-                        },
+
+                    filtered_item = {
+                        'id': {search_type + 'Id': video_id},
+                        'snippet': {'title': title, 'channelTitle': channel},
                         'url': video_url
-                    })
+                    }
+                    if search_type == 'playlist':
+                        filtered_item['video_count'] = playlist_stats.get(video_id, 'N/A')
+                        log_message(f"DEBUG Добавлен плейлист {video_id} с video_count: {filtered_item['video_count']}")
+
+                    filtered_items.append(filtered_item)
 
                 log_message(f"INFO После фильтрации осталось: {len(filtered_items)}")
-                log_message(f"INFO Добавлено {len(filtered_items)} элементов в таблицу (YouTube API)")
+                log_message(f"DEBUG Фильтрация по описаниям активна: {search_in_descriptions}, тип поиска: {search_type}")
 
-                return {'items': filtered_items, 'video_stats': {}}
+                return {'items': filtered_items, 'channel_stats': channel_stats}
 
             except Exception as e:
                 log_message(f"ERROR Ошибка при выполнении поиска через YouTube API: {e}")
@@ -907,8 +998,14 @@ def search_youtube_videos():
         def perform_search():
             """Выполняет поиск видео через выбранный API"""
             log_message("DEBUG: Начало выполнения perform_search")
+            search_type = type_var.get().strip()
+            
+
+            
             try:
                 # Сохраняем текущий поисковый запрос
+                status_var.set(f"Поиск...")
+                # search_window.update()
                 settings["last_search_query"] = search_var.get().strip()
                 save_settings(settings)
 
@@ -916,8 +1013,12 @@ def search_youtube_videos():
                 use_alternative = use_alternative_api_var.get()
                 search_in_descriptions = search_in_descriptions_var.get()
                 advanced_search = advanced_search_var.get()
-
                 query = search_var.get().strip()
+
+                if search_type == 'channel' or search_type == 'playlist':
+                    tree.heading("duration", text="Количество видео")
+                else:
+                    tree.heading("duration", text="Длительность")
 
                 # Подключаемся к базе данных только для расширенного поиска
                 if advanced_search:
@@ -933,7 +1034,7 @@ def search_youtube_videos():
                     advanced_query = advanced_query_var.get().strip()
                     if not advanced_query:
                         status_var.set("Введите запрос для поиска по описаниям")
-                        log_message(f"Введите запрос для поиска по описаниям")
+                        log_message(f"ERROR Введите запрос для поиска по описаниям")
                         return
 
                     log_message(f"INFO Выполняется расширенный поиск по описаниям: {advanced_query}")
@@ -1029,6 +1130,7 @@ def search_youtube_videos():
                     for video_id, description in db_results:
                         # Ищем видео в результатах API
                         video = None
+
                         if use_alternative:
                             for item in results:
                                 if item.get("videoId") == video_id:
@@ -1058,70 +1160,103 @@ def search_youtube_videos():
                     return
 
                 # Если это не расширенный поиск, просто делаем обычный поиск
-                if use_alternative:
-                    log_message("INFO Выбран поиск через Invidious API")
-                    results = search_via_invidious(query) or []
-                    log_message(f"DEBUG: Получено {len(results)} результатов, начинаем обработку...")
+                if not advanced_search:
+                    if use_alternative:
+                        log_message("INFO Выбран поиск через Invidious API")
+                        results = search_via_invidious(query) or {'items': [], 'channel_stats': {}}
+                        log_message(f"DEBUG: Получено {len(results.get('items', []))} результатов, начинаем обработку...")
 
-                    # Очищаем таблицу перед добавлением новых результатов
-                    for item in tree.get_children():
-                        tree.delete(item)
-                    video_urls.clear()
+                        for item in tree.get_children():
+                            tree.delete(item)
+                        video_urls.clear()
 
-                    # Отображаем результаты в интерфейсе
-                    for item in results:
-                        video_id = item.get("videoId")
-                        title = decode_html_entities(item.get("title", "Без названия"))
-                        channel = decode_html_entities(item.get("author", "Неизвестный канал"))
-                        duration = format_invidious_duration(item.get("lengthSeconds", 0))
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        item_id = tree.insert('', tk.END, values=(title, channel, duration))
-                        video_urls[item_id] = video_url
+                        for item in results.get('items', []):
+                            if search_type == 'video':
+                                video_id = item.get('videoId')
+                                title = decode_html_entities(item.get('title', 'Без названия'))
+                                channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
+                                duration = format_invidious_duration(item.get('lengthSeconds', 0))
+                                video_url = item.get('video_url')
+                            elif search_type == 'channel':
+                                video_id = item.get('channelId')
+                                title = decode_html_entities(item.get('title', 'Без названия'))  # Название канала
+                                channel = title  # Дублируем в "Канал"
+                                duration = 'Канал'  # Без количества видео
+                                video_url = item.get('video_url')
+                            elif search_type == 'playlist':
+                                video_id = item.get('playlistId')
+                                title = decode_html_entities(item.get('title', 'Без названия'))
+                                channel = decode_html_entities(item.get('author', 'Неизвестный канал'))
+                                duration = str(item.get('video_count', 'N/A'))  # Количество видео из Invidious
+                                video_url = item.get('video_url')
 
-                else:
-                    log_message("INFO Выбран поиск через официальный YouTube API")
-                    results = search_via_youtube_api() or {'items': []}
+                            item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                            video_urls[item_id] = video_url
 
-                    # Очищаем таблицу перед добавлением новых результатов
-                    for item in tree.get_children():
-                        tree.delete(item)
-                    video_urls.clear()
-
-                    # Получаем длительности всех видео одним запросом
-                    video_ids = [item['id']['videoId'] for item in results.get('items', [])]
-                    try:
-                        videos_url = "https://www.googleapis.com/youtube/v3/videos"
-                        videos_params = {
-                            'key': api_key_var.get().strip(),
-                            'part': 'contentDetails',
-                            'id': ','.join(video_ids)
-                        }
-                        response = requests.get(videos_url, params=videos_params)
-                        video_durations = {}
-                        if response.status_code == 200:
-                            video_data = response.json()
-                            for video in video_data.get('items', []):
-                                video_id = video['id']
-                                duration = format_duration(video['contentDetails']['duration'])
-                                video_durations[video_id] = duration
-                    except Exception as e:
-                        log_message(f"Ошибка при получении длительностей видео: {e}")
-                        video_durations = {}
-
-                    # Отображаем результаты в интерфейсе
-                    for item in results.get('items', []):
-                        video_id = item['id']['videoId']
-                        title = decode_html_entities(item['snippet']['title'])
-                        channel = decode_html_entities(item['snippet']['channelTitle'])
-                        duration = video_durations.get(video_id, 'N/A')
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                        item_id = tree.insert('', tk.END, values=(title, channel, duration))
-                        video_urls[item_id] = video_url
-
-                    if results:
                         status_var.set(f"Найдено результатов: {len(results.get('items', []))}")
+
                     else:
-                        status_var.set("Результаты не найдены")
+                        log_message("INFO Выбран поиск через официальный YouTube API")
+                        results = search_via_youtube_api() or {'items': [], 'channel_stats': {}}
+
+                        for item in tree.get_children():
+                            tree.delete(item)
+                        video_urls.clear()
+
+                        # Обработка результатов в зависимости от типа поиска
+                        if search_type == 'video':
+                            video_ids = [item['id']['videoId'] for item in results.get('items', [])]
+                            try:
+                                videos_url = "https://www.googleapis.com/youtube/v3/videos"
+                                videos_params = {
+                                    'key': api_key_var.get().strip(),
+                                    'part': 'contentDetails',
+                                    'id': ','.join(video_ids)
+                                }
+                                response = requests.get(videos_url, params=videos_params)
+                                video_durations = {}
+                                if response.status_code == 200:
+                                    video_data = response.json()
+                                    for video in video_data.get('items', []):
+                                        video_id = video['id']
+                                        duration = format_duration(video['contentDetails']['duration'])
+                                        video_durations[video_id] = duration
+                            except Exception as e:
+                                log_message(f"ERROR Ошибка при получении длительностей видео: {e}")
+                                video_durations = {}
+
+
+
+
+
+                        for item in results.get('items', []):
+                            if search_type == 'video':
+                                video_id = item['id']['videoId']
+                                title = decode_html_entities(item['snippet']['title'])
+                                channel = decode_html_entities(item['snippet']['channelTitle'])
+                                duration = video_durations.get(video_id, 'N/A')
+                                video_url = f"https://www.youtube.com/watch?v={video_id}"
+                            elif search_type == 'channel':
+                                video_id = item['id']['channelId']
+                                title = decode_html_entities(item['snippet']['title'])
+                                channel = decode_html_entities(item['snippet']['channelTitle'])
+                                duration = results['channel_stats'].get(video_id, 'N/A')
+                                video_url = f"https://www.youtube.com/channel/{video_id}"
+                            elif search_type == 'playlist':
+                                video_id = item['id']['playlistId']
+                                title = decode_html_entities(item['snippet']['title'])
+                                channel = decode_html_entities(item['snippet']['channelTitle'])  # Исправлено с item.get('author')
+                                duration = str(item.get('video_count', 'N/A'))  # Используем video_count из filtered_items
+                                log_message(f"DEBUG: {duration}")
+                                video_url = f"https://www.youtube.com/playlist?list={video_id}"
+
+                            item_id = tree.insert('', tk.END, values=(title, channel, duration))
+                            video_urls[item_id] = video_url
+
+                        if results:
+                            status_var.set(f"Найдено результатов: {len(results.get('items', []))}")
+                        else:
+                            status_var.set("Результаты не найдены")
 
             except Exception as e:
                 log_message(f"ERROR Ошибка в perform_search: {e}")
