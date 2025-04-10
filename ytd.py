@@ -4,15 +4,16 @@ import threading
 import time
 import msvcrt  # Для Windows
 
-from config import initialize_settings, save_settings
+from config import load_settings, settings, save_settings
 from tray import run_tray
 from clipboard import clear_clipboard, start_monitoring
 from queues import check_queue_on_startup, ensure_queue_file_exists
 from logger import LOG_FILE, log_message
 LOCK_FILE = "lockfile.lock"
 
-# Инициализация настроек
-settings = initialize_settings()
+# Перезагружаем settings при запуске
+# settings.clear()  # Очищаем текущие значения
+settings.update(load_settings())  # Загружаем актуальные из файла
 
 # Гарантированно создаём лог-файл
 try:
@@ -30,10 +31,6 @@ if "download_format" not in settings:
 clear_clipboard()
 start_monitoring()
 ensure_queue_file_exists()
-
-# Запуск трея и очереди в отдельных потоках
-# threading.Thread(target=run_tray, daemon=True).start()
-# threading.Thread(target=check_queue_on_startup).start()
 
 def is_already_running():
     try:
@@ -60,9 +57,7 @@ def main():
 
     try:
         # Инициализируем настройки
-        initialize_settings()
-        log_message("Программа запущена")
-        
+        # initialize_settings()
         # Запускаем трей
         run_tray()
 
@@ -81,5 +76,5 @@ if __name__ == "__main__":
     main()
 
 # Держим программу открытой
-while True:
-    time.sleep(10)
+# while True:
+#     time.sleep(10)

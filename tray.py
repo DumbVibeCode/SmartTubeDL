@@ -1,14 +1,17 @@
 import os
 import time
+from queues import get_queue_count
+import ui
+import utils
 from PIL import Image, ImageDraw
-from config import set_format_mp3, set_format_mp4, set_quality_1080p, set_quality_480p, set_quality_720p, show_settings, toggle_auto_capture as config_toggle_auto_capture, toggle_conversion as config_toggle_conversion, settings
+from config import save_settings, set_format_mp3, set_format_mp4, set_quality_1080p, set_quality_480p, set_quality_720p, show_settings, toggle_auto_capture as config_toggle_auto_capture, toggle_conversion as config_toggle_conversion
 from download_history import show_history
 from logger import log_message
-from main_search import search_youtube_videos
-from queues import get_queue_count
+from ui import search_youtube_videos, settings, save_settings_var, search_window
 from pystray import MenuItem as item, Icon
-from config import initialize_settings, format_size
-import utils
+from config import format_size, save_settings
+import threading
+import sys
 
 download_status = "Ожидание..."
 
@@ -137,6 +140,32 @@ def run_tray():
     tray_icon.menu = generate_menu()
     tray_icon.run()
 
-def exit_app(icon, item):
-    tray_icon.stop()
-    os._exit(0)
+def exit_app():
+    """Завершает работу программы, сохраняя настройки при необходимости"""
+    try:
+        # Проверяем, нужно ли сохранять настройки
+        should_save = settings.get("save_settings_on_exit", False)
+        
+        if should_save:
+            save_settings(settings)
+            log_message("INFO Все настройки сохранены при выходе из программы")
+        else:
+            log_message("INFO Выход без сохранения настроек")
+
+        # Закрываем окно поиска, если оно открыто
+        if search_window is not None and getattr(search_window, "winfo_exists", lambda: False)():
+            try:
+                search_window.destroy()
+                log_message("INFO Окно поиска закрыто при выходе")
+            except Exception as e:
+                log_message(f"ERROR Не удалось закрыть окно поиска: {e}")
+
+        # Уничтожаем иконку трея
+        tray_icon.stop()
+
+        # Безопасный выход
+        sys.exit(0)
+
+    except Exception as e:
+        log_message(f"ERROR Ошибка при завершении программы: {e}")
+        os._exit(1)  # Используем os._exit для принудительного завершения

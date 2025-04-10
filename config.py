@@ -13,6 +13,26 @@ is_downloading = False
 api_key_var = ""
 invidious_url_var = ""
 
+# Дефолтные настройки
+DEFAULT_SETTINGS = {
+    "download_folder": os.path.expanduser("~"),
+    "auto_capture_enabled": True,
+    "download_format": "mp4",
+    "video_quality": "1080p",
+    "conversion_enabled": True,
+    "save_settings_on_exit": False,
+    "youtube_api_key": "",
+    "invidious_url": "http://localhost:3000",
+    "last_search_query": "",
+    "search_type": "video",
+    "sort_order": "relevance",
+    "max_results": "10",
+    "use_alternative_api": False,
+    "search_in_descriptions": False,
+    "advanced_search": False,
+    "advanced_query": ""
+}
+
 def format_size(size_bytes):
     """Форматирует размер в читаемый вид (КБ, МБ, ГБ)"""
     if size_bytes < 1024:
@@ -25,17 +45,44 @@ def format_size(size_bytes):
         return f"{size_bytes / (1024 * 1024 * 1024):.1f} ГБ"
 
 def load_settings():
-    """Загружает настройки из файла"""
-    if os.path.exists(SETTINGS_FILE):
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {"download_folder": os.path.expanduser("~")}
+    """Загружает настройки из файла или возвращает дефолтные"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                loaded_settings = json.load(f)
+                log_message(f"INFO Загружены настройки из файла (save_settings_on_exit = {loaded_settings.get('save_settings_on_exit', False)})")
+                return loaded_settings
+        else:
+            log_message("INFO Файл настроек не найден, используются дефолтные настройки")
+            return DEFAULT_SETTINGS.copy()
+    except json.JSONDecodeError:
+        log_message("ERROR Файл настроек поврежден, используются дефолтные настройки")
+        return DEFAULT_SETTINGS.copy()
 
 def save_settings(settings):
-    """Сохраняет настройки в файл"""
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, ensure_ascii=False, indent=2)
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        log_message(f"DEBUG Файл настроек сохранён: {SETTINGS_FILE}")
+    except Exception as e:
+        log_message(f"ERROR Ошибка при сохранении настроек: {e}")
 
+def update_single_setting(key, value):
+    try:
+        with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+            current_settings = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        current_settings = DEFAULT_SETTINGS.copy()
+    
+    current_settings[key] = value
+    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(current_settings, f, ensure_ascii=False, indent=4)
+    log_message(f"DEBUG Настройка {key} обновлена в файле: {value}")
+
+def initialize_settings():
+    return load_settings()
+
+# Остальные функции оставляем как есть
 def toggle_conversion(icon, item):
     settings["conversion_enabled"] = not settings["conversion_enabled"]
     save_settings(settings)
@@ -177,13 +224,11 @@ def format_invidious_duration(seconds):
     except Exception as e:
         log_message(f"Ошибка форматирования времени Invidious: {e}")
         return "00:00:00"
-
-def initialize_settings():
-    settings = load_settings()
-    settings.setdefault("auto_capture_enabled", True)
-    settings.setdefault("download_format", "mp4")
-    settings.setdefault("video_quality", "1080p")
-    settings.setdefault("conversion_enabled", True)
-    return settings
+    
+def bind_var_to_settings(var, key):
+    def callback(*args):
+        settings[key] = var.get()
+        log_message(f"DEBUG settings[{key!r}] обновлено: {var.get()}")
+    var.trace_add("write", callback)    
 
 settings = initialize_settings()
