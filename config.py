@@ -228,7 +228,7 @@ def format_invidious_duration(seconds):
 def bind_var_to_settings(var, key):
     def callback(*args):
         settings[key] = var.get()
-        log_message(f"DEBUG settings[{key!r}] обновлено: {var.get()}")
+        # log_message(f"DEBUG settings[{key!r}] обновлено: {var.get()}")
     var.trace_add("write", callback)    
 
 settings = initialize_settings()

@@ -24,6 +24,57 @@ log_box = None
 video_descriptions = {}
 save_settings_var = None  # Объявляем как глобальную переменную на уровне модуля
 
+def configure_entry(parent, textvariable):
+    ttk.Label(parent, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
+    search_entry = ttk.Entry(parent, textvariable=textvariable, width=50)
+    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+    search_entry.focus()
+
+    # Восстанавливаем стандартное поведение клавиш
+    def select_all(event):
+        event.widget.select_range(0, tk.END)
+        event.widget.icursor(tk.END)
+        return "break"
+
+    def handle_paste(event=None):
+        try:
+            if search_entry.selection_present():
+                search_entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            clipboard = search_entry.clipboard_get()
+            search_entry.insert(tk.INSERT, clipboard)
+            return "break"
+        except tk.TclError:
+            log_message("WARNING: Буфер обмена пуст или недоступен")
+            return None
+
+    def handle_key_press(event):
+        if event.keysym in ("Left", "Right"):
+            return None
+        if event.keysym.lower() == "a" and (event.state & 0x4 or event.state & 0x8):
+            return select_all(event)
+        if event.keysym.lower() == "v" and (event.state & 0x4 or event.state & 0x8):
+            return handle_paste()
+        if event.keysym == "Insert" and (event.state & 0x1):
+            return handle_paste()
+        return None
+
+    def show_context_menu(event):
+        menu = tk.Menu(search_entry, tearoff=0)
+        menu.add_command(label="Вырезать", command=lambda: search_entry.event_generate("<<Cut>>"))
+        menu.add_command(label="Копировать", command=lambda: search_entry.event_generate("<<Copy>>"))
+        menu.add_command(label="Вставить", command=handle_paste)
+        menu.add_command(label="Выделить всё", command=lambda: select_all(event))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    search_entry.bind("<Key>", handle_key_press)
+    search_entry.bind("<Button-3>", show_context_menu)
+    search_entry.bind("<Control-a>", select_all)
+    search_entry.bind("<Control-A>", select_all)
+    search_entry.bind("<Command-a>", select_all)
+    search_entry.bind("<Control-v>", handle_paste)
+    search_entry.bind("<Command-v>", handle_paste)
+
+    return search_entry
          
 
 # Справка по получению API Key
@@ -191,6 +242,7 @@ def search_youtube_videos():
                 settings["advanced_search"] = advanced_search_var.get()
                 settings["advanced_query"] = advanced_query_var.get().strip()
                 settings["save_settings_on_exit"] = save_settings_var.get()
+                settings["use_ytdlp_search"] = use_ytdlp_search_var.get()
                 
                 # Сохраняем результаты поиска (tree и video_urls)
                 search_results = []
@@ -220,6 +272,7 @@ def search_youtube_videos():
         order_var = tk.StringVar(value=settings.get("sort_order", "relevance"))
         max_results_var = tk.StringVar(value=settings.get("max_results", "10"))
         use_alternative_api_var = tk.BooleanVar(value=settings.get("use_alternative_api", False))
+        use_ytdlp_search_var = tk.BooleanVar(value=settings.get("use_ytdlp_search", False))
         search_in_descriptions_var = tk.BooleanVar(value=settings.get("search_in_descriptions", False))
         advanced_search_var = tk.BooleanVar(value=settings.get("advanced_search", False))
         advanced_query_var = tk.StringVar(value=settings.get("advanced_query", ""))
@@ -233,13 +286,78 @@ def search_youtube_videos():
         bind_var_to_settings(invidious_url_var, "invidious_url")
         bind_var_to_settings(use_alternative_api_var, "use_alternative_api")
         bind_var_to_settings(search_in_descriptions_var, "search_in_descriptions")
+        bind_var_to_settings(use_ytdlp_search_var, "use_ytdlp_search")
         bind_var_to_settings(advanced_search_var, "advanced_search")
         bind_var_to_settings(advanced_query_var, "advanced_query")
         bind_var_to_settings(save_settings_var, "save_settings_on_exit")
         bind_var_to_settings(search_var, "last_search_query")
 
-
         search_window.protocol("WM_DELETE_WINDOW", on_closing)
+        
+        # Словарь для управления состоянием элементов
+        ui_state = {
+            "search_in_descriptions_check": {"state": tk.NORMAL},
+            "advanced_search_check": {"state": tk.NORMAL},
+            "advanced_query_entry": {"state": tk.DISABLED},
+            "use_alternative_api_check": {"state": tk.NORMAL},
+            "use_ytdlp_search_check": {"state": tk.NORMAL},
+        }
+
+        # Функция для применения состояния к элементам интерфейса
+        def apply_ui_state():
+            search_in_descriptions_check.config(state=ui_state["search_in_descriptions_check"]["state"])
+            advanced_search_check.config(state=ui_state["advanced_search_check"]["state"])
+            advanced_query_entry.config(state=ui_state["advanced_query_entry"]["state"])
+            use_alternative_api_check.config(state=ui_state["use_alternative_api_check"]["state"])
+            use_ytdlp_search_check.config(state=ui_state["use_ytdlp_search_check"]["state"])
+
+        # Функция для обновления состояния UI на основе текущих переменных
+        def update_ui_state(*args):
+            # Сбрасываем состояния в начальные значения
+            ui_state.update({
+                "search_in_descriptions_check": {"state": tk.NORMAL},
+                "advanced_search_check": {"state": tk.NORMAL},
+                "advanced_query_entry": {"state": tk.DISABLED},
+                "use_alternative_api_check": {"state": tk.NORMAL},
+                "use_ytdlp_search_check": {"state": tk.NORMAL},
+            })
+
+            # Правило 1: При типах "канал" или "плейлист" блокируем поиск по описаниям и расширенный поиск
+            if type_var.get() in ["channel", "playlist"]:
+                ui_state["search_in_descriptions_check"]["state"] = tk.DISABLED
+                ui_state["advanced_search_check"]["state"] = tk.DISABLED
+                search_in_descriptions_var.set(False)
+                advanced_search_var.set(False)
+
+            # Правило 2: "Поиск по описаниям" и "Расширенный поиск" взаимоисключающие
+            if search_in_descriptions_var.get():
+                ui_state["advanced_search_check"]["state"] = tk.DISABLED
+                advanced_search_var.set(False)
+            elif advanced_search_var.get():
+                ui_state["search_in_descriptions_check"]["state"] = tk.DISABLED
+                search_in_descriptions_var.set(False)
+
+            # Правило 3: Поле "Запрос для поиска по описаниям" активно только при включенном "Расширенный поиск"
+            if advanced_search_var.get():
+                ui_state["advanced_query_entry"]["state"] = tk.NORMAL
+
+            # Правило 4: "Искать альтернативным методом" и "Искать через yt-dlp" взаимоисключающие
+            if use_alternative_api_var.get():
+                ui_state["use_ytdlp_search_check"]["state"] = tk.DISABLED
+                use_ytdlp_search_var.set(False)
+            elif use_ytdlp_search_var.get():
+                ui_state["use_alternative_api_check"]["state"] = tk.DISABLED
+                use_alternative_api_var.set(False)
+
+            # Применяем обновленные состояния
+            apply_ui_state()
+
+        # Привязываем обновление состояния ко всем переменным
+        type_var.trace_add("write", update_ui_state)
+        search_in_descriptions_var.trace_add("write", update_ui_state)
+        advanced_search_var.trace_add("write", update_ui_state)
+        use_alternative_api_var.trace_add("write", update_ui_state)
+        use_ytdlp_search_var.trace_add("write", update_ui_state)
 
         # Создаем фреймы
         main_frame = ttk.Frame(search_window, padding=10)
@@ -253,9 +371,8 @@ def search_youtube_videos():
         query_frame = ttk.Frame(search_frame)
         query_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(query_frame, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
-        autocomplete_list = []
-        search_entry = AutocompleteEntry(query_frame, textvariable=search_var, width=50, completevalues=autocomplete_list)
+        # ttk.Label(query_frame, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
+        search_entry = configure_entry(query_frame, search_var)
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
         search_entry.focus()
 
@@ -305,71 +422,17 @@ def search_youtube_videos():
         set_log_box(log_box)
         load_log_file()
 
-        paste_in_progress = False
-
-        # Обработчик нажатия клавиш для вставки текста
-
-       
-        def on_key_press(event):
-            nonlocal paste_in_progress
-            # Проверяем комбинацию Ctrl/Cmd + V (код 86)
-            if (event.state in (4, 8, 12) and event.keycode == 86):  # 4=Ctrl, 8=Command
-                # Отменяем стандартную вставку для английской раскладки, используем нашу собственную функцию
-                if not paste_in_progress:
-                    paste_in_progress = True
-                    search_window.after(10, lambda: handle_paste())
-                    return "break"  # Отменяем стандартную обработку
-            # Обработка Shift+Insert (код 118)
-            elif event.keysym == "Insert" and event.state & 0x0001:
-                if not paste_in_progress:
-                    paste_in_progress = True
-                    search_window.after(10, lambda: handle_paste())
-                    return "break"  # Отменяем стандартную обработку
-
-        def handle_paste():
-            nonlocal paste_in_progress
-            try:
-                clipboard_text = search_window.clipboard_get()
-                # Сохраняем текущее положение курсора
-                cursor_pos = search_entry.index(tk.INSERT)
-
-                # Получаем текущий текст из поля
-                current_text = search_var.get()
-
-                # Вставляем текст из буфера в текущую позицию
-                new_text = current_text[:cursor_pos] + clipboard_text + current_text[cursor_pos:]
-                search_var.set(new_text)
-
-                # Перемещаем курсор после вставленного текста
-                search_entry.icursor(cursor_pos + len(clipboard_text))
-            except tk.TclError:
-                log_message("Буфер обмена пуст")
-            finally:
-                paste_in_progress = False
-
-        # Контекстное меню
-        def show_context_menu(event):
-            menu = tk.Menu(search_entry, tearoff=0)
-            menu.add_command(label="Вставить", command=handle_paste)  # Исправлено: теперь без аргумента
-            menu.add_command(label="Копировать",
-                            command=lambda: search_entry.event_generate("<<Copy>>"))
-            menu.tk_popup(event.x_search_window, event.y_search_window)
-
-        # Привязка событий
-        search_entry.bind("<Key>", on_key_press)  # Обработка всех клавиш
-        search_entry.bind("<Button-3>", show_context_menu)  # Правый клик
+        # Обработчик нажатия клавиш для вставки текст
 
         # Галочка "Поиск по описаниям"
         search_options_frame = ttk.Frame(search_frame)
         search_options_frame.pack(fill=tk.X, pady=5)
 
-        search_in_descriptions_var = tk.BooleanVar(value=settings.get("search_in_descriptions", False))
         search_in_descriptions_check = ttk.Checkbutton(
             search_options_frame,
             text="Поиск по описаниям",
             variable=search_in_descriptions_var,
-            command=lambda: toggle_search_options(search_in_descriptions_var.get(), advanced_search_var.get())
-        )
+            )
         search_in_descriptions_check.pack(side=tk.LEFT, padx=(0, 10))
 
         # Галочка "Искать альтернативным методом"
@@ -379,6 +442,13 @@ def search_youtube_videos():
             variable=use_alternative_api_var
         )
         use_alternative_api_check.pack(side=tk.LEFT, padx=(0, 10))
+        
+        use_ytdlp_search_check = ttk.Checkbutton(
+            search_options_frame,
+            text="Искать через yt-dlp",
+            variable=use_ytdlp_search_var,
+            )
+        use_ytdlp_search_check.pack(side=tk.LEFT, padx=(0, 10))
 
         # Галочка "Расширенный поиск"
         advanced_search_frame = ttk.Frame(search_frame)
@@ -388,35 +458,15 @@ def search_youtube_videos():
             advanced_search_frame,
             text="Расширенный поиск по описаниям",
             variable=advanced_search_var,
-            command=lambda: toggle_search_options(search_in_descriptions_var.get(), advanced_search_var.get())
         )
         advanced_search_check.pack(side=tk.LEFT, padx=(0, 10))
 
         ttk.Label(advanced_search_frame, text="Запрос для поиска по описаниям:").pack(side=tk.LEFT, padx=(0, 5))
-        advanced_query_var = tk.StringVar(value=settings.get("advanced_query", ""))
         advanced_query_entry = ttk.Entry(advanced_search_frame, textvariable=advanced_query_var, width=50, state=tk.DISABLED)
         advanced_query_entry.pack(side=tk.LEFT, padx=(0, 10))
+        advanced_query_entry = configure_entry(query_frame, search_var)
 
         # Функция для переключения состояния галочек
-        def toggle_search_options(search_in_descriptions, advanced_search):
-            if search_in_descriptions:
-                advanced_search_var.set(False)
-                advanced_search_check.config(state=tk.DISABLED)
-                advanced_query_entry.config(state=tk.DISABLED)
-            else:
-                advanced_search_check.config(state=tk.NORMAL)
-                if not advanced_search:
-                    advanced_query_entry.config(state=tk.DISABLED)
-            
-            if advanced_search:
-                search_in_descriptions_var.set(False)
-                search_in_descriptions_check.config(state=tk.DISABLED)
-                advanced_query_entry.config(state=tk.NORMAL)
-            else:
-                search_in_descriptions_check.config(state=tk.NORMAL)
-                if not search_in_descriptions:
-                    advanced_query_entry.config(state=tk.DISABLED)
-
         # Тип контента
         ttk.Label(options_frame, text="Тип:").pack(side=tk.LEFT, padx=(0, 5))
         type_combo = ttk.Combobox(options_frame, textvariable=type_var, width=15,
@@ -459,6 +509,8 @@ def search_youtube_videos():
         ttk.Label(api_frame, text="API Key:").pack(side=tk.LEFT, padx=(0, 5))
         api_key_entry = ttk.Entry(api_frame, textvariable=api_key_var, width=50)
         api_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        api_key_entry = configure_entry(query_frame, search_var)
+
 
         # Invidious API URL
         ttk.Label(api_frame, text="Invidious URL:").pack(side=tk.LEFT, padx=(0, 5))
@@ -478,14 +530,21 @@ def search_youtube_videos():
         ttk.Button(button_frame, text="Как получить API Key?", command=show_api_help).pack(side=tk.RIGHT, padx=5)
 
         def run_search_and_save():
+            log_message(f"DEBUG: Тип tree перед вызовом perform_search: {type(tree)}")
+            if not isinstance(tree, ttk.Treeview):
+                log_message("ERROR: tree не является Treeview")
+                messagebox.showerror("Ошибка", "Внутренняя ошибка: неверный объект таблицы")
+                return
+            
             perform_search(
-                search_var, type_var, order_var, max_results_var,
-                api_key_var, invidious_url_var, use_alternative_api_var,
-                search_in_descriptions_var, advanced_search_var,
-                advanced_query_var, tree, video_urls, status_var,
-                video_descriptions, settings
-            )
-
+                    search_var, type_var, order_var, max_results_var,
+                    api_key_var, invidious_url_var, use_alternative_api_var,
+                    use_ytdlp_search_var, search_in_descriptions_var,
+                    advanced_search_var, advanced_query_var, tree,
+                    video_urls, status_var, video_descriptions, settings,
+                    progress_var, search_window
+                )
+            
             # Обновляем settings["last_search_results"] после поиска
             search_results = []
             for item in tree.get_children():
@@ -517,6 +576,13 @@ def search_youtube_videos():
         # Полоса прокрутки
         scrollbar = ttk.Scrollbar(container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # Прогресс-бар
+        progress_frame = ttk.Frame(search_frame)
+        progress_frame.pack(fill=tk.X, pady=(5, 0))
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_frame, variable=progress_var, maximum=100, length=300)
+        progress_bar.pack(fill=tk.X)
 
         # Поле для вывода сообщений
         status_var = tk.StringVar(value="Введите поисковый запрос и нажмите 'Искать'")
@@ -553,13 +619,14 @@ def search_youtube_videos():
 
 
         # Определение контекстного меню
+# В search_youtube_videos, где создаётся контекстное меню
         context_menu = tk.Menu(tree, tearoff=0)
         context_menu.add_command(label="Копировать URL", command=copy_url)
         context_menu.add_command(label="Добавить в очередь загрузки", command=add_to_download_queue)
         context_menu.add_command(label="Открыть в браузере", command=open_in_browser)
         context_menu.add_command(label="Показать описание", 
-                        command=lambda: show_description(tree, video_urls, search_window, status_var, 
-                                                        use_alternative_api_var, api_key_var, video_descriptions))
+                                command=lambda: show_description(tree, video_urls, search_window, status_var, 
+                                                                video_descriptions))  # Убираем use_alternative_api_var и api_key_var
 
         # Привязываем контекстное меню к правому клику
         tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
@@ -576,6 +643,8 @@ def search_youtube_videos():
 
         ttk.Button(bottom_button_frame, text="Загрузить выбранное", command=add_to_download_queue).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bottom_button_frame, text="Закрыть", command=search_window.destroy).pack(side=tk.RIGHT, padx=5)
+        
+        update_ui_state()
 
         search_window.mainloop()
 

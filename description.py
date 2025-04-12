@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import tkinter as tk
 from tkinter import ttk
 import requests
@@ -5,12 +7,17 @@ import requests
 from fetch import fetch_description_with_bs
 from logger import log_message
 
-def show_description(tree, video_urls, search_window, status_var, use_alternative_api_var, api_key_var, video_descriptions):
+import tkinter as tk
+from tkinter import ttk
+from fetch import fetch_description_with_ytdlp  # Импортируем новую функцию
+from logger import log_message
+
+def show_description(tree, video_urls, search_window, status_var, video_descriptions):
     """Показывает описание выбранного видео в окне с возможностью копирования"""
     selected = tree.selection()[0] if tree.selection() else None
     if selected and selected in video_urls:
         video_url = video_urls[selected]
-        video_id = video_url.split('v=')[1]
+        video_id = video_url.split('v=')[1] if 'v=' in video_url else video_url.split('/')[-1]
 
         # Создаем окно
         desc_window = tk.Toplevel(search_window)
@@ -47,41 +54,38 @@ def show_description(tree, video_urls, search_window, status_var, use_alternativ
         text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.config(command=text_widget.yview)
 
-        # Загрузка описания
-        if video_id not in video_descriptions or video_descriptions[video_id] == "Описание будет загружено при запросе":
-            status_var.set("Загрузка описания...")
-            use_alternative = use_alternative_api_var.get()
-            if use_alternative:
-                description = fetch_description_with_bs(video_url)
-                log_message(f"Описание загружено через BS: {description}")
-            else:
-                api_key = api_key_var.get().strip()
-                videos_url = "https://www.googleapis.com/youtube/v3/videos"
-                videos_params = {
-                    'key': api_key,
-                    'part': 'snippet',
-                    'id': video_id
-                }
-                response = requests.get(videos_url, params=videos_params)
-                if response.status_code == 200:
-                    video_data = response.json()
-                    description = video_data['items'][0]['snippet']['description']
-                    log_message(f"Описание загружено через Youtube API")
+        # Функция для асинхронной загрузки описания
+        def load_description():
+            if video_id not in video_descriptions or video_descriptions[video_id] == "Описание будет загружено при запросе":
+                status_var.set("Загрузка описания...")
+                description = fetch_description_with_ytdlp(video_url)
+                if description:
+                    video_descriptions[video_id] = description
+                    log_message(f"INFO: Описание загружено через yt-dlp для {video_url}")
                 else:
-                    description = "Описание недоступно (ошибка загрузки)"
-                    log_message(f"Ошибка при загрузке описания через YouTube API: {response.status_code}")
-            video_descriptions[video_id] = description
-        else:
-            description = video_descriptions[video_id]
+                    description = "Описание недоступно (ошибка загрузки или отсутствует)"
+                    video_descriptions[video_id] = description
+                    log_message(f"WARNING: Не удалось загрузить описание через yt-dlp для {video_url}")
+            else:
+                description = video_descriptions[video_id]
+                log_message(f"DEBUG: Описание взято из кэша для {video_id}")
 
-        # Вставка описания
-        text_widget.insert(tk.END, description)
-        text_widget.config(state=tk.DISABLED)
+            # Обновляем UI в главном потоке
+            search_window.after(0, lambda: update_description(description))
+
+        def update_description(description):
+            text_widget.insert(tk.END, description)
+            text_widget.config(state=tk.DISABLED)
+            status_var.set("Описание загружено")
+            desc_window.deiconify()  # Показываем окно после загрузки
+
+        # Запускаем загрузку в отдельном потоке
+        threading.Thread(target=load_description, daemon=True).start()
 
         # Функции копирования
         def copy_all_text():
             desc_window.clipboard_clear()
-            desc_window.clipboard_append(description)
+            desc_window.clipboard_append(text_widget.get("1.0", tk.END).strip())
             status_var.set("Текст скопирован в буфер обмена")
 
         def copy_selected_text():
@@ -102,13 +106,6 @@ def show_description(tree, video_urls, search_window, status_var, use_alternativ
         ttk.Button(button_frame, text="Копировать выделенное", command=copy_selected_text).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Закрыть", command=desc_window.destroy).pack(side=tk.RIGHT, padx=5)
 
-        # Статусная строка
-        status_label = ttk.Label(frame, text="")
-        status_label.pack(anchor=tk.W, pady=(5, 0))
-
-        # Делаем текст выделяемым
-        desc_window.after(100, lambda: [text_widget.config(state=tk.NORMAL), text_widget.config(state=tk.DISABLED)])
-
         # Контекстное меню
         context_menu = tk.Menu(text_widget, tearoff=0)
         context_menu.add_command(label="Копировать", command=copy_selected_text)
@@ -118,6 +115,7 @@ def show_description(tree, video_urls, search_window, status_var, use_alternativ
         text_widget.bind("<Control-c>", lambda e: copy_selected_text())
         text_widget.bind("<<Copy>>", lambda e: "break")
 
-        # Показываем окно
-        desc_window.deiconify()
         desc_window.wait_window()
+    else:
+        status_var.set("Выберите видео для просмотра описания")
+        log_message("INFO: Не выбрано видео для показа описания")

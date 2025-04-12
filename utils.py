@@ -1,6 +1,7 @@
 import time
 import html
 import re
+import tkinter as tk
 
 from config import format_size
 from logger import log_message
@@ -13,6 +14,21 @@ last_update_time = time.time()
 last_downloaded_bytes = 0
 
 save_settings_var = None 
+
+# utils.py
+def update_progress(completed: int, total: int, progress_var: tk.DoubleVar = None, root: tk.Tk = None, status_var: tk.StringVar = None):
+    """Обновляет прогресс-бар и статусную строку"""
+    if total > 0:
+        progress = (completed / total) * 100
+        if progress_var and root:
+            root.after(0, lambda: progress_var.set(progress))
+        if status_var:
+            root.after(0, lambda: status_var.set(f"Обработано {completed}/{total} элементов"))
+    else:
+        if progress_var and root:
+            root.after(0, lambda: progress_var.set(0))
+        if status_var:
+            root.after(0, lambda: status_var.set("Нет элементов для обработки"))
 
 def decode_html_entities(text):
     """Декодирует HTML-сущности в обычный текст"""

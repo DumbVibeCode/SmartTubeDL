@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 from queues import get_queue_count
@@ -24,6 +25,9 @@ if not os.path.exists(icon_path):
     tray_icon = Icon("YouTube Downloader", default_image, "YouTube Downloader - Ожидание...", menu=())
 else:
     tray_icon = Icon("YouTube Downloader", Image.open(icon_path), "YouTube Downloader - Ожидание...", menu=())
+    
+
+# Остальной код вашего приложения
 
 def create_image():
     image = Image.new('RGB', (64, 64), (255, 255, 255))
@@ -77,22 +81,18 @@ def update_download_status(status, progress=None, downloaded=0, total_size=0):
 def toggle_auto_capture(icon, item):
     config_toggle_auto_capture(icon, item)
     icon.menu = generate_menu()
-    log_message("Меню обновлено после toggle_auto_capture")
 
 def toggle_conversion(icon, item):
     config_toggle_conversion(icon, item)
     icon.menu = generate_menu()
-    log_message("Меню обновлено после toggle_conversion")
 
 def set_format_mp3_with_update(icon, item):
     set_format_mp3(icon, item)  # Вызываем оригинальную функцию
     icon.menu = generate_menu()  # Обновляем меню
-    log_message("Меню обновлено после выбора MP3")
 
 def set_format_mp4_with_update(icon, item):
     set_format_mp4(icon, item)  # Вызываем оригинальную функцию
     icon.menu = generate_menu()  # Обновляем меню
-    log_message("Меню обновлено после выбора MP4")
 
 def generate_menu():
     queue_count = get_queue_count()
@@ -164,7 +164,7 @@ def exit_app():
         tray_icon.stop()
 
         # Безопасный выход
-        sys.exit(0)
+        os._exit(0)
 
     except Exception as e:
         log_message(f"ERROR Ошибка при завершении программы: {e}")

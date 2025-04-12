@@ -1,9 +1,41 @@
 import json
+import os
 import re
-from bs4 import BeautifulSoup
+import asyncio
 import requests
-from config import format_duration, format_invidious_duration, api_key_var  # Убрали invidious_url_var
+import yt_dlp
+from bs4 import BeautifulSoup
+
+from utils import decode_html_entities
+from config import format_duration, format_invidious_duration, api_key_var
 from logger import log_message
+
+def fetch_description_with_ytdlp(video_url, cookies_file="cookies.txt"):
+    """Асинхронно загружает описание видео через yt-dlp с поддержкой куки"""
+    ydl_opts = {
+        'quiet': True,
+        'skip_download': True,
+        'format': 'best',
+    }
+    
+    if os.path.exists(cookies_file):
+        ydl_opts['cookiefile'] = cookies_file
+        # log_message(f"DEBUG: Используется файл куки для описания: {cookies_file}")
+    
+    def sync_fetch(url):
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            description = info.get('description', '')
+            return decode_html_entities(description) if description else ""
+
+    try:
+        description = sync_fetch (video_url)
+        return description
+    
+    except Exception as e:
+        log_message(f"ERROR: Ошибка при асинхронной загрузке описания через yt-dlp для {video_url}: {e}")
+        return ""
+
 
 def fetch_videos_from_youtube_api(video_ids, api_key):
     """Получает полные данные о видео через YouTube API"""
