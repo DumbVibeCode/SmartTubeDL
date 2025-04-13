@@ -24,12 +24,18 @@ log_box = None
 video_descriptions = {}
 save_settings_var = None  # Объявляем как глобальную переменную на уровне модуля
 
-def configure_entry(parent, textvariable):
-    ttk.Label(parent, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
-    search_entry = ttk.Entry(parent, textvariable=textvariable, width=50)
-    search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-    search_entry.focus()
-
+def configure_entry(parent, textvariable, label_text=None, width=50, focus=False, entry_type="entry", completevalues=None):
+    if label_text:
+        ttk.Label(parent, text=label_text).pack(side=tk.LEFT, padx=(0, 5))
+    
+    if entry_type == "autocomplete" and completevalues is not None:
+        entry = AutocompleteEntry(parent, textvariable=textvariable, width=width, completevalues=completevalues)
+    else:
+        entry = ttk.Entry(parent, textvariable=textvariable, width=width)
+    
+    if focus:
+        entry.focus()
+        
     # Восстанавливаем стандартное поведение клавиш
     def select_all(event):
         event.widget.select_range(0, tk.END)
@@ -38,10 +44,10 @@ def configure_entry(parent, textvariable):
 
     def handle_paste(event=None):
         try:
-            if search_entry.selection_present():
-                search_entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
-            clipboard = search_entry.clipboard_get()
-            search_entry.insert(tk.INSERT, clipboard)
+            if entry.selection_present():
+                entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
+            clipboard = entry.clipboard_get()
+            entry.insert(tk.INSERT, clipboard)
             return "break"
         except tk.TclError:
             log_message("WARNING: Буфер обмена пуст или недоступен")
@@ -59,23 +65,22 @@ def configure_entry(parent, textvariable):
         return None
 
     def show_context_menu(event):
-        menu = tk.Menu(search_entry, tearoff=0)
-        menu.add_command(label="Вырезать", command=lambda: search_entry.event_generate("<<Cut>>"))
-        menu.add_command(label="Копировать", command=lambda: search_entry.event_generate("<<Copy>>"))
-        menu.add_command(label="Вставить", command=handle_paste)
-        menu.add_command(label="Выделить всё", command=lambda: select_all(event))
-        menu.tk_popup(event.x_root, event.y_root)
+            menu = tk.Menu(entry, tearoff=0)
+            menu.add_command(label="Вырезать", command=lambda: entry.event_generate("<<Cut>>"))
+            menu.add_command(label="Копировать", command=lambda: entry.event_generate("<<Copy>>"))
+            menu.add_command(label="Вставить", command=handle_paste)
+            menu.add_command(label="Выделить всё", command=lambda: select_all(event))
+            menu.tk_popup(event.x_root, event.y_root)
 
-    search_entry.bind("<Key>", handle_key_press)
-    search_entry.bind("<Button-3>", show_context_menu)
-    search_entry.bind("<Control-a>", select_all)
-    search_entry.bind("<Control-A>", select_all)
-    search_entry.bind("<Command-a>", select_all)
-    search_entry.bind("<Control-v>", handle_paste)
-    search_entry.bind("<Command-v>", handle_paste)
+    entry.bind("<Key>", handle_key_press)
+    entry.bind("<Button-3>", show_context_menu)
+    entry.bind("<Control-a>", select_all)
+    entry.bind("<Control-A>", select_all)
+    entry.bind("<Command-a>", select_all)
+    entry.bind("<Control-v>", handle_paste)
+    entry.bind("<Command-v>", handle_paste)
 
-    return search_entry
-         
+    return entry         
 
 # Справка по получению API Key
 def show_api_help():
@@ -277,7 +282,7 @@ def search_youtube_videos():
         advanced_search_var = tk.BooleanVar(value=settings.get("advanced_search", False))
         advanced_query_var = tk.StringVar(value=settings.get("advanced_query", ""))
         save_settings_var = tk.BooleanVar(value=settings.get("save_settings_on_exit", False))
-        search_results = settings["last_search_results"]
+        # search_results = settings["last_search_results"]
         
         bind_var_to_settings(type_var, "search_type")
         bind_var_to_settings(order_var, "sort_order")
@@ -372,16 +377,24 @@ def search_youtube_videos():
         query_frame.pack(fill=tk.X, pady=5)
 
         # ttk.Label(query_frame, text="Поисковый запрос:").pack(side=tk.LEFT, padx=(0, 5))
-        search_entry = configure_entry(query_frame, search_var)
+        query_frame = ttk.Frame(search_frame)
+        query_frame.pack(fill=tk.X, pady=5)
+        search_entry = configure_entry(
+            parent=query_frame,
+            textvariable=search_var,
+            label_text="Поисковый запрос:",
+            width=150,
+            focus=True,
+            entry_type="entry"  # или "autocomplete", если нужно
+        )
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        search_entry.focus()
 
         options_frame = ttk.Frame(search_frame)
         options_frame.pack(fill=tk.X, pady=5)
 
         # Галочка "Сохранить настройки"
         # save_settings_var = tk.BooleanVar(value=settings.get("save_settings_on_exit", False))
-        log_message(f"DEBUG Инициализация галочки save_settings_on_exit: {save_settings_var.get()}")
+        # log_message(f"DEBUG Инициализация галочки save_settings_on_exit: {save_settings_var.get()}")
         
         def on_save_settings_change(*args):
             # Обновляем только save_settings_on_exit
@@ -461,10 +474,17 @@ def search_youtube_videos():
         )
         advanced_search_check.pack(side=tk.LEFT, padx=(0, 10))
 
-        ttk.Label(advanced_search_frame, text="Запрос для поиска по описаниям:").pack(side=tk.LEFT, padx=(0, 5))
-        advanced_query_entry = ttk.Entry(advanced_search_frame, textvariable=advanced_query_var, width=50, state=tk.DISABLED)
+        # ttk.Label(advanced_search_frame, text="Запрос для поиска по описаниям:").pack(side=tk.LEFT, padx=(0, 5))
+        advanced_query_entry = configure_entry(
+            parent=advanced_search_frame,
+            textvariable=advanced_query_var,
+            label_text="Запрос для поиска по описаниям:",
+            width=50,
+            focus=False,
+            entry_type="entry"
+        )
+        advanced_query_entry.config(state=tk.DISABLED)
         advanced_query_entry.pack(side=tk.LEFT, padx=(0, 10))
-        advanced_query_entry = configure_entry(query_frame, search_var)
 
         # Функция для переключения состояния галочек
         # Тип контента
@@ -506,24 +526,33 @@ def search_youtube_videos():
         api_frame = ttk.Frame(search_frame)
         api_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(api_frame, text="API Key:").pack(side=tk.LEFT, padx=(0, 5))
-        api_key_entry = ttk.Entry(api_frame, textvariable=api_key_var, width=50)
+        # ttk.Label(api_frame, text="API Key:").pack(side=tk.LEFT, padx=(0, 5))
+        api_key_entry = configure_entry(
+            parent=api_frame,
+            textvariable=api_key_var,
+            label_text="API Key:",
+            width=50,
+            focus=False,
+            entry_type="entry"
+        )
         api_key_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        api_key_entry = configure_entry(query_frame, search_var)
 
 
         # Invidious API URL
-        ttk.Label(api_frame, text="Invidious URL:").pack(side=tk.LEFT, padx=(0, 5))
-        invidious_url_entry = ttk.Entry(api_frame, textvariable=invidious_url_var, width=30)
+        # ttk.Label(api_frame, text="Invidious URL:").pack(side=tk.LEFT, padx=(0, 5))
+        invidious_url_entry = configure_entry(
+            parent=api_frame,
+            textvariable=invidious_url_var,
+            label_text="Invidious URL:",
+            width=30,
+            focus=False,
+            entry_type="entry"
+        )
         invidious_url_entry.pack(side=tk.LEFT, padx=(0, 10))
 
         # Фрейм для кнопок управления
         button_frame = ttk.Frame(search_frame)
         button_frame.pack(fill=tk.X, pady=(10, 5))
-
-
-        
-        # Функция для сохранения API ключа
         
 
 
