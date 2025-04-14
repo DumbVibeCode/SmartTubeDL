@@ -30,7 +30,8 @@ DEFAULT_SETTINGS = {
     "use_alternative_api": False,
     "search_in_descriptions": False,
     "advanced_search": False,
-    "advanced_query": ""
+    "advanced_query": "",
+    "debug_mode": False  # Новый параметр
 }
 
 def format_size(size_bytes):
@@ -51,6 +52,10 @@ def load_settings():
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 loaded_settings = json.load(f)
                 log_message(f"INFO Загружены настройки из файла (save_settings_on_exit = {loaded_settings.get('save_settings_on_exit', False)})")
+                # Добавляем недостающие ключи из DEFAULT_SETTINGS
+                for key, value in DEFAULT_SETTINGS.items():
+                    if key not in loaded_settings:
+                        loaded_settings[key] = value
                 return loaded_settings
         else:
             log_message("INFO Файл настроек не найден, используются дефолтные настройки")
@@ -82,7 +87,6 @@ def update_single_setting(key, value):
 def initialize_settings():
     return load_settings()
 
-# Остальные функции оставляем как есть
 def toggle_conversion(icon, item):
     settings["conversion_enabled"] = not settings["conversion_enabled"]
     save_settings(settings)

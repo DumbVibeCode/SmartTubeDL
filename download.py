@@ -32,7 +32,7 @@ def download_video(url, from_queue=False):
 
     if not from_queue:
         if url in get_queue_urls():
-            log_message(f"URL уже в очереди")
+            log_message(f"INFO URL уже в очереди: {url}")
             is_downloading = False
             return
 
@@ -43,19 +43,27 @@ def download_video(url, from_queue=False):
     globals()['last_update_time'] = time.time()
     globals()['last_downloaded_bytes'] = 0
 
-
     if not url:
+        log_message("ERROR Пустой URL для загрузки")
         is_downloading = False
         return
 
     save_path = settings["download_folder"]
 
+    # Проверяем наличие параметра плейлиста в URL
+    if "&list=" in url:
+        log_message(f"INFO URL содержит параметр плейлиста: {url}. Загружаем только видео.")
+
     try:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True}) as ydl:
             info = ydl.extract_info(url, download=False)
 
+            if not info:
+                log_message(f"ERROR Не удалось получить информацию о видео: {url}")
+                raise Exception("Не удалось извлечь информацию о видео")
+
             if info.get('is_premiere', False) or info.get('live_status', '') == 'is_upcoming':
-                log_message(f"Пропуск премьеры: {url}")
+                log_message(f"INFO Пропуск премьеры: {url}")
                 messagebox.showinfo("Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна.")
                 is_downloading = False
                 if from_queue:
@@ -77,42 +85,37 @@ def download_video(url, from_queue=False):
 
     except yt_dlp.utils.DownloadError as e:
         log_message(f"ERROR Видео недоступно: {url}. Ошибка: {e}")
+        messagebox.showerror("Ошибка", f"Видео недоступно: {str(e)}")
         if from_queue:
             remove_from_queue(url)
-            is_downloading = False
-            # Запускаем следующую загрузку из очереди
-            queue_count = get_queue_count()
-            if queue_count > 0:
-                log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
-                time.sleep(1)
-                threading.Thread(target=process_queue).start()
-            else:
-                log_message("INFO Очередь пуста после ошибки загрузки")
-                clear_queue_file()
-                update_download_status("Ожидание...", 100)
-            return
         is_downloading = False
+        queue_count = get_queue_count()
+        if queue_count > 0:
+            log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
+            time.sleep(1)
+            threading.Thread(target=process_queue).start()
+        else:
+            log_message("INFO Очередь пуста после ошибки загрузки")
+            clear_queue_file()
+            update_download_status("Ожидание...", 100)
         return
-        
+
     except Exception as e:
-        log_message(f"Ошибка при проверке существующего файла: {e}")
-        if "Premieres in" in str(e):
-            log_message(f"INFO Пропуск премьеры: {url}")
+        log_message(f"ERROR Ошибка при проверке видео: {url}. Подробности: {e}")
+        log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
+        messagebox.showerror("Ошибка", f"Не удалось загрузить видео: {str(e)}")
         if from_queue:
             remove_from_queue(url)
-            is_downloading = False
-            # Запускаем следующую загрузку из очереди
-            queue_count = get_queue_count()
-            if queue_count > 0:
-                log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
-                time.sleep(1)
-                threading.Thread(target=process_queue).start()
-            else:
-                log_message("INFO Очередь пуста после ошибки загрузки")
-                clear_queue_file()
-                update_download_status("Ожидание...", 100)
-            return
         is_downloading = False
+        queue_count = get_queue_count()
+        if queue_count > 0:
+            log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
+            time.sleep(1)
+            threading.Thread(target=process_queue).start()
+        else:
+            log_message("INFO Очередь пуста после ошибки загрузки")
+            clear_queue_file()
+            update_download_status("Ожидание...", 100)
         return
 
     update_download_status("Загрузка...", 0)
@@ -132,6 +135,7 @@ def download_video(url, from_queue=False):
         'restrict_filenames': False,
         'windowsfilenames': False,
         'no_color': True,
+        'noplaylist': True,  # Игнорируем плейлист
     }
 
     if settings["download_format"] == "mp3":
@@ -178,24 +182,25 @@ def download_video(url, from_queue=False):
         log_message(f"SUCCESS Загрузка завершена: {url}")
 
     except Exception as e:
-        error_message = f"Ошибка загрузки: {e}"
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", error_message)).start()
+        error_message = f"ERROR Ошибка загрузки видео: {url}. Подробности: {e}"
+        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", f"Ошибка: {str(e)}")).start()
         log_message(error_message)
+        log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
 
         if from_queue:
             remove_from_queue(url)
-            # Продолжаем обработку очереди даже после ошибки
-            is_downloading = False
-            queue_count = get_queue_count()
-            if queue_count > 0:
-                log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку после ошибки")
-                time.sleep(1)
-                threading.Thread(target=process_queue).start()
-            else:
-                log_message("INFO Очередь пуста после ошибки загрузки")
-                clear_queue_file()
-                update_download_status("Ожидание...", 100)
-            return
+        is_downloading = False
+        queue_count = get_queue_count()
+        if queue_count > 0:
+            log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
+            time.sleep(1)
+            threading.Thread(target=process_queue).start()
+        else:
+            log_message("INFO Очередь пуста после ошибки загрузки")
+            clear_queue_file()
+            update_download_status("Ожидание...", 100)
+        return
+
     finally:
         is_downloading = False
         queue_count = get_queue_count()

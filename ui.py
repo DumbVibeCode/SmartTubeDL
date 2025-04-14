@@ -104,8 +104,8 @@ def show_api_help():
     
 def search_youtube_videos():
     """Отображает окно для поиска видео через YouTube API"""
-    global search_window, save_settings_var  # Используем глобальную переменную
-
+    global search_window, save_settings_var, log_box
+    
     # Проверяем, существует ли окно и активно ли оно
     if search_window is not None and search_window.winfo_exists():
         search_window.deiconify()
@@ -118,10 +118,25 @@ def search_youtube_videos():
         return
 
     try:
-        search_window = tk.Tk()
+        
+        from tray import root
+        
+        if root is None:
+            log_message("DEBUG Создание root в search_youtube_videos")
+            root = tk.Tk()
+            root.withdraw()  # Скрываем корневое окно
+            # Обновляем root в tray.py
+            import tray
+            tray.root = root
+
+        # Создаём окно поиска как Toplevel
+        search_window = tk.Toplevel(root)
+        if search_window is None:
+            raise RuntimeError("Не удалось создать окно поиска")
+
         search_window.title("Расширенный поиск YouTube")
         search_window.geometry("1200x850")
-
+        
         # Центрирование окна
         search_window.update_idletasks()
         screen_width = search_window.winfo_screenwidth()
@@ -431,9 +446,11 @@ def search_youtube_videos():
         log_box.tag_config("success", foreground="green", background="#eaffea")
         log_box.tag_config("warning", foreground="orange", background="#fff4d6")
         log_box.tag_config("error", foreground="red", background="#ffecec")
+        log_box.tag_config("debug", foreground="blue", background="#e6f3ff")
+
 
         set_log_box(log_box)
-        load_log_file()
+        search_window.after(0, load_log_file)
 
         # Обработчик нажатия клавиш для вставки текст
 
@@ -675,7 +692,7 @@ def search_youtube_videos():
         
         update_ui_state()
 
-        search_window.mainloop()
+        # search_window.mainloop()
 
     except Exception as e:
         log_message(f"ERROR Ошибка в окне поиска YouTube: {e}")
@@ -683,4 +700,4 @@ def search_youtube_videos():
         messagebox.showerror("Ошибка", f"Произошла ошибка: {e}")
         if search_window is not None and search_window.winfo_exists():
             search_window.destroy()
-        search_window = None  # Сбрасываем переменную в случае ошибки
+        search_window = None
