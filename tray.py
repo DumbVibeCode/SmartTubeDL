@@ -99,15 +99,12 @@ def toggle_debug_mode(icon, item):
     save_settings(settings)
     log_message(f"INFO Режим отладки: {'включён' if settings['debug_mode'] else 'выключён'}")
     try:
-        if settings["debug_mode"] and not old_debug_mode:
-            log_message("DEBUG Вызов show_debug_window из toggle_debug_mode")
-            if root is None:
-                log_message("DEBUG Создание root в toggle_debug_mode")
+        if settings["debug_mode"] and not old_debug_mode:            
+            if root is None:                    
                 root = tk.Tk()
                 root.withdraw()
             show_debug_window(root)
         elif not settings["debug_mode"] and debug_window is not None and debug_window.winfo_exists():
-            log_message("DEBUG Закрытие окна отладки из toggle_debug_mode")
             debug_window.after(0, debug_window.destroy)  # Закрываем в главном потоке
     except Exception as e:
         log_message(f"ERROR Ошибка в toggle_debug_mode: {e}")
@@ -158,11 +155,9 @@ def run_tray():
     global tray_icon, root
     tray_icon.menu = generate_menu()
     if root is None:
-        log_message("DEBUG Создание root в run_tray")
         root = tk.Tk()
         root.withdraw()
     if settings.get("debug_mode", False):
-        log_message("DEBUG Вызов show_debug_window из run_tray")
         show_debug_window(root)
     threading.Thread(target=tray_icon.run, daemon=True).start()
     root.mainloop()
@@ -170,7 +165,6 @@ def run_tray():
 def exit_app():
     global root, tray_icon
     try:
-        log_message(f"DEBUG Начало exit_app, поток: {threading.current_thread().name}")
         should_save = settings.get("save_settings_on_exit", False)
         
         if should_save:
@@ -182,25 +176,20 @@ def exit_app():
         def shutdown_gui():
             try:
                 set_log_box(None)
-                log_message("DEBUG log_box очищен перед выходом")
 
                 if search_window is not None and getattr(search_window, "winfo_exists", lambda: False)():
                     search_window.destroy()
-                    log_message("INFO Окно поиска закрыто при выходе")
 
                 if debug_window is not None and getattr(debug_window, "winfo_exists", lambda: False)():
                     debug_window.destroy()
-                    log_message("INFO Окно отладки закрыто при выходе")
 
                 if root is not None:
                     root.quit()  # Останавливаем mainloop
                     root.destroy()
-                    log_message("INFO Корневое окно tkinter уничтожено")
 
                 if tray_icon:
                     tray_icon.stop()
-                    log_message("DEBUG Трей остановлен")
-                log_message("DEBUG Вызов sys.exit(0)")
+                
                 sys.exit(0)
             except Exception as e:
                 log_message(f"ERROR Не удалось завершить GUI: {e}")

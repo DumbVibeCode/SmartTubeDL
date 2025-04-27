@@ -33,7 +33,7 @@ def detect_clipboard_change():
 def clear_clipboard():
     try:
         pyperclip.copy("")
-        log_message("Буфер обмена очищен.")
+        # log_message("INFO Буфер обмена очищен.")
     except Exception as e:
         log_message(f"Ошибка при очистке буфера обмена: {e}")
 

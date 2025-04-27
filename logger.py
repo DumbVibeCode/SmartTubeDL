@@ -45,10 +45,10 @@ def set_log_box(widget):
     """Устанавливает ссылку на виджет логов"""
     global _log_box_ref
     _log_box_ref = widget
-    if widget is None:
-        log_message("DEBUG log_box очищен")
-    else:
-        log_message("DEBUG log_box установлен")
+    # if widget is None:
+    #     log_message("DEBUG log_box очищен")
+    # else:
+    #     log_message("DEBUG log_box установлен")
 
 def clear_log():
     """Очищает лог-файл и лог-бокс"""
@@ -62,7 +62,7 @@ def clear_log():
             _log_box_ref.delete("1.0", tk.END)
             _log_box_ref.configure(state='disabled')
             _log_box_ref.update()
-        log_message("INFO Лог очищен")
+        log_message("SUCCESS Лог очищен")
     except Exception as e:
         log_message(f"ERROR Ошибка при очистке лога: {e}")
 
@@ -74,10 +74,8 @@ def load_log_file():
             clear_log()
             return
 
-        log_message("DEBUG Начало загрузки лога")
         with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as log:
             lines = log.readlines()
-        log_message(f"DEBUG Прочитано {len(lines)} строк из лога")
 
         if _log_box_ref and hasattr(_log_box_ref, 'winfo_exists') and _log_box_ref.winfo_exists():
             _log_box_ref.configure(state='normal')

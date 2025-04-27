@@ -10,26 +10,21 @@ _window_creating = False
 
 def show_debug_window(master=None):
     global debug_window, log_box, _window_creating
-    log_message("DEBUG Попытка открыть окно отладки")
 
     if _window_creating:
-        log_message("DEBUG Окно уже создаётся, пропускаем")
         return
     if debug_window is not None and debug_window.winfo_exists():
         debug_window.deiconify()
         debug_window.lift()
-        log_message("DEBUG Окно отладки уже открыто, поднято наверх")
         return
 
     _window_creating = True
-    log_message("DEBUG Установка флага _window_creating")
 
     try:
         from tray import root
 
         if master is None:
             if root is None:
-                log_message("DEBUG Создание root в show_debug_window")
                 root = tk.Tk()
                 root.withdraw()
                 import tray
@@ -49,14 +44,12 @@ def show_debug_window(master=None):
         y = (screen_height - height) // 2
         debug_window.geometry(f"{width}x{height}+{x}+{y}")
         debug_window.update_idletasks()
-        log_message("DEBUG Окно отладки создано")
 
         log_frame = ttk.Frame(debug_window, padding=10)
         log_frame.pack(fill=tk.BOTH, expand=True)
 
         log_box = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=20)
         log_box.pack(fill=tk.BOTH, expand=True)
-        log_message("DEBUG ScrolledText для логов создан")
 
         # Настраиваем теги с видимым выделением
         log_box.tag_config("info", foreground="black", background="#f0f0f0", selectbackground="#3399ff", selectforeground="white")
@@ -92,7 +85,6 @@ def show_debug_window(master=None):
         log_box.bind("<Button-3>", show_context_menu)
 
         set_log_box(log_box)
-        log_message("DEBUG log_box подключён")
 
         # Функция для загрузки и фильтрации логов
         def filter_logs(level=None):
@@ -144,34 +136,29 @@ def show_debug_window(master=None):
         def reset_logs():
             """Сбрасывает фильтры и показывает все логи"""
             filter_logs()
-            log_message("DEBUG Логи сброшены через Reset")
+            
 
         def clear_log_with_log():
-            log_message("DEBUG Нажата кнопка Очистить лог")
             clear_log()
-            log_message("DEBUG Завершена очистка лога")
+            
 
         def on_closing():
             global debug_window, log_box, _window_creating
-            log_message("DEBUG Начало закрытия окна отладки")
             try:
                 if debug_window and debug_window.winfo_exists():
                     set_log_box(None)
                     debug_window.destroy()
-                    log_message("DEBUG Окно отладки уничтожено")
             except Exception as e:
                 log_message(f"DEBUG Ошибка при закрытии окна: {e}")
             finally:
                 debug_window = None
                 log_box = None
                 _window_creating = False
-                log_message("DEBUG Сброс флага _window_creating")
 
         debug_window.protocol("WM_DELETE_WINDOW", on_closing)
         debug_window.bind("<Destroy>", lambda e: log_message("DEBUG Событие Destroy для debug_window") if debug_window and debug_window.winfo_exists() and e.widget is debug_window else None)
 
         debug_window.update()
-        log_message("INFO Окно отладки открыто")
 
     except Exception as e:
         log_message(f"ERROR Ошибка при открытии окна отладки: {e}")
@@ -185,4 +172,3 @@ def show_debug_window(master=None):
         log_box = None
     finally:
         _window_creating = False
-        log_message("DEBUG Сброс флага _window_creating после попытки создания")

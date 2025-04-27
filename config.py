@@ -68,7 +68,6 @@ def save_settings(settings):
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
-        log_message(f"DEBUG Файл настроек сохранён: {SETTINGS_FILE}")
     except Exception as e:
         log_message(f"ERROR Ошибка при сохранении настроек: {e}")
 
@@ -82,7 +81,6 @@ def update_single_setting(key, value):
     current_settings[key] = value
     with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
         json.dump(current_settings, f, ensure_ascii=False, indent=4)
-    log_message(f"DEBUG Настройка {key} обновлена в файле: {value}")
 
 def initialize_settings():
     return load_settings()

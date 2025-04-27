@@ -27,7 +27,7 @@ def add_to_queue(url):
     try:
         with open(QUEUE_FILE, "a", encoding="utf-8") as f:
             f.write(f"{url}\n")
-        log_message(f"Добавлено в очередь: {url}")
+        log_message(f"INFO Добавлено в очередь: {url}")
         return True
     except Exception as e:
         log_message(f"Ошибка при добавлении в очередь: {e}")

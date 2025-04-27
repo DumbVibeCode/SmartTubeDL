@@ -240,8 +240,9 @@ def search_youtube_videos():
                     log_message(f"Выбрано видео для загрузки: {video_url}")
                     # Добавляем в очередь загрузки
                     add_to_queue(video_url)
-                    messagebox.showinfo("Добавлено в очередь",
-                                        f"Видео добавлено в очередь загрузки.\n\nURL: {video_url}")
+                    # messagebox.showinfo("Добавлено в очередь",
+                    #                     f"Видео добавлено в очередь загрузки.\n\nURL: {video_url}")
+                    log_message(f"INFO Видео добавлено в очередь загрузки: {video_url}")
 
                     # Запускаем обработку очереди, если нет активной загрузки
                     if not is_downloading:
@@ -632,7 +633,7 @@ def search_youtube_videos():
 
         # Поле для вывода сообщений
         status_var = tk.StringVar(value="Введите поисковый запрос и нажмите 'Искать'")
-        status_label = ttk.Label(results_frame, textvariable=status_var, foreground="blue")
+        status_label = ttk.Label(results_frame, textvariable=status_var, foreground="blue", font=("Arial", 12))
         status_label.pack(anchor=tk.W, pady=(5, 0))
 
         # Treeview для отображения результатов
@@ -660,20 +661,19 @@ def search_youtube_videos():
                 item_id = tree.insert('', tk.END, values=(result['title'], result['channel'], result['duration']))
                 video_urls[item_id] = result['url']
             status_var.set(f"Восстановлено результатов: {len(last_results)}")
+            status_label.config(foreground="green")
             log_message(f"INFO Восстановлено {len(last_results)} результатов поиска")
 
 
 
         # Определение контекстного меню
-# В search_youtube_videos, где создаётся контекстное меню
+        # В search_youtube_videos, где создаётся контекстное меню
         context_menu = tk.Menu(tree, tearoff=0)
         context_menu.add_command(label="Копировать URL", command=copy_url)
         context_menu.add_command(label="Добавить в очередь загрузки", command=add_to_download_queue)
         context_menu.add_command(label="Открыть в браузере", command=open_in_browser)
-        context_menu.add_command(label="Показать описание", 
-                                command=lambda: show_description(tree, video_urls, search_window, status_var, 
-                                                                video_descriptions))  # Убираем use_alternative_api_var и api_key_var
-
+        context_menu.add_command(label="Показать описание", command=lambda: show_description(tree, video_urls, search_window, 
+                                                            status_var, status_label, video_descriptions))
         # Привязываем контекстное меню к правому клику
         tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
 

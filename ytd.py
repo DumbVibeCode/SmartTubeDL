@@ -68,7 +68,6 @@ def main():
                 msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)  # Снимаем блокировку
                 os.close(lock_fd)
                 os.remove(LOCK_FILE)
-                log_message("Блокировка снята, файл удалён")
             except Exception as e:
                 log_message(f"Ошибка при снятии блокировки: {e}")
 

@@ -17,7 +17,7 @@ def connect_to_database(config_path="config.json"):
         with open(config_path, "r", encoding='utf-8') as config_file:
             config = json.load(config_file)
 
-        log_message(f"DEBUG: Попытка подключения к базе данных: dbname={config['dbname']}, user={config['user']}, host={config['host']}, port={config['port']}")
+        log_message(f"INFO: Попытка подключения к базе данных: dbname={config['dbname']}, user={config['user']}, host={config['host']}, port={config['port']}")
 
         _conn = psycopg2.connect(
             dbname=config["dbname"],

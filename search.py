@@ -393,7 +393,7 @@ def search_via_youtube_api(query, api_key, search_type, order, max_results, sear
 
             response = requests.get(base_url, params=params)
             if response.status_code != 200:
-                log_message(f"ERROR Ошибка API: {response.status_code}")
+                log_message(f"ERROR Ошибка API: {response.status_code} - {response.text}")
                 break
 
             data = response.json()
