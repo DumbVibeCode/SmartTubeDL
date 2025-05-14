@@ -108,7 +108,7 @@ def convert_to_mp3(input_file, update_status_callback):
                 return output_file
             else:
                 update_status_callback("Ошибка!")
-                log_message(f"Ошибка при конвертации в MP3: код {process.returncode}")
+                log_message(f"ERROR Ошибка при конвертации в MP3: код {process.returncode}")
                 return None
 
     except Exception as e:
@@ -138,7 +138,7 @@ def convert_to_mp4(input_file, update_status_callback):
             return output_file
         else:
             update_status_callback("Ошибка!")
-            log_message(f"Ошибка при конвертации в MP4: {process.stderr}")
+            log_message(f"ERROR Ошибка при конвертации в MP4: {process.stderr}")
             return None
 
     except Exception as e:

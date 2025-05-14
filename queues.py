@@ -80,10 +80,13 @@ def process_queue():
     """Запускает обработку очереди загрузок"""
     from download import download_video  # Переносим импорт сюда
     # global is_downloading
-    
+    # log_message("DEBUG Проверка состояния is_downloading в process_queue")
     if is_downloading:
-        log_message("Обработка очереди отложена: идёт загрузка")
+        # log_message("DEBUG is_downloading = True, обработка очереди отложена")
         return
+    else:
+        pass
+        #log_message("DEBUG is_downloading = False, продолжаем обработку очереди")
     
     url = get_next_url()
     if not url:

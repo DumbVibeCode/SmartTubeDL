@@ -21,12 +21,14 @@ def detect_clipboard_change():
     global last_clipboard, clipboard_monitor_disabled
     if clipboard_monitor_disabled:
         return None
+    # log_message("DEBUG Вызов detect_clipboard_change")
     try:
         current_clipboard = pyperclip.paste()
+        # log_message(f"DEBUG Содержимое буфера: {current_clipboard}")
         if current_clipboard and current_clipboard != last_clipboard and is_youtube_link(current_clipboard):
             return current_clipboard
     except Exception as e:
-        log_message(f"Ошибка доступа к буферу через pyperclip: {e}")
+        log_message(f"ERROR Ошибка доступа к буферу через pyperclip: {e}")
         time.sleep(1)
     return None
 
@@ -79,15 +81,17 @@ def clipboard_monitor():
                 else:
                     if is_downloading:
                         log_message("INFO Загрузка уже идет, добавляем в очередь")
-                        add_to_queue(current_clipboard)
+                        threading.Thread(target=add_to_queue, args=(current_clipboard,)).start()
                     else:
                         log_message("INFO Запускаем загрузку напрямую")
                         current_downloading_url = current_clipboard
-                        download_thread = threading.Thread(target=download_video, args=(current_clipboard,))
-                        download_thread.start()
-                        download_thread.join()  # Блокируем, пока загрузка не завершится
-                        current_downloading_url = None
-                        clear_clipboard()  # Очищаем буфер после завершения
+                        threading.Thread(target=download_video, args=(current_clipboard,)).start()
+                        clear_clipboard()  # Очищаем буфер после запуска загрузки
+            log_message("DEBUG Проверка текущего содержимого буфера обмена")
+            log_message(f"DEBUG Текущее содержимое: {current_clipboard}")
+            log_message(f"DEBUG Последнее содержимое: {last_clipboard}")
+            log_message(f"DEBUG Текущая загружаемая ссылка: {current_downloading_url}")
+            log_message(f"DEBUG Состояние is_downloading: {is_downloading}")
         except Exception as e:
             log_message(f"ERROR Ошибка при мониторинге буфера обмена: {e}")
 
