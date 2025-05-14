@@ -62,16 +62,29 @@ def prepare_tsquery(text):
     words = re.findall(r'\w+', text)
     return ' & '.join(words)
 
+from logger import log_message  # Предполагается, что log_message импортируется в utils.py
+
 def format_date(date_str):
-    """Преобразует ISO 8601 дату в более читаемый формат"""
+    """Преобразует дату в формат ДД.ММ.ГГГГ"""
     try:
-        # Дата в формате 2021-05-20T15:30:45Z
+        # Убираем возможное время, если есть 'T'
         date_part = date_str.split('T')[0]  # Берем только часть с датой
-        year, month, day = date_part.split('-')
+        
+        # Проверяем формат: YYYY-MM-DD или YYYYMMDD
+        if '-' in date_part:
+            # Формат YYYY-MM-DD
+            year, month, day = date_part.split('-')
+        else:
+            # Формат YYYYMMDD
+            year = date_part[:4]
+            month = date_part[4:6]
+            day = date_part[6:8]
+        
         return f"{day}.{month}.{year}"
     except Exception as e:
-        log_message(f"Ошибка форматирования даты: {e}")
-        return date_str
+        log_message(f"Ошибка форматирования даты: {e}, входная строка: {date_str}")
+        # Возвращаем дату по умолчанию, если не удалось распарсить
+        return "01.01.1970"
 
 # Функция для форматирования числа просмотров
 def format_views(views_count):

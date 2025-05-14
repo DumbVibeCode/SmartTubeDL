@@ -14,9 +14,13 @@ import re
 from queues import add_to_queue, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
 from tray import show_notification, tray_icon, update_download_status
 from config import initialize_settings, settings, is_downloading
-from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed
+from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from description import show_description
+from ui import configure_entry
+from concurrent.futures import ThreadPoolExecutor, as_completed  # Для параллельной загрузки
+from clipboard_utils import update_last_copy_time  # Добавляем импорт
 
 invidious_url_var = ""
 
@@ -30,7 +34,6 @@ def download_video(url, from_queue=False):
 
     is_downloading = True
 
-    # Ensure the queue is processed after the current download finishes
     def on_download_complete():
         global is_downloading
         is_downloading = False
@@ -120,9 +123,6 @@ def download_video(url, from_queue=False):
     }
     selected_quality = quality_map.get(settings["video_quality"], "best")
 
-        # 'cookies-from-browser': True,
-        # 'browser': 'firefox',
-
     ydl_opts = {
         'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
         'cookies': 'cookies.txt',
@@ -131,8 +131,6 @@ def download_video(url, from_queue=False):
         'no_color': True,
         'noplaylist': True,
     }
-
-
 
     if settings["download_format"] == "mp3":
         ydl_opts['format'] = 'bestaudio[ext=m4a]/best[ext=mp3]'
@@ -217,36 +215,38 @@ def progress_hook(d):
     except Exception as e:
         log_message(f"Ошибка в progress_hook: {e}")
 
+import tkinter as tk
+import os
+from config import format_duration, format_invidious_duration, initialize_settings
+from convert import convert_to_mp3, convert_to_mp4
+from download_history import add_to_history
+from logger import log_message
+from tkinter import ttk, messagebox
+import yt_dlp
+import threading
+import time
+import traceback
+from bs4 import BeautifulSoup
+import re
+from queues import add_to_queue, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
+from tray import show_notification, tray_icon, update_download_status
+from config import initialize_settings, settings, is_downloading
+from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from description import show_description
+from ui import configure_entry
+from concurrent.futures import ThreadPoolExecutor, as_completed  # Для параллельной загрузки
+
+invidious_url_var = ""
+
+# ... (функции download_video и progress_hook без изменений, опущены для краткости) ...
+
 def download_channel_with_selection(channel_url):
-    """Отображает окно выбора видео из канала для загрузки"""
     from clipboard import clear_clipboard
     log_message(f"INFO Обработка канала: {channel_url}")
     
     try:
-        # Получаем общее количество видео на канале (для прогресса)
-        try:
-            with yt_dlp.YoutubeDL({'quiet': True, 'flatplaylist': True}) as ydl:
-                log_message("DEBUG Определение общего количества видео на канале...")
-                channel_info = ydl.extract_info(channel_url, process=False)
-                if 'entries' in channel_info:
-                    try:
-                        if hasattr(channel_info['entries'], '__iter__') and not hasattr(channel_info['entries'], '__len__'):
-                            entries_list = list(channel_info['entries'])
-                            total_videos = len(entries_list)
-                        else:
-                            total_videos = len(channel_info['entries'])
-                        log_message(f"DEBUG Предварительно обнаружено {total_videos} видео")
-                    except TypeError:
-                        log_message("DEBUG Не удалось определить количество видео, entries является генератором")
-                        total_videos = "неизвестное количество"
-                else:
-                    total_videos = "неизвестное количество"
-                    log_message("DEBUG Не удалось определить общее количество видео")
-        except Exception as e:
-            log_message(f"ERROR Ошибка при предварительном подсчете видео: {e}")
-            total_videos = "неизвестное количество"
-        
-        # Проверяем корневое окно из tray.py
         from tray import root
         if root is None or not hasattr(root, 'winfo_exists') or not root.winfo_exists():
             log_message("DEBUG Создание нового корневого окна в download_channel_with_selection")
@@ -254,189 +254,19 @@ def download_channel_with_selection(channel_url):
             root.withdraw()
             import tray
             tray.root = root
-        else:
-            pass
 
-        # Создаём окно прогресс-бара как Toplevel
-        progress_window = tk.Toplevel(root)
-        progress_window.title("Загрузка списка видео")
-        progress_window.geometry("400x150")
-        progress_window.resizable(False, False)
-        
-        # Центрируем окно прогресс-бара
-        progress_window.update_idletasks()
-        screen_width = progress_window.winfo_screenwidth()
-        screen_height = progress_window.winfo_screenheight()
-        x = (screen_width - 400) // 2
-        y = (screen_height - 150) // 2
-        progress_window.geometry(f"400x150+{x}+{y}")
-        
-        # Создаем метки и прогресс-бар
-        tk.Label(progress_window, text="Загрузка списка видео с канала...", font=("Arial", 10)).pack(pady=(20, 5))
-        
-        if isinstance(total_videos, int):
-            info_label = tk.Label(progress_window, text=f"Обнаружено предварительно: {total_videos} видео", font=("Arial", 9))
-        else:
-            info_label = tk.Label(progress_window, text="Получаем информацию о видео...", font=("Arial", 9))
-        info_label.pack(pady=(0, 10))
-        
-        progress = ttk.Progressbar(progress_window, length=350, mode="indeterminate")
-        progress.pack(pady=(0, 10))
-        progress.start(10)
-        
-        cancel_button = ttk.Button(progress_window, text="Отмена", command=progress_window.destroy)
-        cancel_button.pack(pady=(0, 20))
-        
-        # Переменная для отслеживания отмены
-        cancelled = [False]
-        channel_result = [None]
-        
-        def check_cancelled():
-            if not progress_window.winfo_exists():
-                cancelled[0] = True
-                return True
-            return False
-        
-        # Обновляем интерфейс
-        progress_window.update()
-        
-        # Задаем параметры для загрузки всех видео с канала
-        ydl_opts = {
-            'quiet': True,
-            'extract_flat': True,
-            'skip_download': True,
-            'ignoreerrors': True,
-            'playlistend': 10000,
-            'max_downloads': 10000,
-            'lazy_playlist': False,
-            'no_color': True,
-        }
-        
-        # Функция для загрузки информации о канале в фоновом потоке
-        def load_channel_info():
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(channel_url, download=False)
-                    channel_result[0] = info
-            except Exception as e:
-                log_message(f"ERROR Ошибка при загрузке информации о канале: {e}")
-                channel_result[0] = None
-        
-        # Запускаем загрузку в отдельном потоке
-        channel_info_thread = threading.Thread(target=load_channel_info)
-        channel_info_thread.daemon = True
-        channel_info_thread.start()
-        
-        # Обновляем индикатор прогресса, пока идет загрузка
-        loaded_videos = 0
-        last_update_time = time.time()
-        
-        while channel_info_thread.is_alive():
-            if check_cancelled():
-                log_message("INFO Загрузка списка видео отменена пользователем")
-                return
-                
-            current_time = time.time()
-            if current_time - last_update_time >= 2:
-                loaded_videos += 100
-                info_label.config(text=f"Загружено примерно {loaded_videos}+ видео...")
-                last_update_time = current_time
-                
-            try:
-                progress_window.update()
-            except tk.TclError:
-                log_message("DEBUG Прогресс-бар закрыт во время обновления")
-                cancelled[0] = True
-                return
-        
-        # Закрываем окно прогресс-бара
-        try:
-            progress_window.destroy()
-        except tk.TclError:
-            log_message("DEBUG Прогресс-бар уже закрыт")
-        
-        if cancelled[0]:
-            log_message("INFO Загрузка отменена пользователем")
-            return
-        
-        channel_info = channel_result[0]
-        
-        if not channel_info:
-            log_message("ERROR Не удалось получить информацию о канале")
-            messagebox.showerror("Ошибка", "Не удалось получить информацию о канале.")
-            return
-            
-        log_message("INFO Информация о канале получена")
-        
-        if 'entries' not in channel_info:
-            log_message("ERROR В канале отсутствует ключ 'entries'")
-            messagebox.showerror("Ошибка", "На канале нет видео или произошла ошибка при получении списка.")
-            return
-            
-        try:
-            if hasattr(channel_info['entries'], '__iter__') and not hasattr(channel_info['entries'], '__len__'):
-                entries = list(channel_info['entries'])
-                log_message("DEBUG Преобразован генератор entries в список")
-            else:
-                entries = channel_info.get('entries', [])
-        except Exception as e:
-            log_message(f"ERROR Ошибка при преобразовании entries: {e}")
-            entries = []
-            
-        if not entries:
-            log_message("ERROR Список видео пуст")
-            messagebox.showerror("Ошибка", "На канале нет видео или произошла ошибка при получении списка.")
-            return
-        
-        log_message(f"INFO Получено {len(entries)} видео с канала")
-
-        entries = [entry for entry in entries if entry is not None]
-        if not entries:
-            log_message("ERROR После фильтрации None список видео пуст")
-            messagebox.showerror("Ошибка", "На канале нет доступных для загрузки видео.")
-            return
-        
-        channel_title = channel_info.get('title', 'Канал YouTube')
-        log_message(f"INFO Название канала: {channel_title}")
-        
-        valid_entries = []
-        for entry in entries:
-            try:
-                if (not entry.get('is_premiere', False) and 
-                    entry.get('live_status', '') != 'is_upcoming' and 
-                    entry.get('title') != '[Private video]'):
-                    valid_entries.append(entry)
-                else:
-                    log_message(f"DEBUG Пропущено видео: {entry.get('title', 'Без названия')}, "
-                               f"причина: {'премьера' if entry.get('is_premiere', False) else ''}"
-                               f"{'предстоящее' if entry.get('live_status', '') == 'is_upcoming' else ''}"
-                               f"{'приватное' if entry.get('title') == '[Private video]' else ''}")
-            except Exception as e:
-                log_message(f"ERROR Ошибка при проверке видео: {e}")
-                continue
-        
-        if not valid_entries:
-            log_message("ERROR После фильтрации список видео пуст")
-            messagebox.showerror("Ошибка", "На канале нет доступных для загрузки видео.")
-            return
-            
-        log_message(f"INFO Найдено {len(valid_entries)} доступных видео из {len(entries)} на канале")
-        
-        # Создаём основное окно как Toplevel
         window = tk.Toplevel(root)
-        window.title(f"Выбор видео с канала: {channel_title}")
-        window.geometry("800x600")
+        window.title("Загрузка видео с канала")
+        window.geometry("1000x700")
         window.resizable(True, True)
         
-        # Центрируем окно
         window.update_idletasks()
         screen_width = window.winfo_screenwidth()
         screen_height = window.winfo_screenheight()
-        x = (screen_width - 800) // 2
-        y = (screen_height - 600) // 2
-        window.geometry(f"800x600+{x}+{y}")
+        x = (screen_width - 1000) // 2
+        y = (screen_height - 700) // 2
+        window.geometry(f"1000x700+{x}+{y}")
         
-        # Делаем окно активным
         window.deiconify()
         window.lift()
         window.focus_force()
@@ -445,156 +275,347 @@ def download_channel_with_selection(channel_url):
             window.update()
             window.attributes('-topmost', False)
         
-        # Добавляем фрейм с прокруткой
         main_frame = ttk.Frame(window, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Заголовок
-        ttk.Label(main_frame, text=f"Канал: {channel_title}", font=("Arial", 12, "bold")).pack(pady=5)
-        ttk.Label(main_frame, text=f"Всего доступных видео: {len(valid_entries)}").pack(pady=5)
+        progress_label = ttk.Label(main_frame, text="Загрузка списка видео: 0%", font=("Arial", 10))
+        progress_label.pack(pady=(10, 5))
+        progress = ttk.Progressbar(main_frame, length=350, mode="determinate", maximum=100)
+        progress.pack(pady=(0, 10))
         
-        if len(entries) > len(valid_entries):
-            ttk.Label(main_frame, text=f"(Пропущено {len(entries) - len(valid_entries)} премьер, приватных или недоступных видео)").pack(pady=(0, 5))
+        cancel_button = ttk.Button(main_frame, text="Остановить", command=lambda: stop_loading())
+        cancel_button.pack(pady=(0, 10))
         
-        # Фрейм для поиска
-        search_frame = ttk.Frame(main_frame)
-        search_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(search_frame, text="Поиск:").pack(side=tk.LEFT, padx=(0, 5))
+        cancelled = [False]
         
-        search_var = tk.StringVar()
-        search_entry = ttk.Entry(search_frame, textvariable=search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        def stop_loading():
+            cancelled[0] = True
+            if progress_label.winfo_exists():
+                progress_label.config(text="Загрузка остановлена")
+            if progress.winfo_exists():
+                progress.stop()
+                progress['value'] = 0
+            if cancel_button.winfo_exists():
+                cancel_button.destroy()
+            if status_label.winfo_exists():
+                status_var.set(f"Загрузка остановлена. Загружено: {loaded_videos} видео")
+            log_message("INFO Загрузка списка видео остановлена пользователем")
         
-        visible_label = ttk.Label(search_frame, text="")
-        visible_label.pack(side=tk.RIGHT, padx=5)
+        def check_cancelled():
+            if not window.winfo_exists():
+                cancelled[0] = True
+                return True
+            return cancelled[0]
         
-        # Фрейм с прокруткой
-        canvas = tk.Canvas(main_frame)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        window.update()
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        results_frame = ttk.LabelFrame(main_frame, text="Видео", padding=10)
+        results_frame.pack(fill=tk.BOTH, expand=True)
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        container = ttk.Frame(results_frame)
+        container.pack(fill=tk.BOTH, expand=True)
         
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar = ttk.Scrollbar(container)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
-        # Переменные для чекбоксов
-        checkboxes = []
-        check_vars = []
+        columns = ("title", "duration", "date")
+        tree = ttk.Treeview(container, columns=columns, show="headings", yscrollcommand=scrollbar.set)
         
-        # Функция для выделения/снять выделение
-        def toggle_all():
-            visible_selected = all(var.get() for i, var in enumerate(check_vars) if checkboxes[i].winfo_ismapped())
-            new_state = not visible_selected
-            for i, var in enumerate(check_vars):
-                if checkboxes[i].winfo_ismapped():
-                    var.set(new_state)
-            log_message(f"DEBUG Переключено состояние видимых чекбоксов: {new_state}")
+        def sort_column(tree, col, reverse):
+            data = [(tree.set(item, col), item) for item in tree.get_children('')]
+            if col == "duration":
+                def parse_duration(dur):
+                    try:
+                        parts = dur.split(':')
+                        if len(parts) == 3:
+                            h, m, s = map(int, parts)
+                            return h * 3600 + m * 60 + s
+                        elif len(parts) == 2:
+                            m, s = map(int, parts)
+                            return m * 60 + s
+                        else:
+                            return 0
+                    except (ValueError, TypeError):
+                        return 0
+                data.sort(key=lambda x: parse_duration(x[0]), reverse=reverse)
+            else:
+                data.sort(key=lambda x: x[0].lower(), reverse=reverse)
+            for index, (val, item) in enumerate(data):
+                tree.move(item, '', index)
+            tree.heading(col, command=lambda: sort_column(tree, col, not reverse))
         
-        # Добавляем чекбоксы
-        for i, entry in enumerate(valid_entries):
+        tree.heading("title", text="Название", command=lambda: sort_column(tree, "title", False))
+        tree.heading("duration", text="Длительность", command=lambda: sort_column(tree, "duration", False))
+        
+        tree.column("title", width=500, anchor=tk.W)
+        tree.column("duration", width=100, anchor=tk.CENTER)
+        tree.column("date", width=150, anchor=tk.CENTER)
+        
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=tree.yview)
+        
+        search_frame = ttk.Frame(main_frame)
+        search_frame.pack(fill=tk.X, pady=5)
+        search_var = tk.StringVar()
+        search_entry = configure_entry(
+            parent=search_frame,
+            textvariable=search_var,
+            label_text="Поиск по названию:",
+            width=50,
+            focus=True,
+            entry_type="entry"
+        )
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        valid_entries = []
+        video_urls = {}
+        video_descriptions = {}
+        initial_durations = {}
+        original_items = {}
+        loaded_videos = 0
+        
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'ignoreerrors': True,
+            'no_color': True,
+        }
+        
+        def load_channel_info():
+            nonlocal loaded_videos
             try:
-                title = entry.get('title', f'Видео {i+1}')
-                var = tk.BooleanVar(value=True)
-                check_vars.append(var)
-                cb = ttk.Checkbutton(scrollable_frame, text=title, variable=var)
-                cb.grid(row=i, column=0, sticky="w", pady=2)
-                checkboxes.append(cb)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(channel_url, download=False)
+                    if not info:
+                        log_message("ERROR Не удалось получить информацию о канале")
+                        return
+                    
+                    total_videos = info.get('playlist_count', 0) or len(info.get('entries', []))
+                    loaded_videos = 0
+                    
+                    channel_title = info.get('title', 'Канал YouTube')
+                    if window.winfo_exists():
+                        window.title(f"Видео с канала: {channel_title}")
+                        ttk.Label(main_frame, text=f"Канал: {channel_title}", font=("Arial", 12, "bold")).pack(pady=5)
+                        total_label = ttk.Label(main_frame, text=f"Всего видео на канале: {total_videos}")
+                        total_label.pack(pady=5)
+                    
+                    entries = info.get('entries', [])
+                    for entry in entries:
+                        if check_cancelled():
+                            break
+                        if entry is None:
+                            continue
+                        try:
+                            if (entry.get('title') != '[Private video]' and
+                                not entry.get('is_premiere', False) and
+                                entry.get('live_status', '') != 'is_upcoming'):
+                                video_id = entry.get('id')
+                                if video_id:
+                                    valid_entries.append(entry)
+                                    video_urls[video_id] = f"https://www.youtube.com/watch?v={video_id}"
+                                    video_descriptions[video_id] = "Описание будет загружено при запросе"
+                                    duration = entry.get('duration', None)
+                                    initial_durations[video_id] = format_invidious_duration(duration) if duration else "Загрузка..."
+                                    title = entry.get('title', 'Без названия')
+                                    date = "-"
+                                    item_id = tree.insert('', tk.END, values=(title, initial_durations[video_id], date))
+                                    original_items[item_id] = (title, initial_durations[video_id], date)
+                                    video_urls[item_id] = f"https://www.youtube.com/watch?v={video_id}"
+                                    video_descriptions[video_id] = "Описание будет загружено при запросе"
+                                    
+                                    loaded_videos += 1
+                                    if total_videos > 0 and not cancelled[0]:
+                                        progress_value = (loaded_videos / total_videos) * 100
+                                        if progress_label.winfo_exists():
+                                            progress_label.config(text=f"Загрузка списка видео: {int(progress_value)}%")
+                                        if progress.winfo_exists():
+                                            progress['value'] = progress_value
+                                        if window.winfo_exists():
+                                            window.update()
+                                    elif not cancelled[0]:
+                                        if progress_label.winfo_exists():
+                                            progress_label.config(text=f"Загрузка списка видео: {loaded_videos} видео")
+                                        if window.winfo_exists():
+                                            window.update()
+                        except Exception as e:
+                            log_message(f"ERROR Ошибка при обработке видео: {e}")
+                            continue
+                    
+                    if not cancelled[0]:
+                        if total_videos > loaded_videos:
+                            if total_label.winfo_exists():
+                                total_label.config(text=f"Всего доступных видео: {loaded_videos} (Пропущено {total_videos - loaded_videos} премьер, приватных или недоступных видео)")
+                        
+                        if progress_label.winfo_exists():
+                            progress_label.destroy()
+                        if progress.winfo_exists():
+                            progress.destroy()
+                        if cancel_button.winfo_exists():
+                            cancel_button.destroy()
+                        if status_label.winfo_exists():
+                            status_var.set(f"Отображается: {len(original_items)} видео")
+                        
+                        log_message(f"INFO Найдено {len(valid_entries)} доступных видео из {loaded_videos} на канале")
+            
             except Exception as e:
-                log_message(f"ERROR Ошибка при создании чекбокса {i}: {e}")
+                log_message(f"ERROR Ошибка при загрузке информации о канале: {e}")
+                if not cancelled[0]:
+                    try:
+                        if progress_label.winfo_exists():
+                            progress_label.config(text="Ошибка загрузки")
+                        messagebox.showerror("Ошибка", "Не удалось получить информацию о канале. Проверьте URL или соединение.")
+                        window.destroy()
+                    except tk.TclError:
+                        log_message("DEBUG Окно уже закрыто")
         
-        # Кнопка выделения
-        ttk.Button(main_frame, text="Выделить/Снять (видимые)", command=toggle_all).pack(pady=5)
+        channel_info_thread = threading.Thread(target=load_channel_info)
+        channel_info_thread.daemon = True
+        channel_info_thread.start()
         
-        # Функция фильтрации видео
+        def fetch_metadata(video_id):
+            ydl_opts_full = {
+                'quiet': True,
+                'extract_flat': False,
+                'skip_download': True,
+                'ignoreerrors': True,
+                'no_color': True,
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_full) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    if info:
+                        title = info.get('title', 'Без названия')
+                        duration = format_invidious_duration(info.get('duration', 0))
+                        return video_id, (title, duration, "-")
+            except Exception as e:
+                log_message(f"DEBUG Ошибка при загрузке метаданных видео {video_id}: {e}")
+            return video_id, None
+        
+        def load_full_metadata():
+            to_fetch = [
+                entry.get('id') for entry in valid_entries
+                if initial_durations.get(entry.get('id')) == "Загрузка..."
+            ]
+            if not to_fetch:
+                log_message("INFO Все метаданные уже загружены на этапе extract_flat=True")
+                return
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_video = {executor.submit(fetch_metadata, video_id): video_id for video_id in to_fetch}
+                for future in as_completed(future_to_video):
+                    if cancelled[0]:
+                        log_message("INFO Загрузка метаданных остановлена")
+                        return
+                    video_id = future_to_video[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            _, (title, duration, date) = result
+                            for item_id in original_items:
+                                if video_urls[item_id].endswith(video_id):
+                                    original_items[item_id] = (title, duration, date)
+                                    tree.item(item_id, values=(title, duration, date))
+                                    if window.winfo_exists():
+                                        window.update()
+                                    break
+                    except Exception as e:
+                        log_message(f"DEBUG Ошибка в потоке для видео {video_id}: {e}")
+        
+        metadata_thread = threading.Thread(target=load_full_metadata)
+        metadata_thread.daemon = True
+        metadata_thread.start()
+        
         def filter_videos(*args):
             search_text = search_var.get().lower()
+            tree.delete(*tree.get_children())
             visible_count = 0
-            
-            for i, entry in enumerate(valid_entries):
-                try:
-                    title = entry.get('title', f'Видео {i+1}').lower()
-                    if search_text in title:
-                        checkboxes[i].grid(row=i, column=0, sticky="w", pady=2)
-                        visible_count += 1
-                    else:
-                        checkboxes[i].grid_remove()
-                except Exception as e:
-                    log_message(f"ERROR Ошибка при фильтрации видео {i}: {e}")
-            
-            visible_label.config(text=f"Отображается: {visible_count} из {len(valid_entries)}" if search_text else "")
-            scrollable_frame.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            for item_id, (title, duration, date) in original_items.items():
+                if search_text in title.lower():
+                    tree.insert('', tk.END, item_id, values=(title, duration, date))
+                    visible_count += 1
+            if not cancelled[0]:
+                status_var.set(f"Отображается: {visible_count} из {len(original_items)} видео")
         
         search_var.trace("w", filter_videos)
         
-        # Функция загрузки выбранных видео
-        def download_selected():
-            selected_urls = []
-            for i, var in enumerate(check_vars):
-                if var.get() and checkboxes[i].winfo_ismapped():
-                    video_id = valid_entries[i].get('id')
-                    if video_id:
-                        url = f"https://www.youtube.com/watch?v={video_id}"
-                        selected_urls.append(url)
-                        log_message(f"DEBUG Выбрано видео: {url}")
-
-            if not selected_urls:
-                log_message("WARNING Ничего не выбрано для загрузки")
-                messagebox.showinfo("Ошибка", "Выберите хотя бы одно видео для загрузки")
-                return
-
-            try:
-                window.destroy()
-            except tk.TclError:
-                log_message("DEBUG Окно канала уже закрыто")
-
-            log_message(f"INFO Выбрано {len(selected_urls)} видео для загрузки")
-
-            for url in selected_urls:
-                add_to_queue(url)
-                # log_message(f"INFO Добавлено в очередь: {url}")
-
-            clear_clipboard()
-            log_message("INFO Буфер обмена очищен")
-
-            if not is_downloading:
-                threading.Thread(target=process_queue, daemon=True).start()
+        context_menu = tk.Menu(tree, tearoff=0)
+        def copy_url():
+            selected = tree.selection()[0] if tree.selection() else None
+            if selected and selected in video_urls:
+                url = video_urls[selected]
+                window.clipboard_clear()
+                window.clipboard_append(url)
+                update_last_copy_time()  # Добавляем вызов, чтобы сбросить таймер
+                status_var.set("URL скопирован в буфер обмена")
+                log_message(f"INFO Ссылка скопирована: {url}")
         
-        # Кнопки управления
+        def add_to_download_queue():
+            selected_items = tree.selection()
+            if not selected_items:
+                status_var.set("Ничего не выбрано для добавления в очередь")
+                return
+            added_count = 0
+            for selected in selected_items:
+                if selected in video_urls:
+                    url = video_urls[selected]
+                    if add_to_queue(url):
+                        added_count += 1
+            status_var.set(f"Добавлено в очередь загрузки: {added_count} видео")
+            log_message(f"INFO Добавлено {added_count} видео в очередь загрузки")
+            if not is_downloading:
+                threading.Thread(target=process_queue).start()
+        
+        def open_in_browser():
+            selected = tree.selection()[0] if tree.selection() else None
+            if selected and selected in video_urls:
+                import webbrowser
+                url = video_urls[selected]
+                webbrowser.open(url)
+                status_var.set("Открыто в браузере")
+        
+        context_menu.add_command(label="Копировать URL", command=copy_url)
+        context_menu.add_command(label="Добавить в очередь загрузки", command=add_to_download_queue)
+        context_menu.add_command(label="Открыть в браузере", command=open_in_browser)
+        context_menu.add_command(label="Показать описание", command=lambda: show_description(
+            tree, video_urls, window, status_var, status_label, video_descriptions))
+        
+        tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
+        
+        def on_double_click(event):
+            item = tree.selection()[0] if tree.selection() else None
+            if item and item in video_urls:
+                url = video_urls[item]
+                add_to_queue(url)
+                status_var.set(f"Видео добавлено в очередь: {url}")
+                log_message(f"INFO Видео добавлено в очередь загрузки: {url}")
+                if not is_downloading:
+                    threading.Thread(target=process_queue).start()
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        status_var = tk.StringVar(value="Всего видео: 0")
+        status_label = ttk.Label(results_frame, textvariable=status_var, foreground="blue", font=("Arial", 12))
+        status_label.pack(anchor=tk.W, pady=(5, 0))
+        
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=10)
-        ttk.Button(button_frame, text="Загрузить выбранные", command=download_selected).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Отмена", command=window.destroy).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Загрузить выбранные", command=add_to_download_queue).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Выделить все", command=lambda: tree.selection_set(list(original_items.keys()))).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Убрать выделение", command=lambda: tree.selection_remove(tree.get_children())).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Остановить", command=lambda: stop_loading()).pack(side=tk.RIGHT, padx=5)
         
-        # Поддержка прокрутки колесом мыши
-        def on_mousewheel(event):
-            try:
-                if hasattr(canvas, 'winfo_exists') and canvas.winfo_exists():
-                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except Exception as e:
-                log_message(f"DEBUG Игнорирована ошибка прокрутки: {e}")
-        
-        window.bind("<MouseWheel>", on_mousewheel)
-        
-        # Обработчик закрытия
         def on_closing():
             try:
-                window.unbind("<MouseWheel>")
-                log_message("INFO Окно канала закрыто")
+                cancelled[0] = True
                 window.destroy()
+                log_message("INFO Окно канала закрыто")
             except tk.TclError:
                 log_message("DEBUG Окно канала уже уничтожено")
         
         window.protocol("WM_DELETE_WINDOW", on_closing)
         
-        # Инициализируем интерфейс
         try:
             window.update()
             log_message("INFO Окно канала успешно открыто")
@@ -610,37 +631,12 @@ def download_channel_with_selection(channel_url):
         except tk.TclError:
             log_message("DEBUG Не удалось показать messagebox, приложение завершено")
 
+
 def download_playlist_with_selection(playlist_url):
     from clipboard import clear_clipboard
-    """Отображает окно выбора видео из плейлиста для загрузки"""
     log_message(f"INFO Обработка плейлиста: {playlist_url}")
     
     try:
-        ydl_opts = {
-            'quiet': True,
-            'extract_flat': True,
-            'skip_download': True,
-            'no_color': True,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            playlist_info = ydl.extract_info(playlist_url, download=False)
-            
-            if 'entries' not in playlist_info or not playlist_info['entries']:
-                log_message("ERROR Плейлист пуст или ошибка получения данных")
-                messagebox.showinfo("Плейлист пуст", "В плейлисте нет видео или произошла ошибка.")
-                return
-            
-            playlist_title = playlist_info.get('title', 'Плейлист')
-            entries = [e for e in playlist_info['entries'] if e and not e.get('is_premiere', False) and e.get('live_status', '') != 'is_upcoming']
-            
-            if not entries:
-                log_message("ERROR Нет доступных видео в плейлисте")
-                messagebox.showinfo("Плейлист пуст", "Нет доступных для загрузки видео.")
-                return
-            
-            log_message(f"INFO Найдено {len(entries)} видео в плейлисте")
-
         from tray import root
         if root is None or not hasattr(root, 'winfo_exists') or not root.winfo_exists():
             log_message("DEBUG Создание нового корневого окна в download_playlist_with_selection")
@@ -648,38 +644,18 @@ def download_playlist_with_selection(playlist_url):
             root.withdraw()
             import tray
             tray.root = root
-        else:
-            pass
-
-        valid_entries = []
-        for entry in entries:
-            try:
-                if entry.get('title') != '[Private video]':
-                    valid_entries.append(entry)
-                else:
-                    log_message(f"DEBUG Пропущено приватное видео: {entry.get('title', 'Без названия')}")
-            except Exception as e:
-                log_message(f"ERROR Ошибка при проверке видео: {e}")
-                continue
-        
-        if not valid_entries:
-            log_message("ERROR После фильтрации приватных видео список пуст")
-            messagebox.showinfo("Плейлист пуст", "Нет доступных для загрузки видео.")
-            return
-
-        log_message(f"INFO Найдено {len(valid_entries)} доступных видео из {len(entries)} в плейлисте")
 
         window = tk.Toplevel(root)
-        window.title(f"Выбор видео: {playlist_title}")
-        window.geometry("800x600")
+        window.title("Загрузка видео из плейлиста")
+        window.geometry("1000x700")
         window.resizable(True, True)
         
         window.update_idletasks()
         screen_width = window.winfo_screenwidth()
         screen_height = window.winfo_screenheight()
-        x = (screen_width - 800) // 2
-        y = (screen_height - 600) // 2
-        window.geometry(f"800x600+{x}+{y}")
+        x = (screen_width - 1000) // 2
+        y = (screen_height - 700) // 2
+        window.geometry(f"1000x700+{x}+{y}")
         
         window.deiconify()
         window.lift()
@@ -688,155 +664,360 @@ def download_playlist_with_selection(playlist_url):
             window.attributes('-topmost', True)
             window.update()
             window.attributes('-topmost', False)
-
+        
         main_frame = ttk.Frame(window, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(main_frame, text=f"Плейлист: {playlist_title}", font=("Arial", 12, "bold")).pack(pady=5)
-        ttk.Label(main_frame, text=f"Видео: {len(valid_entries)}").pack(pady=5)
         
-        if len(entries) > len(valid_entries):
-            ttk.Label(main_frame, text=f"(Пропущено {len(entries) - len(valid_entries)} приватных видео)").pack(pady=(0, 5))
-
-        # Фрейм для поиска
+        progress_label = ttk.Label(main_frame, text="Загрузка списка видео: 0%", font=("Arial", 10))
+        progress_label.pack(pady=(10, 5))
+        progress = ttk.Progressbar(main_frame, length=350, mode="determinate", maximum=100)
+        progress.pack(pady=(0, 10))
+        
+        cancel_button = ttk.Button(main_frame, text="Остановить", command=lambda: stop_loading())
+        cancel_button.pack(pady=(0, 10))
+        
+        cancelled = [False]
+        
+        def stop_loading():
+            cancelled[0] = True
+            if progress_label.winfo_exists():
+                progress_label.config(text="Загрузка остановлена")
+            if progress.winfo_exists():
+                progress.stop()
+                progress['value'] = 0
+            if cancel_button.winfo_exists():
+                cancel_button.destroy()
+            if status_label.winfo_exists():
+                status_var.set(f"Загрузка остановлена. Загружено: {loaded_videos} видео")
+            log_message("INFO Загрузка списка видео из плейлиста остановлена пользователем")
+        
+        def check_cancelled():
+            if not window.winfo_exists():
+                cancelled[0] = True
+                return True
+            return cancelled[0]
+        
+        window.update()
+        
+        results_frame = ttk.LabelFrame(main_frame, text="Видео", padding=10)
+        results_frame.pack(fill=tk.BOTH, expand=True)
+        
+        container = ttk.Frame(results_frame)
+        container.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(container)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        columns = ("title", "duration", "date")
+        tree = ttk.Treeview(container, columns=columns, show="headings", yscrollcommand=scrollbar.set)
+        
+        def sort_column(tree, col, reverse):
+            data = [(tree.set(item, col), item) for item in tree.get_children('')]
+            if col == "duration":
+                def parse_duration(dur):
+                    try:
+                        parts = dur.split(':')
+                        if len(parts) == 3:
+                            h, m, s = map(int, parts)
+                            return h * 3600 + m * 60 + s
+                        elif len(parts) == 2:
+                            m, s = map(int, parts)
+                            return m * 60 + s
+                        else:
+                            return 0
+                    except (ValueError, TypeError):
+                        return 0
+                data.sort(key=lambda x: parse_duration(x[0]), reverse=reverse)
+            else:
+                data.sort(key=lambda x: x[0].lower(), reverse=reverse)
+            for index, (val, item) in enumerate(data):
+                tree.move(item, '', index)
+            tree.heading(col, command=lambda: sort_column(tree, col, not reverse))
+        
+        tree.heading("title", text="Название", command=lambda: sort_column(tree, "title", False))
+        tree.heading("duration", text="Длительность", command=lambda: sort_column(tree, "duration", False))
+        
+        tree.column("title", width=500, anchor=tk.W)
+        tree.column("duration", width=100, anchor=tk.CENTER)
+        tree.column("date", width=150, anchor=tk.CENTER)
+        
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=tree.yview)
+        
         search_frame = ttk.Frame(main_frame)
         search_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(search_frame, text="Поиск:").pack(side=tk.LEFT, padx=(0, 5))
-        
         search_var = tk.StringVar()
-        search_entry = ttk.Entry(search_frame, textvariable=search_var)
-        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        visible_label = ttk.Label(search_frame, text="")
-        visible_label.pack(side=tk.RIGHT, padx=5)
-
-        canvas = tk.Canvas(main_frame)
-        scrollbar = ttk.Scrollbar(main_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        search_entry = configure_entry(
+            parent=search_frame,
+            textvariable=search_var,
+            label_text="Поиск по названию:",
+            width=50,
+            focus=True,
+            entry_type="entry"
         )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        check_vars = []
-        checkboxes = []
-
-        for i, entry in enumerate(valid_entries):
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        valid_entries = []
+        video_urls = {}
+        video_descriptions = {}
+        initial_durations = {}
+        original_items = {}
+        loaded_videos = 0
+        
+        ydl_opts = {
+            'quiet': True,
+            'extract_flat': True,
+            'skip_download': True,
+            'ignoreerrors': True,
+            'no_color': True,
+        }
+        
+        def load_playlist_info():
+            nonlocal loaded_videos
             try:
-                title = entry.get('title', f'Видео {i+1}')
-                var = tk.BooleanVar(value=True)
-                check_vars.append(var)
-                cb = ttk.Checkbutton(scrollable_frame, text=title, variable=var)
-                cb.grid(row=i, column=0, sticky="w", pady=2)
-                checkboxes.append(cb)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(playlist_url, download=False)
+                    if not info:
+                        log_message("ERROR Не удалось получить информацию о плейлисте")
+                        return
+                    
+                    total_videos = info.get('playlist_count', 0) or len(info.get('entries', []))
+                    loaded_videos = 0
+                    
+                    playlist_title = info.get('title', 'Плейлист YouTube')
+                    if window.winfo_exists():
+                        window.title(f"Видео из плейлиста: {playlist_title}")
+                        ttk.Label(main_frame, text=f"Плейлист: {playlist_title}", font=("Arial", 12, "bold")).pack(pady=5)
+                        total_label = ttk.Label(main_frame, text=f"Всего видео в плейлисте: {total_videos}")
+                        total_label.pack(pady=5)
+                    
+                    entries = info.get('entries', [])
+                    for entry in entries:
+                        if check_cancelled():
+                            break
+                        if entry is None:
+                            continue
+                        try:
+                            if (entry.get('title') != '[Private video]' and
+                                not entry.get('is_premiere', False) and
+                                entry.get('live_status', '') != 'is_upcoming'):
+                                video_id = entry.get('id')
+                                if video_id:
+                                    valid_entries.append(entry)
+                                    video_urls[video_id] = f"https://www.youtube.com/watch?v={video_id}"
+                                    video_descriptions[video_id] = "Описание будет загружено при запросе"
+                                    duration = entry.get('duration', None)
+                                    initial_durations[video_id] = format_invidious_duration(duration) if duration else "Загрузка..."
+                                    title = entry.get('title', 'Без названия')
+                                    date = entry.get('upload_date', '-')[:8] if entry.get('upload_date') else "-"
+                                    item_id = tree.insert('', tk.END, values=(title, initial_durations[video_id], date))
+                                    original_items[item_id] = (title, initial_durations[video_id], date)
+                                    video_urls[item_id] = f"https://www.youtube.com/watch?v={video_id}"
+                                    video_descriptions[video_id] = "Описание будет загружено при запросе"
+                                    
+                                    loaded_videos += 1
+                                    if total_videos > 0 and not cancelled[0]:
+                                        progress_value = (loaded_videos / total_videos) * 100
+                                        if progress_label.winfo_exists():
+                                            progress_label.config(text=f"Загрузка списка видео: {int(progress_value)}%")
+                                        if progress.winfo_exists():
+                                            progress['value'] = progress_value
+                                        if window.winfo_exists():
+                                            window.update()
+                                    elif not cancelled[0]:
+                                        if progress_label.winfo_exists():
+                                            progress_label.config(text=f"Загрузка списка видео: {loaded_videos} видео")
+                                        if window.winfo_exists():
+                                            window.update()
+                        except Exception as e:
+                            log_message(f"ERROR Ошибка при обработке видео: {e}")
+                            continue
+                    
+                    if not cancelled[0]:
+                        if total_videos > loaded_videos:
+                            if total_label.winfo_exists():
+                                total_label.config(text=f"Всего доступных видео: {loaded_videos} (Пропущено {total_videos - loaded_videos} премьер, приватных или недоступных видео)")
+                        
+                        if progress_label.winfo_exists():
+                            progress_label.destroy()
+                        if progress.winfo_exists():
+                            progress.destroy()
+                        if cancel_button.winfo_exists():
+                            cancel_button.destroy()
+                        if status_label.winfo_exists():
+                            status_var.set(f"Отображается: {len(original_items)} видео")
+                        
+                        log_message(f"INFO Найдено {len(valid_entries)} доступных видео из {loaded_videos} в плейлисте")
+            
             except Exception as e:
-                log_message(f"ERROR Ошибка при создании чекбокса {i}: {e}")
-
-        def toggle_all():
-            visible_selected = all(var.get() for i, var in enumerate(check_vars) if checkboxes[i].winfo_ismapped())
-            new_state = not visible_selected
-            for i, var in enumerate(check_vars):
-                if checkboxes[i].winfo_ismapped():
-                    var.set(new_state)
-            log_message(f"DEBUG Переключено состояние видимых чекбоксов: {new_state}")
-
-        ttk.Button(main_frame, text="Выделить/Снять (видимые)", command=toggle_all).pack(pady=5)
-
-        # Функция фильтрации видео
+                log_message(f"ERROR Ошибка при загрузке информации о плейлисте: {e}")
+                if not cancelled[0]:
+                    try:
+                        if progress_label.winfo_exists():
+                            progress_label.config(text="Ошибка загрузки")
+                        messagebox.showerror("Ошибка", "Не удалось получить информацию о плейлисте. Проверьте URL или соединение.")
+                        window.destroy()
+                    except tk.TclError:
+                        log_message("DEBUG Окно уже закрыто")
+        
+        playlist_info_thread = threading.Thread(target=load_playlist_info)
+        playlist_info_thread.daemon = True
+        playlist_info_thread.start()
+        
+        def fetch_metadata(video_id):
+            ydl_opts_full = {
+                'quiet': True,
+                'extract_flat': False,
+                'skip_download': True,
+                'ignoreerrors': True,
+                'no_color': True,
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts_full) as ydl:
+                    info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+                    if info:
+                        title = info.get('title', 'Без названия')
+                        duration = format_invidious_duration(info.get('duration', 0))
+                        date = info.get('upload_date', '-')[:8] if info.get('upload_date') else "-"
+                        return video_id, (title, duration, date)
+            except Exception as e:
+                log_message(f"DEBUG Ошибка при загрузке метаданных видео {video_id}: {e}")
+            return video_id, None
+        
+        def load_full_metadata():
+            to_fetch = [
+                entry.get('id') for entry in valid_entries
+                if initial_durations.get(entry.get('id')) == "Загрузка..."
+            ]
+            if not to_fetch:
+                log_message("INFO Все метаданные уже загружены на этапе extract_flat=True")
+                return
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_video = {executor.submit(fetch_metadata, video_id): video_id for video_id in to_fetch}
+                for future in as_completed(future_to_video):
+                    if cancelled[0]:
+                        log_message("INFO Загрузка метаданных остановлена")
+                        return
+                    video_id = future_to_video[future]
+                    try:
+                        result = future.result()
+                        if result:
+                            _, (title, duration, date) = result
+                            for item_id in original_items:
+                                if video_urls[item_id].endswith(video_id):
+                                    original_items[item_id] = (title, duration, date)
+                                    tree.item(item_id, values=(title, duration, date))
+                                    if window.winfo_exists():
+                                        window.update()
+                                    break
+                    except Exception as e:
+                        log_message(f"DEBUG Ошибка в потоке для видео {video_id}: {e}")
+        
+        metadata_thread = threading.Thread(target=load_full_metadata)
+        metadata_thread.daemon = True
+        metadata_thread.start()
+        
         def filter_videos(*args):
             search_text = search_var.get().lower()
+            tree.delete(*tree.get_children())
             visible_count = 0
-            
-            for i, entry in enumerate(valid_entries):
-                try:
-                    title = entry.get('title', f'Видео {i+1}').lower()
-                    if search_text in title:
-                        checkboxes[i].grid(row=i, column=0, sticky="w", pady=2)
-                        visible_count += 1
-                    else:
-                        checkboxes[i].grid_remove()
-                except Exception as e:
-                    log_message(f"ERROR Ошибка при фильтрации видео {i}: {e}")
-            
-            visible_label.config(text=f"Отображается: {visible_count} из {len(valid_entries)}" if search_text else "")
-            scrollable_frame.update_idletasks()
-            canvas.configure(scrollregion=canvas.bbox("all"))
+            for item_id, (title, duration, date) in original_items.items():
+                if search_text in title.lower():
+                    tree.insert('', tk.END, item_id, values=(title, duration, date))
+                    visible_count += 1
+            if not cancelled[0]:
+                status_var.set(f"Отображается: {visible_count} из {len(original_items)} видео")
         
         search_var.trace("w", filter_videos)
-
-        def download_selected():
-            selected_urls = []
-            for i, var in enumerate(check_vars):
-                if var.get() and checkboxes[i].winfo_ismapped():
-                    video_id = valid_entries[i].get('id')
-                    if video_id:
-                        url = f"https://www.youtube.com/watch?v={video_id}"
-                        selected_urls.append(url)
-                        log_message(f"DEBUG Выбрано видео: {url}")
-
-            if not selected_urls:
-                log_message("WARNING Ничего не выбрано для загрузки")
-                messagebox.showinfo("Ошибка", "Выберите хотя бы одно видео для загрузки")
+        
+        context_menu = tk.Menu(tree, tearoff=0)
+        def copy_url():
+            selected = tree.selection()[0] if tree.selection() else None
+            if selected and selected in video_urls:
+                url = video_urls[selected]
+                window.clipboard_clear()
+                window.clipboard_append(url)
+                update_last_copy_time()  # Сбрасываем таймер для clipboard_monitor
+                status_var.set("URL скопирован в буфер обмена")
+                log_message(f"INFO Ссылка скопирована: {url}")
+        
+        def add_to_download_queue():
+            selected_items = tree.selection()
+            if not selected_items:
+                status_var.set("Ничего не выбрано для добавления в очередь")
                 return
-
-            try:
-                window.destroy()
-            except tk.TclError:
-                log_message("DEBUG Окно плейлиста уже закрыто")
-
-            log_message(f"INFO Выбрано {len(selected_urls)} видео для загрузки")
-
-            for url in selected_urls:
-                add_to_queue(url)
-                # log_message(f"INFO Добавлено в очередь: {url}")
-
-            clear_clipboard()
-            log_message("INFO Буфер обмена очищен")
-
+            added_count = 0
+            for selected in selected_items:
+                if selected in video_urls:
+                    url = video_urls[selected]
+                    if add_to_queue(url):
+                        added_count += 1
+            status_var.set(f"Добавлено в очередь загрузки: {added_count} видео")
+            log_message(f"INFO Добавлено {added_count} видео в очередь загрузки")
             if not is_downloading:
-                threading.Thread(target=process_queue, daemon=True).start()
-
+                threading.Thread(target=process_queue).start()
+        
+        def open_in_browser():
+            selected = tree.selection()[0] if tree.selection() else None
+            if selected and selected in video_urls:
+                import webbrowser
+                url = video_urls[selected]
+                webbrowser.open(url)
+                status_var.set("Открыто в браузере")
+        
+        context_menu.add_command(label="Копировать URL", command=copy_url)
+        context_menu.add_command(label="Добавить в очередь загрузки", command=add_to_download_queue)
+        context_menu.add_command(label="Открыть в браузере", command=open_in_browser)
+        context_menu.add_command(label="Показать описание", command=lambda: show_description(
+            tree, video_urls, window, status_var, status_label, video_descriptions))
+        
+        tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
+        
+        def on_double_click(event):
+            item = tree.selection()[0] if tree.selection() else None
+            if item and item in video_urls:
+                url = video_urls[item]
+                add_to_queue(url)
+                status_var.set(f"Видео добавлено в очередь: {url}")
+                log_message(f"INFO Видео добавлено в очередь загрузки: {url}")
+                if not is_downloading:
+                    threading.Thread(target=process_queue).start()
+        
+        tree.bind("<Double-1>", on_double_click)
+        
+        status_var = tk.StringVar(value="Всего видео: 0")
+        status_label = ttk.Label(results_frame, textvariable=status_var, foreground="blue", font=("Arial", 12))
+        status_label.pack(anchor=tk.W, pady=(5, 0))
+        
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill=tk.X, pady=10)
-        ttk.Button(button_frame, text="Загрузить выбранные", command=download_selected).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(button_frame, text="Отмена", command=window.destroy).pack(side=tk.RIGHT, padx=5)
-
-        def on_mousewheel(event):
-            try:
-                if hasattr(canvas, 'winfo_exists') and canvas.winfo_exists():
-                    canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            except Exception as e:
-                log_message(f"DEBUG Игнорирована ошибка прокрутки: {e}")
-
-        window.bind("<MouseWheel>", on_mousewheel)
-
+        ttk.Button(button_frame, text="Загрузить выбранные", command=add_to_download_queue).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Выделить все", command=lambda: tree.selection_set(list(original_items.keys()))).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Убрать выделение", command=lambda: tree.selection_remove(tree.get_children())).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(button_frame, text="Остановить", command=lambda: stop_loading()).pack(side=tk.RIGHT, padx=5)
+        
         def on_closing():
             try:
-                window.unbind("<MouseWheel>")
-                log_message("INFO Окно плейлиста закрыто")
+                cancelled[0] = True
                 window.destroy()
+                log_message("INFO Окно плейлиста закрыто")
             except tk.TclError:
                 log_message("DEBUG Окно плейлиста уже уничтожено")
-
+        
         window.protocol("WM_DELETE_WINDOW", on_closing)
-
+        
         try:
             window.update()
             log_message("INFO Окно плейлиста успешно открыто")
         except tk.TclError:
             log_message("ERROR Не удалось обновить окно плейлиста, приложение завершено")
             return
-
+    
     except Exception as e:
-        log_message(f"ERROR Ошибка при обработке плейлиста: {e}")
+        log_message(f"ERROR Критическая ошибка при обработке плейлиста: {e}")
+        log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
         try:
-            messagebox.showerror("Ошибка", f"Не удалось обработать плейлист: {str(e)}")
+            messagebox.showerror("Ошибка", f"Произошла ошибка при обработке плейлиста: {str(e)}")
         except tk.TclError:
             log_message("DEBUG Не удалось показать messagebox, приложение завершено")
