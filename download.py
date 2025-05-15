@@ -122,15 +122,16 @@ def download_video(url, from_queue=False):
         "480p": "bestvideo[height<=480]+bestaudio/best"
     }
     selected_quality = quality_map.get(settings["video_quality"], "best")
-
+    
     ydl_opts = {
-        'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),      
         'cookies': 'cookies.txt',
         'restrict_filenames': False,
         'windowsfilenames': False,
         'no_color': True,
         'noplaylist': True,
     }
+    
 
     if settings["download_format"] == "mp3":
         ydl_opts['format'] = 'bestaudio[ext=m4a]/best[ext=mp3]'

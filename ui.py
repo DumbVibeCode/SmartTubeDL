@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 import traceback
@@ -7,9 +9,11 @@ from ttkwidgets.autocomplete import AutocompleteEntry
 import webbrowser
 import pyperclip
 import threading
-
+import vlc
+import yt_dlp
 from clipboard_utils import update_last_copy_time
 from config import settings, save_settings, is_downloading
+from fetch import fetch_description_with_ytdlp
 from logger import clear_log, load_log_file, log_message, set_log_box
 from queues import add_to_queue, process_queue
 from search import perform_search
@@ -19,6 +23,8 @@ from description import show_description
 from search import perform_search
 
 # settings = initialize_settings()
+is_programmatic_update = False
+last_slider_value = 0
 search_window = None
 log_box = None
 video_descriptions = {}
@@ -101,6 +107,254 @@ def show_api_help():
     """
 
     messagebox.showinfo("Получение API Key", help_text)
+
+def generate_vlc_cache(vlc_path):
+    """Генерирует кэш плагинов VLC, если он отсутствует или устарел."""
+    plugins_dir = os.path.join(vlc_path, "plugins")
+    cache_gen_path = os.path.join(vlc_path, "vlc-cache-gen.exe")
+    cache_file = os.path.join(os.getenv("APPDATA"), "vlc", "plugins.dat")
+
+    if os.path.exists(cache_gen_path):
+        if not os.path.exists(cache_file) or os.path.getmtime(cache_file) < max(os.path.getmtime(f) for f in os.listdir(plugins_dir) if f.endswith(".dll")):
+            log_message(f"INFO: Генерирую новый кэш для VLC в {cache_file}")
+            try:
+                subprocess.run([cache_gen_path, plugins_dir], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                log_message("INFO: Кэш успешно сгенерирован")
+            except subprocess.CalledProcessError as e:
+                log_message(f"ERROR: Ошибка при генерации кэша: {e}")
+        else:
+            log_message("INFO: Кэш актуален, пропускаю генерацию")
+    else:
+        log_message("WARNING: vlc-cache-gen.exe не найден, кэш не сгенерирован")
+
+def play_video(tree, video_urls, search_window, status_var, status_label, video_descriptions):
+    """Открывает окно для воспроизведения видео и отображения описания с прокруткой"""
+    selected = tree.selection()[0] if tree.selection() else None
+    if not selected or selected not in video_urls:
+        status_var.set("Выберите видео для воспроизведения")
+        status_label.config(foreground="red")
+        log_message("WARNING: Не выбрано видео для воспроизведения")
+        return
+
+    video_url = video_urls[selected]
+    description = video_descriptions.get(video_url, None)
+    if not description:
+        log_message(f"DEBUG: Описание для {video_url} отсутствует, загружаем...")
+        description = fetch_description_with_ytdlp(video_url) or "Описание отсутствует"
+        video_descriptions[video_url] = description
+    log_message(f"DEBUG: Пытаемся воспроизвести видео: {video_url}, описание: {description[:50]}...")
+
+    # Генерируем кэш VLC, если нужно
+    vlc_path = r"C:\Program Files\VideoLAN\VLC"
+    generate_vlc_cache(vlc_path)
+
+    # Извлекаем прямой URL с помощью yt-dlp
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'format': 'bestvideo+bestaudio/best[protocol^=http][protocol!*=dash][ext=mp4]',
+        'hls_prefer_native': False,
+        'hls_use_mpegts': True,  # Используем MPEG-TS для лучшей синхронизации
+        'cookies': 'cookies.txt' # if os.path.exists('cookies.txt') else None,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            formats = info.get('formats', [])
+            # Логируем доступные форматы для отладки
+            for f in formats:
+                log_message(f"DEBUG: Формат: protocol={f.get('protocol')}, ext={f.get('ext')}, url={f.get('url')}")
+            stream_url = None
+            for f in formats:
+                if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and 'hls' in f.get('protocol', '').lower():
+                    stream_url = f.get('url')
+                    log_message(f"DEBUG: Найден HLS-видеопоток: {stream_url}")
+                    break
+            if not stream_url:
+                for f in formats:
+                    if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('ext') == 'mp4':
+                        stream_url = f.get('url')
+                        log_message(f"DEBUG: Найден MP4-видеопоток: {stream_url}")
+                        break
+            if not stream_url:
+                log_message(f"WARNING: Видеопоток не найден, пытаемся взять первый доступный URL")
+                stream_url = info.get('url') if 'url' in info else info['formats'][0]['url']
+            if 'storyboard' in stream_url.lower():
+                log_message(f"ERROR: Извлечён URL раскадровки вместо видео: {stream_url}")
+                status_var.set("Ошибка: извлечён URL раскадровки вместо видео")
+                return
+            log_message(f"DEBUG: Извлечён прямой URL: {stream_url}")
+    except Exception as e:
+        log_message(f"ERROR: Не удалось извлечь прямой URL: {e}")
+        status_var.set("Не удалось получить поток видео")
+        status_label.config(foreground="red")
+        return
+    
+    def on_resize(event):
+        new_height = player_window.winfo_height()
+        video_frame.config(height=new_height-250)
+
+    player_window = tk.Toplevel(search_window)
+    player_window.title("Воспроизведение видео")
+    player_window.geometry("800x600")
+    player_window.bind('<Configure>', on_resize)
+
+    player_window.update_idletasks()
+    screen_width = player_window.winfo_screenwidth()
+    screen_height = player_window.winfo_screenheight()
+    x = (screen_width - 800) // 2
+    y = (screen_height - 700) // 2
+    player_window.geometry(f"800x700+{x}+{y}")
+
+    video_frame = ttk.Frame(player_window)
+    video_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+    # Изначальная высота фрейма
+    video_height = 400
+    video_frame.config(height=video_height)
+
+    try:
+        # Инициализация VLC с увеличенным буфером
+        instance = vlc.Instance('--network-caching=10000', '--avcodec-hw=any', '--avcodec-skiploopfilter=1', '--avcodec-skip-frame=0')  # Буфер 3500 мс
+        if instance is None:
+            log_message("ERROR: Не удалось инициализировать VLC. Проверьте установку или укажите путь в настройках.")
+            status_var.set("Ошибка инициализации VLC. Убедитесь, что VLC установлен.")
+            return
+
+        player = instance.media_player_new()
+        media = instance.media_new(stream_url)
+        player.set_media(media)
+
+        video_canvas = tk.Frame(video_frame, bg="black")
+        video_canvas.pack(fill=tk.BOTH, expand=True)
+
+        if os.name == "nt":
+            player.set_hwnd(video_canvas.winfo_id())
+        else:
+            player.set_xwindow(video_canvas.winfo_id())
+
+        # Прокрутка видео
+        controls_frame = ttk.Frame(player_window)
+        controls_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        def update_slider():
+            global is_programmatic_update, last_slider_value
+            
+            if player.is_playing():
+                current_time = player.get_time()
+                total_length = player.get_length()
+                
+                if total_length > 0:
+                    new_value = (current_time / total_length) * 1000
+                    
+                    # Обновляем только если значение изменилось значительно
+                    if abs(new_value - last_slider_value) > 1:  # Порог в 1 единицу
+                        is_programmatic_update = True
+                        slider.set(new_value)
+                        last_slider_value = new_value
+                        is_programmatic_update = False
+            
+            player_window.after(200, update_slider)
+
+        def set_position(value):
+            if not is_programmatic_update and player.get_length() > 0:
+                new_time = int(player.get_length() * (float(value) / 1000))
+                
+                # Особый случай: если видео закончилось
+                if player.get_state() == vlc.State.Ended:
+                    media = player.get_media()
+                    player.set_media(media)
+                    player.play()
+                    player.set_time(new_time)
+                else:
+                    player.set_time(new_time)
+                    
+                # Обновляем состояние кнопки
+                if new_time < player.get_length() - 2000:  # Если не в последних 2 секундах
+                    play_button.config(text="❚❚ Пауза")
+
+
+        slider = ttk.Scale(
+            controls_frame,
+            from_=0,
+            to=1000,
+            orient=tk.HORIZONTAL,
+            length=300,
+            command=lambda val: set_position(val)
+        )
+        slider.pack(side=tk.LEFT, padx=5)
+        player_window.after(200, update_slider)
+
+
+        def toggle_play_pause():
+            try:
+                if player.get_state() == vlc.State.Ended:
+                    # Полная перезагрузка медиа для корректного рестарта
+                    media = player.get_media()
+                    player.set_media(media)
+                    player.play()
+                    play_button.config(text="❚❚ Пауза")
+                elif player.is_playing():
+                    player.pause()
+                    play_button.config(text="▶ Играть")
+                else:
+                    player.play()
+                    play_button.config(text="❚❚ Пауза")
+            except Exception as e:
+                log_message(f"ERROR in toggle_play_pause: {str(e)}")
+
+        play_button = ttk.Button(controls_frame, text="❚❚ Пауза", command=toggle_play_pause)
+        play_button.pack(side=tk.LEFT, padx=5)
+
+        description_frame = ttk.LabelFrame(player_window, text="Описание видео", padding=5)
+        description_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        description_text = scrolledtext.ScrolledText(description_frame, wrap=tk.WORD, height=6, state='normal')
+        description_text.insert(tk.END, description)
+        description_text.config(state='disabled')
+        description_text.pack(fill=tk.BOTH, expand=True)
+
+        def copy_description():
+            pyperclip.copy(description)
+            status_var.set("Описание скопировано в буфер обмена")
+            status_label.config(foreground="green")
+            log_message("INFO Описание видео скопировано")
+
+        copy_button = ttk.Button(controls_frame, text="Копировать описание", command=copy_description)
+        copy_button.pack(side=tk.LEFT, padx=5)
+
+        def download_video():
+            if add_to_queue(video_url):
+                status_var.set("Видео добавлено в очередь загрузки")
+                status_label.config(foreground="green")
+                log_message(f"INFO Видео добавлено в очередь загрузки: {video_url}")
+                if not is_downloading:
+                    threading.Thread(target=process_queue).start()
+            else:
+                status_var.set("Видео уже в очереди загрузки")
+                status_label.config(foreground="orange")
+
+        download_format = settings.get("download_format", "mp4")
+        download_button = ttk.Button(controls_frame, text=f"Скачать ({download_format})", command=download_video)
+        download_button.pack(side=tk.LEFT, padx=5)
+
+        def on_player_window_close():
+            player.stop()
+            player.release()
+            instance.release()
+            player_window.destroy()
+
+        player_window.protocol("WM_DELETE_WINDOW", on_player_window_close)
+
+        player.play()
+        search_window.after(1000, lambda: log_message(f"DEBUG: Статус воспроизведения: {player.get_state()}"))
+        search_window.after(2000, lambda: log_message(f"DEBUG: Длительность: {player.get_length()}"))
+
+    except Exception as e:
+        log_message(f"ERROR Ошибка при воспроизведении видео: {e}")
+        status_var.set(f"Ошибка воспроизведения: {e}")
+        status_label.config(foreground="red")
+        player_window.destroy()    
     
 def search_youtube_videos():
     """Отображает окно для поиска видео через YouTube API"""
@@ -640,6 +894,9 @@ def search_youtube_videos():
         columns = ("title", "channel", "duration")
         tree = ttk.Treeview(container, columns=columns, show="headings", yscrollcommand=scrollbar.set)
 
+        # Привязываем полосу прокрутки к Treeview
+        scrollbar.config(command=tree.yview)
+
         # Настройка заголовков колонок с сортировкой
         tree.heading("title", text="Название", command=lambda: sort_column(tree, "title", False))
         tree.heading("channel", text="Канал", command=lambda: sort_column(tree, "channel", False))
@@ -674,6 +931,8 @@ def search_youtube_videos():
         context_menu.add_command(label="Открыть в браузере", command=open_in_browser)
         context_menu.add_command(label="Показать описание", command=lambda: show_description(tree, video_urls, search_window, 
                                                             status_var, status_label, video_descriptions))
+        context_menu.add_command(label="Просмотреть видео", command=lambda: play_video(tree, video_urls, search_window, 
+                                                    status_var, status_label, video_descriptions))
         # Привязываем контекстное меню к правому клику
         tree.bind("<Button-3>", lambda event: context_menu.post(event.x_root, event.y_root))
 

@@ -84,14 +84,15 @@ def clipboard_monitor():
                         threading.Thread(target=add_to_queue, args=(current_clipboard,)).start()
                     else:
                         log_message("INFO Запускаем загрузку напрямую")
+                        
                         current_downloading_url = current_clipboard
                         threading.Thread(target=download_video, args=(current_clipboard,)).start()
                         clear_clipboard()  # Очищаем буфер после запуска загрузки
-            log_message("DEBUG Проверка текущего содержимого буфера обмена")
-            log_message(f"DEBUG Текущее содержимое: {current_clipboard}")
-            log_message(f"DEBUG Последнее содержимое: {last_clipboard}")
-            log_message(f"DEBUG Текущая загружаемая ссылка: {current_downloading_url}")
-            log_message(f"DEBUG Состояние is_downloading: {is_downloading}")
+            # log_message("DEBUG Проверка текущего содержимого буфера обмена")
+            # log_message(f"DEBUG Текущее содержимое: {current_clipboard}")
+            # log_message(f"DEBUG Последнее содержимое: {last_clipboard}")
+            # log_message(f"DEBUG Текущая загружаемая ссылка: {current_downloading_url}")
+            # log_message(f"DEBUG Состояние is_downloading: {is_downloading}")
         except Exception as e:
             log_message(f"ERROR Ошибка при мониторинге буфера обмена: {e}")
 
