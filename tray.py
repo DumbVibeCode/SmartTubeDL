@@ -15,6 +15,7 @@ from pystray import MenuItem as item, Icon
 from config import format_size, save_settings
 import sys
 import tkinter as tk
+from vk_search import search_vk_music
 
 download_status = "Ожидание..."
 root = None
@@ -109,6 +110,14 @@ def toggle_debug_mode(icon, item):
     except Exception as e:
         log_message(f"ERROR Ошибка в toggle_debug_mode: {e}")
 
+def open_vk_search(icon, item):
+    """Открывает окно поиска музыки ВК"""
+    global root
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+    search_vk_music(root)
+
 def generate_menu():
     queue_count = get_queue_count()
     queue_info = f" ({queue_count})" if queue_count > 0 else ""
@@ -119,6 +128,7 @@ def generate_menu():
         item('Выбрать папку', show_settings),
         item('История загрузок', show_history),
         item('Поиск на YouTube', search_youtube_videos),
+        item('Поиск музыки ВК', open_vk_search),
         item('Режим отладки', toggle_debug_mode, checked=lambda item: settings.get("debug_mode", False)),
         item('────────────', lambda icon, item: None),
         item('Формат:', lambda icon, item: None, enabled=False),

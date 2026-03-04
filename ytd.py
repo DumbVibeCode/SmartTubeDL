@@ -36,7 +36,7 @@ def is_already_running():
     try:
         # Открываем файл для блокировки
         lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR)
-        # Пытаемся установить эксклюзивную блокировку
+        # Пытаемсясклюзивную блокировку
         msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)  # LK_NBLCK — неблокирующая блокировка
         # Если блокировка успешна, оставляем файл открытым до конца программы
         return False, lock_fd

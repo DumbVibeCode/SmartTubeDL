@@ -51,6 +51,8 @@ def get_audio_duration(input_file):
             stderr=subprocess.PIPE,
             universal_newlines=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
+            encoding='utf-8',
+            errors='replace'
         )
         match = re.search(r"Duration: (\d+):(\d+):(\d+\.\d+)", result.stderr)
         if match:
@@ -88,7 +90,8 @@ def convert_to_mp3(input_file, update_status_callback):
             startupinfo=startupinfo,
             universal_newlines=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
-            encoding='utf-8'
+            encoding='utf-8',
+            errors='replace'  # Заменяем некорректные символы вместо краша
         ) as process:
 
             for line in process.stderr:
@@ -122,24 +125,38 @@ def convert_to_mp4(input_file, update_status_callback):
     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
     try:
-        process = subprocess.run(
+        total_duration = get_audio_duration(input_file)
+
+        with subprocess.Popen(
             ["ffmpeg", "-i", input_file, "-vcodec", "copy", "-acodec", "copy", "-y", output_file],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             startupinfo=startupinfo,
+            universal_newlines=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
             encoding='utf-8',
-            creationflags=subprocess.CREATE_NO_WINDOW
-        )
+            errors='replace'  # Заменяем некорректные символы вместо краша
+        ) as process:
 
-        if process.returncode == 0:
-            os.remove(input_file)
-            update_status_callback("Готово!", 100)
-            log_message(f'Конвертация завершена: {output_file}')
-            return output_file
-        else:
-            update_status_callback("Ошибка!")
-            log_message(f"ERROR Ошибка при конвертации в MP4: {process.stderr}")
-            return None
+            for line in process.stderr:
+                if "time=" in line:
+                    match = re.search(r'time=(\d+:\d+:\d+\.\d+)', line)
+                    if match:
+                        time_value = match.group(1)
+                        percent = estimate_progress(time_value, total_duration)
+                        update_status_callback("Конвертация...", percent)
+
+            process.wait()
+
+            if process.returncode == 0:
+                os.remove(input_file)
+                update_status_callback("Готово!", 100)
+                log_message(f'Конвертация завершена: {output_file}')
+                return output_file
+            else:
+                update_status_callback("Ошибка!")
+                log_message(f"ERROR Ошибка при конвертации в MP4: код {process.returncode}")
+                return None
 
     except Exception as e:
         update_status_callback("Ошибка!")

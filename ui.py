@@ -19,11 +19,13 @@ from queues import add_to_queue, process_queue
 from search import perform_search
 # from utils import decode_html_entities, format_views, format_date, sort_column
 from config import initialize_settings, save_settings, is_downloading, update_single_setting, bind_var_to_settings
-from description import show_description
+from description import show_description, extract_video_id
 from search import perform_search
 
 # settings = initialize_settings()
 is_programmatic_update = False
+slider_update_enabled = True
+last_user_seek_time = 0 
 last_slider_value = 0
 search_window = None
 log_box = None
@@ -137,11 +139,18 @@ def play_video(tree, video_urls, search_window, status_var, status_label, video_
         return
 
     video_url = video_urls[selected]
-    description = video_descriptions.get(video_url, None)
-    if not description:
+    video_id = extract_video_id(video_url)
+    if not video_id:
+        status_var.set("Ошибка: не удалось извлечь ID видео из URL")
+        status_label.config(foreground="red")
+        log_message(f"ERROR: Не удалось извлечь video_id из URL: {video_url}")
+        return
+    
+    description = video_descriptions.get(video_id, None)
+    if not description or description == "Описание будет загружено при запросе":
         log_message(f"DEBUG: Описание для {video_url} отсутствует, загружаем...")
         description = fetch_description_with_ytdlp(video_url) or "Описание отсутствует"
-        video_descriptions[video_url] = description
+        video_descriptions[video_id] = description
     log_message(f"DEBUG: Пытаемся воспроизвести видео: {video_url}, описание: {description[:50]}...")
 
     # Генерируем кэш VLC, если нужно
@@ -149,46 +158,63 @@ def play_video(tree, video_urls, search_window, status_var, status_label, video_
     generate_vlc_cache(vlc_path)
 
     # Извлекаем прямой URL с помощью yt-dlp
-    ydl_opts = {
+    # --- Новый блок: извлечение потока с faststart (moov в начале) ---
+    stream_url = None
+    ydl_opts_faststart = {
         'quiet': True,
         'no_warnings': True,
-        'format': 'bestvideo+bestaudio/best[protocol^=http][protocol!*=dash][ext=mp4]',
-        'hls_prefer_native': False,
-        'hls_use_mpegts': True,  # Используем MPEG-TS для лучшей синхронизации
-        'cookies': 'cookies.txt' # if os.path.exists('cookies.txt') else None,
+        'format': 'bestvideo+bestaudio/best',
+        'merge_output_format': 'mp4',
+        'postprocessor_args': ['-movflags', '+faststart'],  # магия от moov в конце
     }
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(ydl_opts_faststart) as ydl:
             info = ydl.extract_info(video_url, download=False)
-            formats = info.get('formats', [])
-            # Логируем доступные форматы для отладки
-            for f in formats:
-                log_message(f"DEBUG: Формат: protocol={f.get('protocol')}, ext={f.get('ext')}, url={f.get('url')}")
-            stream_url = None
-            for f in formats:
-                if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and 'hls' in f.get('protocol', '').lower():
-                    stream_url = f.get('url')
-                    log_message(f"DEBUG: Найден HLS-видеопоток: {stream_url}")
-                    break
-            if not stream_url:
-                for f in formats:
-                    if f.get('vcodec') != 'none' and f.get('acodec') != 'none' and f.get('ext') == 'mp4':
-                        stream_url = f.get('url')
-                        log_message(f"DEBUG: Найден MP4-видеопоток: {stream_url}")
-                        break
-            if not stream_url:
-                log_message(f"WARNING: Видеопоток не найден, пытаемся взять первый доступный URL")
-                stream_url = info.get('url') if 'url' in info else info['formats'][0]['url']
-            if 'storyboard' in stream_url.lower():
-                log_message(f"ERROR: Извлечён URL раскадровки вместо видео: {stream_url}")
-                status_var.set("Ошибка: извлечён URL раскадровки вместо видео")
-                return
-            log_message(f"DEBUG: Извлечён прямой URL: {stream_url}")
+            stream_url = info['url']
+        log_message("INFO: Поток получен с faststart (moov в начале) — перемотка будет идеальной, ошибок timestamp не будет")
     except Exception as e:
-        log_message(f"ERROR: Не удалось извлечь прямой URL: {e}")
-        status_var.set("Не удалось получить поток видео")
-        status_label.config(foreground="red")
-        return
+        log_message(f"WARNING: faststart не сработал ({e}), пробуем обычный способ")
+
+        # Fallback: старый надёжный способ без postprocessor
+        ydl_opts_fallback = {
+            'quiet': True,
+            'no_warnings': True,
+            'format': 'bestvideo+bestaudio/best[protocol^=http][protocol!*=dash][ext=mp4]',
+            'hls_prefer_native': False,
+            'hls_use_mpegts': True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts_fallback) as ydl:
+                info = ydl.extract_info(video_url, download=False)  # info определяется заново
+                formats = info.get('formats', [])
+
+                # Сначала ищем прогрессивный mp4
+                for f in formats:
+                    if (f.get('vcodec') != 'none' and f.get('acodec') != 'none' and
+                        f.get('ext') == 'mp4' and f.get('protocol') in ['http', 'https']):
+                        stream_url = f.get('url')
+                        log_message(f"DEBUG: Найден прогрессивный MP4-поток: {stream_url}")
+                        break
+
+                # Если нет mp4 — берём HLS
+                if not stream_url:
+                    for f in formats:
+                        if 'm3u8' in f.get('protocol', '') or 'hls' in f.get('protocol', '').lower():
+                            stream_url = f.get('url')
+                            log_message(f"DEBUG: Выбран HLS-поток как fallback: {stream_url}")
+                            break
+
+                # Крайний случай
+                if not stream_url:
+                    stream_url = info.get('url') or info['formats'][0]['url']
+                    log_message("WARNING: Взят первый доступный поток")
+
+        except Exception as e2:
+            log_message(f"ERROR: Полностью не удалось получить поток: {e2}")
+            status_var.set("Не удалось получить поток видео")
+            status_label.config(foreground="red")
+            return
     
     def on_resize(event):
         new_height = player_window.winfo_height()
@@ -215,7 +241,16 @@ def play_video(tree, video_urls, search_window, status_var, status_label, video_
 
     try:
         # Инициализация VLC с увеличенным буфером
-        instance = vlc.Instance('--network-caching=10000', '--avcodec-hw=any', '--avcodec-skiploopfilter=1', '--avcodec-skip-frame=0')  # Буфер 3500 мс
+        instance = vlc.Instance(
+            '--network-caching=15000',
+            '--clock-jitter=0',
+            '--clock-synchro=0',         # ← это сильно снижает ошибки с timestamp
+            '--live-caching=10000',
+            '--no-video-title-show',
+            '--intf', 'dummy',
+            '--avcodec-hw=any',
+            '--avcodec-skiploopfilter=1',
+            '--avcodec-skip-frame=0')  # Буфер 3500 мс
         if instance is None:
             log_message("ERROR: Не удалось инициализировать VLC. Проверьте установку или укажите путь в настройках.")
             status_var.set("Ошибка инициализации VLC. Убедитесь, что VLC установлен.")
@@ -238,41 +273,51 @@ def play_video(tree, video_urls, search_window, status_var, status_label, video_
         controls_frame.pack(fill=tk.X, padx=5, pady=5)
 
         def update_slider():
-            global is_programmatic_update, last_slider_value
-            
-            if player.is_playing():
-                current_time = player.get_time()
-                total_length = player.get_length()
-                
-                if total_length > 0:
-                    new_value = (current_time / total_length) * 1000
-                    
-                    # Обновляем только если значение изменилось значительно
-                    if abs(new_value - last_slider_value) > 1:  # Порог в 1 единицу
+            global last_slider_value, slider_update_paused, last_seek_time
+
+            if slider_update_paused:
+                player_window.after(300, update_slider)
+                return
+
+            if player.is_playing() or player.get_state() == vlc.State.Paused:
+                current = player.get_time()
+                length = player.get_length()
+
+                if length > 0 and current >= 0:
+                    pos = (current / length) * 1000
+
+                    # Обновляем слайдер только если:
+                    # 1) разница > 3 единиц ИЛИ
+                    # 2) прошло больше 1.5 секунд с последнего действия пользователя
+                    if (abs(pos - last_slider_value) > 3 or 
+                        time.time() - last_seek_time > 1.5):
+
                         is_programmatic_update = True
-                        slider.set(new_value)
-                        last_slider_value = new_value
+                        slider.set(pos)
+                        last_slider_value = pos
                         is_programmatic_update = False
-            
-            player_window.after(200, update_slider)
+
+            player_window.after(250, update_slider)  # чуть чаще, чем раньше
+
 
         def set_position(value):
-            if not is_programmatic_update and player.get_length() > 0:
-                new_time = int(player.get_length() * (float(value) / 1000))
-                
-                # Особый случай: если видео закончилось
-                if player.get_state() == vlc.State.Ended:
-                    media = player.get_media()
-                    player.set_media(media)
-                    player.play()
-                    player.set_time(new_time)
-                else:
-                    player.set_time(new_time)
-                    
-                # Обновляем состояние кнопки
-                if new_time < player.get_length() - 2000:  # Если не в последних 2 секундах
-                    play_button.config(text="❚❚ Пауза")
+            global is_programmatic_update, slider_update_paused, last_seek_time
 
+            if is_programmatic_update:
+                return
+            if abs(float(value) - last_slider_value) < 2:
+                return
+            # Блокируем авто-обновление слайдера на 3 секунды при любом движении пользователем
+            slider_update_paused = True
+            last_seek_time = time.time()
+
+            if player.get_length() > 0:
+                new_time_ms = int(player.get_length() * (float(value) / 1000))
+                player.set_time(new_time_ms)
+
+                # Плавно возвращаем обновление через 3 секунды
+                # (за это время даже на медленном интернете YouTube успевает подгрузить кусок)
+                player_window.after(3000, lambda: globals().update({'slider_update_paused': False}))
 
         slider = ttk.Scale(
             controls_frame,

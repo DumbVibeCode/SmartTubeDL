@@ -73,7 +73,8 @@ def search_via_ytdlp(query, max_results, search_type, search_in_descriptions=Fal
         'extract_flat': True,
         'playlistend': max_results,
         'format': 'best',
-        # 'cookiefile': cookies_file if os.path.exists(cookies_file) else None
+        'js_runtimes': {'node': {}},
+        'remote_components': {'ejs': 'github'},
     }
 
     try:
@@ -143,6 +144,7 @@ def search_via_ytdlp(query, max_results, search_type, search_in_descriptions=Fal
                                 'videoId': video_id,
                                 'title': title,
                                 'author': channel,
+                                'description': description,
                                 'lengthSeconds': duration,
                                 'video_url': video_url
                             })
@@ -154,6 +156,7 @@ def search_via_ytdlp(query, max_results, search_type, search_in_descriptions=Fal
                     'videoId': video_id,
                     'title': title,
                     'author': channel,
+                    'description': 'Описание недоступно (не загружалось)',
                     'lengthSeconds': duration,
                     'video_url': video_url
                 } for video_id, title, channel, duration, video_url in video_items]
@@ -206,8 +209,6 @@ def evaluate_advanced_query(description, advanced_query):
         elif term.upper() == "NOT":
             i += 1
             result = result and (terms[i] not in description)
-        else:
-            result = result and (term in description)
         i += 1
     return result
           
@@ -321,6 +322,7 @@ def search_via_invidious(query, invidious_url, max_results, search_type, sort_by
                         'playlistId': playlist_id,
                         'title': title,
                         'author': channel,
+                        'description': decode_html_entities(item.get('description', 'Описание отсутствует')),
                         'video_count': video_count,
                         'video_url': video_url
                     })
@@ -333,6 +335,7 @@ def search_via_invidious(query, invidious_url, max_results, search_type, sort_by
                     'playlistId': playlist_id if search_type == 'playlist' else None,
                     'title': title,
                     'author': channel,
+                    'description': decode_html_entities(item.get('description', 'Описание отсутствует')),
                     'lengthSeconds': item.get('lengthSeconds', 0) if search_type == 'video' else None,
                     'video_url': video_url
                 })
@@ -411,6 +414,27 @@ def search_via_youtube_api(query, api_key, search_type, order, max_results, sear
 
         filtered_items = []
         channel_stats = {}
+        video_durations = {}
+
+        # Получаем длительность для видео
+        if search_type == 'video':
+            video_ids = [item['id']['videoId'] for item in results if 'id' in item and 'videoId' in item['id']]
+            if video_ids:
+                videos_url = "https://www.googleapis.com/youtube/v3/videos"
+                videos_params = {
+                    'key': api_key,
+                    'part': 'contentDetails',
+                    'id': ','.join(video_ids)
+                }
+                response = requests.get(videos_url, params=videos_params)
+                if response.status_code == 200:
+                    video_data = response.json()
+                    for video in video_data.get('items', []):
+                        duration_iso = video.get('contentDetails', {}).get('duration', '')
+                        if duration_iso:
+                            # Конвертируем ISO 8601 в читаемый формат
+                            from config import format_duration
+                            video_durations[video['id']] = format_duration(duration_iso)
 
         if search_type == 'channel':
             channel_ids = [item['id']['channelId'] for item in results]
@@ -446,14 +470,23 @@ def search_via_youtube_api(query, api_key, search_type, order, max_results, sear
                 video_url = f"https://www.youtube.com/watch?v={video_id}"
                 title = decode_html_entities(item['snippet']['title'])
                 channel = decode_html_entities(item['snippet']['channelTitle'])
+                description = decode_html_entities(item['snippet'].get('description', ''))
+
+                # Отладочное логирование
+                log_message(f"DEBUG Description length for '{title[:50]}': {len(description)}")
+
                 if search_in_descriptions:
-                    description = item['snippet'].get('description', '')
                     if query.lower() not in description.lower():
                         continue
+
+                # Добавляем длительность
+                duration = video_durations.get(video_id, '')
+
                 filtered_items.append({
                     'id': {'videoId': video_id},
-                    'snippet': {'title': title, 'channelTitle': channel},
-                    'video_url': video_url
+                    'snippet': {'title': title, 'channelTitle': channel, 'description': description},
+                    'video_url': video_url,
+                    'duration': duration
                 })
             elif search_type == 'channel':
                 video_id = item['id']['channelId']
@@ -662,9 +695,38 @@ def perform_search(search_var, type_var, order_var, max_results_var, api_key_var
                 if response.status_code == 200:
                     video_data = response.json()
                     for video in video_data.get('items', []):
-                        video_id = video['id']
-                        duration = format_duration(video['contentDetails']['duration'])
-                        video_durations[video_id] = duration
+                        try:
+                            video_id = video.get('id')
+                            duration_iso = video.get('contentDetails', {}).get('duration')
+                            if duration_iso:
+                                video_durations[video_id] = format_duration(duration_iso)
+                        except Exception as e:
+                            log_message(f"DEBUG: ошибка форматирования длительности для {video.get('id')}: {e}")
+                            continue
+
+                # Fallback: если для каких-то видео не удалось получить длительность через API,
+                # пробуем подтянуть их через yt-dlp (медленнее, но часто надёжнее).
+                try:
+                    missing_ids = [vid for vid in video_ids if vid not in video_durations]
+                    if missing_ids:
+                        try:
+                            import yt_dlp as _ytdlp
+                            ydl_opts = {'quiet': True, 'js_runtimes': {'node': {}}, 'remote_components': {'ejs': 'github'}}
+                            with _ytdlp.YoutubeDL(ydl_opts) as ydl:
+                                for vid in missing_ids:
+                                    try:
+                                        info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+                                        dur_sec = info.get('duration')
+                                        if dur_sec is not None:
+                                            video_durations[vid] = format_invidious_duration(dur_sec)
+                                            log_message(f"DEBUG: длительность через yt-dlp для {vid}: {video_durations[vid]}")
+                                    except Exception as e:
+                                        log_message(f"DEBUG: yt-dlp fallback failed for {vid}: {e}")
+                        except Exception as e:
+                            log_message(f"DEBUG: yt-dlp не доступен для fallback длительностей: {e}")
+                except Exception:
+                    # Любые ошибки во fallback не должны ломать основной поиск
+                    pass
             except Exception as e:
                 log_message(f"Ошибка при получении длительностей видео: {e}")
                 video_durations = {}
@@ -801,9 +863,33 @@ def perform_search(search_var, type_var, order_var, max_results_var, api_key_var
                         if response.status_code == 200:
                             video_data = response.json()
                             for video in video_data.get('items', []):
-                                video_id = video['id']
-                                duration = format_duration(video['contentDetails']['duration'])
-                                video_durations[video_id] = duration
+                                    try:
+                                        video_id = video['id']
+                                        duration_iso = video.get('contentDetails', {}).get('duration')
+                                        if duration_iso:
+                                            video_durations[video_id] = format_duration(duration_iso)
+                                    except Exception as e:
+                                        log_message(f"DEBUG: ошибка форматирования длительности для {video.get('id')}: {e}")
+                                        continue
+
+                        # Fallback: если какие-то видео остались без длительности, пробуем yt-dlp
+                        missing_ids = [vid for vid in video_ids if vid not in video_durations]
+                        if missing_ids:
+                            try:
+                                import yt_dlp as _ytdlp
+                                ydl_opts = {'quiet': True, 'js_runtimes': {'node': {}}, 'remote_components': {'ejs': 'github'}}
+                                with _ytdlp.YoutubeDL(ydl_opts) as ydl:
+                                    for vid in missing_ids:
+                                        try:
+                                            info = ydl.extract_info(f"https://www.youtube.com/watch?v={vid}", download=False)
+                                            dur_sec = info.get('duration')
+                                            if dur_sec is not None:
+                                                video_durations[vid] = format_invidious_duration(dur_sec)
+                                                log_message(f"DEBUG: длительность через yt-dlp для {vid}: {video_durations[vid]}")
+                                        except Exception as e:
+                                            log_message(f"DEBUG: yt-dlp fallback failed for {vid}: {e}")
+                            except Exception as e:
+                                log_message(f"DEBUG: yt-dlp не доступен для fallback длительностей: {e}")
                     except Exception as e:
                         log_message(f"ERROR Ошибка при получении длительностей видео: {e}")
                         video_durations = {}

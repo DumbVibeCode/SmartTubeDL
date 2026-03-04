@@ -10,25 +10,26 @@ from config import is_downloading
 
 DOWNLOAD_HISTORY_FILE = os.path.join(os.getcwd(), "download_history.json")
 
-def add_to_history(url, title, format_type):
+def add_to_history(url, title, format_type, duration=0):
     """Добавляет информацию о загруженном видео в историю"""
     history = load_download_history()
-    
+
     # Создаем запись о загрузке
     download_record = {
         "url": url,
         "title": title,
         "format": format_type,
+        "duration": duration,  # Длительность в секундах
         "date": time.strftime("%Y-%m-%d %H:%M:%S")
     }
-    
+
     # Добавляем в начало списка (новые загрузки сверху)
     history.insert(0, download_record)
-    
+
     # Ограничиваем историю 1000 записями
     if len(history) > 1000:
         history = history[:1000]
-    
+
     # Сохраняем историю
     save_download_history(history)
     log_message(f"INFO Добавлена запись в историю загрузок: {title}")
