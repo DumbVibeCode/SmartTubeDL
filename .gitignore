@@ -1,0 +1,41 @@
+# --- Сборка ---
+dist/
+build/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- Секреты и личные данные (НИКОГДА не коммитить!) ---
+settings.json
+config.json
+cookies.txt
+cookies_changes.log
+*.env
+.env.*
+
+# --- Рантайм-файлы ---
+lockfile.lock
+download_queue.txt
+log.txt
+logs/
+*.log
+
+# --- Данные пользователя ---
+download_history.json
+
+# --- Архивы и временные файлы ---
+*.zip
+*.tmp
+
+# --- Старые версии и бэкапы ---
+"Стабильная версия"/
+"Структура кода"/
+git_quicksave.bat
+
+# --- Служебное ---
+.claude/

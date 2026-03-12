@@ -1,0 +1,23 @@
+{
+  "download_folder": "C:/Users/YourName/Downloads",
+  "auto_capture_enabled": true,
+  "download_format": "mp4",
+  "video_quality": "1080p",
+  "conversion_enabled": true,
+  "save_settings_on_exit": false,
+  "youtube_api_key": "YOUR_YOUTUBE_API_KEY_HERE",
+  "invidious_url": "http://localhost:3000",
+  "last_search_query": "",
+  "search_type": "video",
+  "sort_order": "relevance",
+  "max_results": "10",
+  "use_alternative_api": false,
+  "search_in_descriptions": false,
+  "advanced_search": false,
+  "advanced_query": "",
+  "use_ytdlp_search": false,
+  "debug_mode": false,
+  "search_history": [],
+  "last_search_results": [],
+  "cookie_source": "file"
+}
