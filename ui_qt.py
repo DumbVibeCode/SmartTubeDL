@@ -9,10 +9,10 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QComboBox, QCheckBox, QProgressBar,
     QGroupBox, QMessageBox, QMenu, QSplitter, QHeaderView,
-    QAbstractItemView
+    QAbstractItemView, QDialog
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QClipboard, QGuiApplication
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtGui import QAction, QClipboard, QGuiApplication, QPixmap, QIcon
 
 from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
 from config import settings, save_settings
@@ -269,6 +269,136 @@ class SearchWorker(QThread):
             self.error.emit(str(e))
 
 
+class ThumbnailLoader(QThread):
+    """Фоновая загрузка превью для результатов поиска"""
+    thumbnail_ready = pyqtSignal(int, bytes)  # row, jpeg-байты (QPixmap нельзя в не-UI потоке)
+
+    def __init__(self, rows_ids):
+        super().__init__()
+        self.rows_ids = rows_ids  # [(row, video_id), ...]
+
+    def run(self):
+        import requests
+        import concurrent.futures
+
+        def fetch_one(row_vid):
+            row, vid_id = row_vid
+            try:
+                url = f"https://i.ytimg.com/vi/{vid_id}/mqdefault.jpg"
+                resp = requests.get(url, timeout=8)
+                if resp.status_code == 200 and resp.content:
+                    self.thumbnail_ready.emit(row, resp.content)
+            except Exception:
+                pass
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            pool.map(fetch_one, self.rows_ids)
+
+
+class YtdlpUpdater(QThread):
+    """Обновление yt-dlp через pip с построчным выводом"""
+    line_ready = pyqtSignal(str)        # очередная строка вывода pip
+    finished = pyqtSignal(bool, str)    # success, итоговое сообщение
+
+    def run(self):
+        import subprocess, sys
+        try:
+            try:
+                import yt_dlp
+                current = yt_dlp.version.__version__
+            except Exception:
+                current = "неизвестна"
+
+            self.line_ready.emit(f"Текущая версия: {current}")
+            self.line_ready.emit("Запуск pip install -U yt-dlp ...")
+
+            proc = subprocess.Popen(
+                [sys.executable, '-m', 'pip', 'install', '-U', 'yt-dlp'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            output_lines = []
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    self.line_ready.emit(line)
+                    output_lines.append(line)
+
+            proc.wait()
+            full_output = '\n'.join(output_lines).lower()
+
+            if proc.returncode == 0:
+                if 'already satisfied' in full_output or 'already up-to-date' in full_output:
+                    self.finished.emit(True, f"yt-dlp уже актуальной версии ({current})")
+                else:
+                    new_ver = current
+                    for line in output_lines:
+                        if 'successfully installed' in line.lower() and 'yt-dlp' in line.lower():
+                            parts = line.lower().split('yt-dlp-')
+                            if len(parts) > 1:
+                                new_ver = parts[1].strip().split()[0]
+                            break
+                    self.finished.emit(True, f"Обновлено до версии {new_ver}")
+            else:
+                self.finished.emit(False, "Ошибка — см. вывод выше")
+        except Exception as e:
+            self.finished.emit(False, str(e))
+
+
+class YtdlpUpdateDialog(QDialog):
+    """Диалог обновления yt-dlp с живым выводом pip"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Обновление yt-dlp")
+        self.setMinimumWidth(520)
+        self.setMinimumHeight(320)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        self.status_label = QLabel("Запуск обновления...")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setObjectName("logPanel")
+        layout.addWidget(self.output_text)
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)   # анимированный indeterminate
+        self.progress.setFixedHeight(4)
+        self.progress.setTextVisible(False)
+        layout.addWidget(self.progress)
+
+        self.close_btn = QPushButton("Закрыть")
+        self.close_btn.setEnabled(False)
+        self.close_btn.clicked.connect(self.accept)
+        layout.addWidget(self.close_btn)
+
+        self._updater = YtdlpUpdater()
+        self._updater.line_ready.connect(self._on_line)
+        self._updater.finished.connect(self._on_finished)
+        self._updater.start()
+
+    def _on_line(self, line):
+        self.output_text.append(line)
+
+    def _on_finished(self, success, message):
+        self.progress.setRange(0, 1)
+        self.progress.setValue(1)
+        self.status_label.setText(message)
+        color = COLORS["success"] if success else COLORS["error"]
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.close_btn.setEnabled(True)
+        log_message(f"INFO yt-dlp update: {message}")
+
+
 class SearchWindow(QMainWindow):
     """Окно поиска YouTube"""
 
@@ -286,6 +416,7 @@ class SearchWindow(QMainWindow):
         self.video_urls = {}  # {row_index: url}
         self.video_descriptions = {}
         self.search_worker = None
+        self.thumbnail_loader = None
         self.description_windows = []  # Список открытых окон описаний
         self.player_windows = []  # Список открытых окон видеоплееров
 
@@ -398,11 +529,20 @@ class SearchWindow(QMainWindow):
         self.check_ytdlp.stateChanged.connect(self._update_checkboxes)
         opts_row.addWidget(self.check_ytdlp)
 
+        self.check_thumbnails = QCheckBox("Превью")
+        self.check_thumbnails.setChecked(settings.get("show_thumbnails", False))
+        opts_row.addWidget(self.check_thumbnails)
+
         self.check_save = QCheckBox("Сохранять")
         self.check_save.setChecked(settings.get("save_settings_on_exit", False))
         opts_row.addWidget(self.check_save)
 
         opts_row.addStretch()
+
+        self.update_ytdlp_btn = QPushButton("Обновить yt-dlp")
+        self.update_ytdlp_btn.setProperty("secondary", True)
+        self.update_ytdlp_btn.clicked.connect(self._update_ytdlp)
+        opts_row.addWidget(self.update_ytdlp_btn)
 
         self.api_input = QLineEdit()
         self.api_input.setPlaceholderText("API Key")
@@ -606,6 +746,7 @@ class SearchWindow(QMainWindow):
         settings["use_alternative_api"] = self.check_alternative.isChecked()
         settings["use_ytdlp_search"] = self.check_ytdlp.isChecked()
         settings["desc_filter"] = self.desc_filter_input.text().strip()
+        settings["show_thumbnails"] = self.check_thumbnails.isChecked()
         settings["save_settings_on_exit"] = self.check_save.isChecked()
 
         # Проверяем API ключ
@@ -679,11 +820,60 @@ class SearchWindow(QMainWindow):
         settings["last_search_results"] = results
         log_message(f"INFO Найдено {len(results)} результатов")
 
+        # Загружаем превью если включено
+        if self.check_thumbnails.isChecked():
+            self._start_thumbnail_loading()
+        else:
+            self.table.setIconSize(QSize(0, 0))
+            self.table.verticalHeader().setDefaultSectionSize(24)
+
     def _on_search_error(self, error):
         """Обработка ошибки поиска"""
         self.search_btn.setEnabled(True)
         self.progress.setVisible(False)
         self._set_status(f"Ошибка: {error}", "error")
+
+    def _start_thumbnail_loading(self):
+        """Запускает фоновую загрузку превью для текущих результатов"""
+        from description import extract_video_id
+
+        self.table.setIconSize(QSize(107, 60))
+        self.table.verticalHeader().setDefaultSectionSize(68)
+
+        rows_ids = []
+        for row, url in self.video_urls.items():
+            vid_id = extract_video_id(url)
+            if vid_id:
+                rows_ids.append((row, vid_id))
+
+        if not rows_ids:
+            return
+
+        self.thumbnail_loader = ThumbnailLoader(rows_ids)
+        self.thumbnail_loader.thumbnail_ready.connect(self._on_thumbnail_ready)
+        self.thumbnail_loader.start()
+
+    def _on_thumbnail_ready(self, row, image_bytes):
+        """Устанавливает превью в ячейку таблицы (вызывается в главном потоке)"""
+        item = self.table.item(row, 0)
+        if not item:
+            return
+        pixmap = QPixmap()
+        pixmap.loadFromData(image_bytes)
+        if not pixmap.isNull():
+            pixmap = pixmap.scaled(
+                107, 60,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            item.setIcon(QIcon(pixmap))
+
+    def _update_ytdlp(self):
+        """Открывает диалог обновления yt-dlp"""
+        from styles import STYLESHEET_MINIMAL as STYLESHEET
+        dialog = YtdlpUpdateDialog(self)
+        dialog.setStyleSheet(STYLESHEET)
+        dialog.exec()
 
     def _load_last_results(self):
         """Загружает последние результаты поиска"""
