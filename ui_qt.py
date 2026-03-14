@@ -64,10 +64,10 @@ class SearchWorker(QThread):
     finished = pyqtSignal(list)  # Результаты поиска
     error = pyqtSignal(str)      # Ошибка
     progress = pyqtSignal(int)   # Прогресс 0-100
+    status = pyqtSignal(str)     # Промежуточный статус
 
     def __init__(self, query, search_type, order, max_results, api_key,
-                 invidious_url, use_alternative, use_ytdlp, search_descriptions,
-                 advanced_search, advanced_query):
+                 invidious_url, use_alternative, use_ytdlp, desc_filter):
         super().__init__()
         self.query = query
         self.search_type = search_type
@@ -77,13 +77,75 @@ class SearchWorker(QThread):
         self.invidious_url = invidious_url
         self.use_alternative = use_alternative
         self.use_ytdlp = use_ytdlp
-        self.search_descriptions = search_descriptions
-        self.advanced_search = advanced_search
-        self.advanced_query = advanced_query
+        self.desc_filter = desc_filter
+
+    def _extract_video_id(self, url):
+        if not url:
+            return None
+        from description import extract_video_id
+        return extract_video_id(url)
+
+    def _load_descriptions_youtube(self, results):
+        """Загружает описания batch-запросом к YouTube Data API (по 50 штук)"""
+        import requests
+        from database import insert_description
+
+        video_ids = []
+        for r in results:
+            vid_id = self._extract_video_id(r.get('url', ''))
+            if vid_id:
+                video_ids.append(vid_id)
+
+        if not video_ids or not self.api_key:
+            return
+
+        for i in range(0, len(video_ids), 50):
+            batch = video_ids[i:i + 50]
+            try:
+                resp = requests.get(
+                    'https://www.googleapis.com/youtube/v3/videos',
+                    params={'key': self.api_key, 'part': 'snippet', 'id': ','.join(batch)},
+                    timeout=15
+                )
+                if resp.status_code == 200:
+                    for item in resp.json().get('items', []):
+                        vid_id = item['id']
+                        desc = item['snippet'].get('description', '')
+                        insert_description(vid_id, desc)
+            except Exception as e:
+                log_message(f"[ERROR] Ошибка загрузки описания (YouTube API): {e}")
+
+    def _load_descriptions_individual(self, results):
+        """Загружает описания индивидуально через yt-dlp или BeautifulSoup"""
+        import concurrent.futures
+        from database import insert_description
+
+        def fetch_one(result):
+            url = result.get('url', '')
+            vid_id = self._extract_video_id(url)
+            if not vid_id:
+                return
+            desc = result.get('description', '')
+            placeholder = desc in ('', 'Описание отсутствует', 'Описание недоступно (не загружалось)')
+            if placeholder or len(desc) < 50:
+                try:
+                    if self.use_ytdlp:
+                        from fetch import fetch_description_with_ytdlp
+                        desc = fetch_description_with_ytdlp(url)
+                    else:
+                        from fetch import fetch_description_with_bs
+                        desc = fetch_description_with_bs(url)
+                except Exception as e:
+                    log_message(f"[ERROR] Ошибка загрузки описания для {url}: {e}")
+                    desc = ''
+            if desc:
+                insert_description(vid_id, desc)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            pool.map(fetch_one, results)
 
     def run(self):
         try:
-            # Импортируем здесь, чтобы не блокировать UI
             from search import search_via_youtube_api, search_via_invidious, search_via_ytdlp
             from config import format_invidious_duration
 
@@ -93,20 +155,19 @@ class SearchWorker(QThread):
             if self.use_ytdlp:
                 log_message("INFO Поиск через yt-dlp...")
                 raw_results = search_via_ytdlp(
-                    self.query, self.max_results, self.search_type,
-                    self.search_descriptions
+                    self.query, self.max_results, self.search_type, False
                 )
             elif self.use_alternative:
                 log_message("INFO Поиск через Invidious API...")
                 raw_results = search_via_invidious(
                     self.query, self.invidious_url, self.max_results,
-                    self.search_type, self.order, self.search_descriptions
+                    self.search_type, self.order, False
                 )
             else:
                 log_message("INFO Поиск через YouTube API...")
                 raw_results = search_via_youtube_api(
                     self.query, self.api_key, self.search_type,
-                    self.order, self.max_results, self.search_descriptions
+                    self.order, self.max_results, False
                 )
 
             self.progress.emit(80)
@@ -127,9 +188,8 @@ class SearchWorker(QThread):
                     if 'title' in item:
                         result['title'] = item.get('title', 'Без названия')
                         result['channel'] = item.get('author', 'Неизвестный')
-                        result['description'] = item.get('description', 'Описание отсутствует')
+                        result['description'] = item.get('description', '')
 
-                        # Длительность
                         if 'lengthSeconds' in item:
                             result['duration'] = format_invidious_duration(item['lengthSeconds'])
                         elif 'video_count' in item:
@@ -141,19 +201,63 @@ class SearchWorker(QThread):
                     elif 'snippet' in item:
                         result['title'] = item['snippet'].get('title', 'Без названия')
                         result['channel'] = item['snippet'].get('channelTitle', 'Неизвестный')
-                        result['description'] = item['snippet'].get('description', 'Описание отсутствует')
+                        result['description'] = item['snippet'].get('description', '')
                         result['url'] = item.get('video_url', '')
 
-                        # Длительность видео
                         if 'duration' in item:
                             result['duration'] = item['duration']
 
-                        # Для плейлистов/каналов - количество видео
                         if 'video_count' in item:
                             result['duration'] = str(item['video_count'])
 
                     if result['title']:
                         results.append(result)
+
+            # ── Фильтрация по описаниям через SQLite FTS5 ──
+            if self.desc_filter and results:
+                self.progress.emit(82)
+                log_message(f"INFO Фильтрация по описаниям: '{self.desc_filter}'")
+                self.status.emit(f"Загрузка описаний ({len(results)} видео)...")
+
+                from database import connect_to_database, clear_descriptions_table, \
+                    search_in_database, is_connected
+                if not is_connected():
+                    connect_to_database()
+                clear_descriptions_table()
+
+                if self.use_ytdlp or self.use_alternative:
+                    self._load_descriptions_individual(results)
+                else:
+                    self._load_descriptions_youtube(results)
+
+                # Дамп всех загруженных описаний в файл для отладки
+                try:
+                    import database as _db
+                    all_rows = _db._conn.execute(
+                        "SELECT video_id, description FROM video_descriptions"
+                    ).fetchall()
+                    with open("descriptions_debug.txt", "w", encoding="utf-8") as f:
+                        f.write(f"Запрос: {self.query}\n")
+                        f.write(f"Фильтр: {self.desc_filter}\n")
+                        f.write(f"Загружено описаний: {len(all_rows)}\n")
+                        f.write("=" * 60 + "\n\n")
+                        for vid_id, desc in all_rows:
+                            f.write(f"[{vid_id}]\n")
+                            f.write(desc or "(пусто)")
+                            f.write("\n" + "-" * 60 + "\n\n")
+                    log_message(f"INFO Описания сохранены в descriptions_debug.txt ({len(all_rows)} шт.)")
+                except Exception as dump_err:
+                    log_message(f"[ERROR] Не удалось сохранить дамп описаний: {dump_err}")
+
+                self.progress.emit(95)
+
+                db_hits = search_in_database(self.desc_filter)
+                matching_ids = {vid_id for vid_id, _ in db_hits}
+                results = [
+                    r for r in results
+                    if self._extract_video_id(r.get('url', '')) in matching_ids
+                ]
+                log_message(f"INFO После фильтрации по описаниям: {len(results)}")
 
             self.progress.emit(100)
             self.finished.emit(results)
@@ -284,10 +388,6 @@ class SearchWindow(QMainWindow):
         opts_row = QHBoxLayout()
         opts_row.setSpacing(12)
 
-        self.check_descriptions = QCheckBox("Описания")
-        self.check_descriptions.setChecked(settings.get("search_in_descriptions", False))
-        opts_row.addWidget(self.check_descriptions)
-
         self.check_alternative = QCheckBox("Invidious")
         self.check_alternative.setChecked(settings.get("use_alternative_api", False))
         self.check_alternative.stateChanged.connect(self._update_checkboxes)
@@ -318,6 +418,21 @@ class SearchWindow(QMainWindow):
         opts_row.addWidget(self.invidious_input)
 
         sp_layout.addLayout(opts_row)
+
+        # Строка фильтра по описаниям
+        desc_row = QHBoxLayout()
+        desc_row.setSpacing(8)
+        desc_row.addWidget(QLabel("Фильтр в описаниях:"))
+        self.desc_filter_input = QLineEdit()
+        self.desc_filter_input.setPlaceholderText(
+            "Слово или фраза в описании видео (оставьте пустым, чтобы не фильтровать)..."
+        )
+        self.desc_filter_input.setText(settings.get("desc_filter", ""))
+        self.desc_filter_input.setMaximumWidth(500)
+        self.desc_filter_input.returnPressed.connect(self._on_search)
+        desc_row.addWidget(self.desc_filter_input)
+        desc_row.addStretch()
+        sp_layout.addLayout(desc_row)
 
         layout.addWidget(self.settings_panel)
 
@@ -470,9 +585,9 @@ class SearchWindow(QMainWindow):
     def _on_type_changed(self, text):
         """Обработка смены типа поиска"""
         is_video = text == "video"
-        self.check_descriptions.setEnabled(is_video)
+        self.desc_filter_input.setEnabled(is_video)
         if not is_video:
-            self.check_descriptions.setChecked(False)
+            self.desc_filter_input.clear()
 
     def _on_search(self):
         """Запускает поиск"""
@@ -490,7 +605,7 @@ class SearchWindow(QMainWindow):
         settings["invidious_url"] = self.invidious_input.text()
         settings["use_alternative_api"] = self.check_alternative.isChecked()
         settings["use_ytdlp_search"] = self.check_ytdlp.isChecked()
-        settings["search_in_descriptions"] = self.check_descriptions.isChecked()
+        settings["desc_filter"] = self.desc_filter_input.text().strip()
         settings["save_settings_on_exit"] = self.check_save.isChecked()
 
         # Проверяем API ключ
@@ -514,14 +629,13 @@ class SearchWindow(QMainWindow):
             invidious_url=self.invidious_input.text(),
             use_alternative=self.check_alternative.isChecked(),
             use_ytdlp=self.check_ytdlp.isChecked(),
-            search_descriptions=self.check_descriptions.isChecked(),
-            advanced_search=False,
-            advanced_query=""
+            desc_filter=self.desc_filter_input.text().strip()
         )
 
         self.search_worker.finished.connect(self._on_search_finished)
         self.search_worker.error.connect(self._on_search_error)
         self.search_worker.progress.connect(self.progress.setValue)
+        self.search_worker.status.connect(lambda msg: self._set_status(msg, "info") if msg else None)
         self.search_worker.start()
 
     def _on_search_finished(self, results):

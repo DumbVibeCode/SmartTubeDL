@@ -32,6 +32,14 @@ download_history.json
 *.zip
 *.tmp
 
+# --- Отладочные дампы ---
+descriptions_debug.txt
+*_debug.txt
+
+# --- Файлы с секретами (текстовые) ---
+"youtube api.txt"
+youtube*.txt
+
 # --- Старые версии и бэкапы ---
 "Стабильная версия"/
 "Структура кода"/
