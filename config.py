@@ -165,29 +165,21 @@ def show_settings(icon, item):
     threading.Thread(target=set_download_folder).start()
 
 def ensure_invidious_running():
-    try:
-        response = requests.get("http://localhost:3000/api/v1/stats", timeout=2)
-        if response.status_code == 200:
-            log_message("SUCCESS Локальный сервер Invidious уже запущен")
+    import docker_manager
+    if docker_manager.is_invidious_running():
+        log_message("SUCCESS Локальный сервер Invidious уже запущен")
+        return
+    log_message("INFO Запускаем Invidious через Docker...")
+    ok, msg = docker_manager.start_invidious()
+    if not ok:
+        log_message(f"ERROR {msg}")
+        return
+    for _ in range(30):
+        time.sleep(1)
+        if docker_manager.is_invidious_running():
+            log_message("SUCCESS Invidious успешно запущен")
             return
-    except requests.exceptions.ConnectionError:
-        log_message("INFO Запускаем локальный сервер Invidious...")
-        try:
-            subprocess.Popen(["wsl", "bash", "-c", "/home/ksr123/start_invidious.sh"])
-            for i in range(20):
-                time.sleep(0.5)
-                try:
-                    r = requests.get("http://localhost:3000/api/v1/stats", timeout=1)
-                    if r.status_code == 200:
-                        log_message("SUCCESS Локальный сервер Invidious успешно запущен")
-                        return
-                except requests.exceptions.ConnectionError:
-                    continue
-            log_message("Ошибка: Invidious не ответил после запуска (timeout 10 сек)")
-        except Exception as e:
-            log_message(f"ERROR Ошибка при запуске локального Invidious: {e}")
-    except Exception as e:
-        log_message(f"ERROR Ошибка при проверке Invidious: {e}")
+    log_message("Ошибка: Invidious не ответил после запуска (timeout 30 сек)")
 
 def format_duration(duration):
     if not duration:

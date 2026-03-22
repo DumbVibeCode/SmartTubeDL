@@ -315,446 +315,397 @@ QStatusBar {{
 }}
 """
 
-# Минималистичная тема (Apple-стиль)
-COLORS_MINIMAL = {
-    # Основные цвета
-    "bg_primary": "#f5f5f7",       # Очень светло-серый Apple
-    "bg_secondary": "#ffffff",     # Чисто белый для карточек
-    "bg_input": "#ffffff",         # Белый фон полей
-
-    # Текст
-    "text_primary": "#1d1d1f",     # Почти чёрный
-    "text_secondary": "#86868b",   # Серый Apple
-    "text_placeholder": "#aeaeb2", # Светлый плейсхолдер
-
-    # Акценты
-    "accent": "#007aff",           # Синий Apple
-    "accent_hover": "#0066d6",     # Темнее при наведении
-    "accent_pressed": "#004999",   # Ещё темнее при нажатии
-    "accent_light": "#e8f4ff",     # Светлый акцент для hover
-
-    # Статусы
-    "success": "#34c759",          # Зелёный Apple
-    "warning": "#ff9500",          # Оранжевый Apple
-    "error": "#ff3b30",            # Красный Apple
-    "info": "#007aff",             # Синий
-
-    # Границы и тени
-    "border": "rgba(0, 0, 0, 0.08)",  # Почти невидимая граница
-    "border_focus": "#007aff",
-    "shadow": "rgba(0, 0, 0, 0.04)",
+# ── Компактная светлая тема ─────────────────────────────────────────────────
+_COLORS_LIGHT = {
+    "bg_primary":       "#f0f2f5",
+    "bg_secondary":     "#ffffff",
+    "bg_input":         "#ffffff",
+    "text_primary":     "#1a1a2e",
+    "text_secondary":   "#6b7280",
+    "text_placeholder": "#9ca3af",
+    "accent":           "#2563eb",
+    "accent_hover":     "#1d4ed8",
+    "accent_pressed":   "#1e40af",
+    "accent_light":     "#dbeafe",
+    "success":          "#16a34a",
+    "warning":          "#d97706",
+    "error":            "#dc2626",
+    "info":             "#2563eb",
+    "border":           "rgba(0,0,0,0.10)",
+    "border_focus":     "#2563eb",
 }
 
-STYLESHEET_MINIMAL = f"""
+# ── Компактная тёмная тема ───────────────────────────────────────────────────
+_COLORS_DARK = {
+    "bg_primary":       "#1e1e1e",
+    "bg_secondary":     "#252526",
+    "bg_input":         "#2d2d30",
+    "text_primary":     "#cccccc",
+    "text_secondary":   "#858585",
+    "text_placeholder": "#555555",
+    "accent":           "#0ea5e9",
+    "accent_hover":     "#38bdf8",
+    "accent_pressed":   "#7dd3fc",
+    "accent_light":     "rgba(14,165,233,0.15)",
+    "success":          "#4ec9b0",
+    "warning":          "#ce9178",
+    "error":            "#f48771",
+    "info":             "#9cdcfe",
+    "border":           "rgba(255,255,255,0.08)",
+    "border_focus":     "#0ea5e9",
+}
+
+
+def _build_stylesheet(c: dict) -> str:
+    """Генерирует QSS из цветового словаря (компактный стиль)."""
+    return f"""
 /* === ГЛОБАЛЬНЫЕ СТИЛИ === */
 QWidget {{
-    background-color: {COLORS_MINIMAL["bg_primary"]};
-    color: {COLORS_MINIMAL["text_primary"]};
-    font-family: "SF Pro Display", "SF Pro", "Helvetica Neue", "Segoe UI", sans-serif;
-    font-size: 13px;
+    background-color: {c["bg_primary"]};
+    color: {c["text_primary"]};
+    font-family: "Segoe UI", "Helvetica Neue", sans-serif;
+    font-size: 12px;
 }}
-
-/* === ГЛАВНОЕ ОКНО === */
 QMainWindow {{
-    background-color: {COLORS_MINIMAL["bg_primary"]};
+    background-color: {c["bg_primary"]};
 }}
 
-/* === ГРУППЫ (GroupBox) - карточки === */
+/* === ГРУППЫ === */
 QGroupBox {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: none;
-    border-radius: 12px;
-    margin-top: 12px;
-    padding: 16px;
-    padding-top: 24px;
+    background-color: {c["bg_secondary"]};
+    border: 1px solid {c["border"]};
+    border-radius: 4px;
+    margin-top: 8px;
+    padding: 8px;
+    padding-top: 16px;
 }}
-
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 16px;
-    padding: 0 8px;
-    color: {COLORS_MINIMAL["text_secondary"]};
-    font-size: 12px;
+    left: 8px;
+    padding: 0 4px;
+    color: {c["text_secondary"]};
+    font-size: 11px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }}
 
 /* === ПОЛЯ ВВОДА === */
 QLineEdit, QTextEdit, QPlainTextEdit {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: 1px solid {COLORS_MINIMAL["border"]};
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: {COLORS_MINIMAL["text_primary"]};
-    selection-background-color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["bg_input"]};
+    border: 1px solid {c["border"]};
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: {c["text_primary"]};
+    selection-background-color: {c["accent"]};
     selection-color: white;
 }}
-
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-    border: 2px solid {COLORS_MINIMAL["accent"]};
-    padding: 7px 11px;
+    border: 1px solid {c["border_focus"]};
 }}
-
 QLineEdit:hover, QTextEdit:hover {{
-    border: 1px solid rgba(0, 0, 0, 0.15);
-}}
-
-QLineEdit::placeholder {{
-    color: {COLORS_MINIMAL["text_placeholder"]};
+    border: 1px solid {c["border_focus"]};
 }}
 
 /* === КНОПКИ === */
 QPushButton {{
-    background-color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["accent"]};
     color: white;
     border: none;
-    border-radius: 8px;
-    padding: 8px 20px;
-    min-height: 24px;
+    border-radius: 4px;
+    padding: 4px 12px;
+    min-height: 18px;
     font-weight: 500;
 }}
-
 QPushButton:hover {{
-    background-color: {COLORS_MINIMAL["accent_hover"]};
+    background-color: {c["accent_hover"]};
 }}
-
 QPushButton:pressed {{
-    background-color: {COLORS_MINIMAL["accent_pressed"]};
+    background-color: {c["accent_pressed"]};
 }}
-
 QPushButton:disabled {{
-    background-color: #e5e5e5;
-    color: #a0a0a0;
+    background-color: {c["border"]};
+    color: {c["text_placeholder"]};
 }}
-
-/* Вторичная кнопка */
 QPushButton[secondary="true"] {{
-    background-color: rgba(0, 122, 255, 0.1);
-    color: {COLORS_MINIMAL["accent"]};
-    border: none;
+    background-color: {c["bg_input"]};
+    color: {c["text_primary"]};
+    border: 1px solid {c["border"]};
 }}
-
 QPushButton[secondary="true"]:hover {{
-    background-color: rgba(0, 122, 255, 0.15);
+    border-color: {c["accent"]};
+    color: {c["accent"]};
 }}
-
 QPushButton[secondary="true"]:pressed {{
-    background-color: rgba(0, 122, 255, 0.2);
+    background-color: {c["accent_light"]};
 }}
 
 /* === КОМБОБОКС === */
 QComboBox {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: 1px solid {COLORS_MINIMAL["border"]};
-    border-radius: 8px;
-    padding: 8px 12px;
-    min-width: 120px;
+    background-color: {c["bg_input"]};
+    border: 1px solid {c["border"]};
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-width: 80px;
+    color: {c["text_primary"]};
 }}
-
 QComboBox:hover {{
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-color: {c["border_focus"]};
 }}
-
 QComboBox:focus {{
-    border: 2px solid {COLORS_MINIMAL["accent"]};
-    padding: 7px 11px;
+    border: 1px solid {c["border_focus"]};
 }}
-
 QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: center right;
-    width: 24px;
+    width: 18px;
     border: none;
 }}
-
 QComboBox::down-arrow {{
     image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid {COLORS_MINIMAL["text_secondary"]};
-    margin-right: 8px;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid {c["text_secondary"]};
+    margin-right: 5px;
 }}
-
 QComboBox QAbstractItemView {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: 1px solid {COLORS_MINIMAL["border"]};
-    border-radius: 8px;
-    padding: 4px;
-    selection-background-color: {COLORS_MINIMAL["accent_light"]};
-    selection-color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["bg_secondary"]};
+    border: 1px solid {c["border"]};
+    selection-background-color: {c["accent_light"]};
+    selection-color: {c["text_primary"]};
     outline: none;
 }}
-
 QComboBox QAbstractItemView::item {{
-    padding: 8px 12px;
-    border-radius: 6px;
+    padding: 4px 8px;
 }}
 
 /* === ЧЕКБОКСЫ === */
 QCheckBox {{
-    spacing: 8px;
+    spacing: 6px;
+    color: {c["text_primary"]};
 }}
-
 QCheckBox::indicator {{
-    width: 18px;
-    height: 18px;
-    border: 2px solid {COLORS_MINIMAL["border"]};
-    border-radius: 4px;
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
+    width: 14px;
+    height: 14px;
+    border: 1px solid {c["border"]};
+    border-radius: 3px;
+    background-color: {c["bg_input"]};
 }}
-
 QCheckBox::indicator:hover {{
-    border-color: {COLORS_MINIMAL["text_secondary"]};
+    border-color: {c["accent"]};
 }}
-
 QCheckBox::indicator:checked {{
-    background-color: {COLORS_MINIMAL["accent"]};
-    border: 2px solid {COLORS_MINIMAL["accent"]};
+    background-color: {c["accent"]};
+    border-color: {c["accent"]};
 }}
 
 /* === ТАБЛИЦА === */
 QTableWidget, QTableView, QTreeView {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
+    background-color: {c["bg_secondary"]};
     border: none;
-    border-radius: 12px;
     gridline-color: transparent;
-    selection-background-color: {COLORS_MINIMAL["accent_light"]};
-    selection-color: {COLORS_MINIMAL["text_primary"]};
+    selection-background-color: {c["accent_light"]};
+    selection-color: {c["text_primary"]};
     outline: none;
 }}
-
 QTableWidget::item, QTableView::item, QTreeView::item {{
-    padding: 12px 16px;
+    padding: 3px 8px;
     border: none;
-    border-bottom: 1px solid {COLORS_MINIMAL["border"]};
+    border-bottom: 1px solid {c["border"]};
     outline: none;
 }}
-
 QTableWidget::item:selected, QTableView::item:selected {{
-    background-color: {COLORS_MINIMAL["accent_light"]};
-    color: {COLORS_MINIMAL["text_primary"]};
+    background-color: {c["accent_light"]};
+    color: {c["text_primary"]};
 }}
-
 QTableWidget::item:hover {{
-    background-color: rgba(0, 0, 0, 0.02);
+    background-color: {c["accent_light"]};
 }}
-
 QHeaderView::section {{
-    background-color: transparent;
-    color: {COLORS_MINIMAL["text_secondary"]};
-    padding: 12px 16px;
+    background-color: {c["bg_primary"]};
+    color: {c["text_secondary"]};
+    padding: 4px 8px;
     border: none;
-    border-bottom: 1px solid {COLORS_MINIMAL["border"]};
+    border-bottom: 1px solid {c["border"]};
     font-weight: 600;
     font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
 }}
 
 /* === ПРОГРЕСС БАР === */
 QProgressBar {{
-    background-color: #e5e5e5;
+    background-color: {c["border"]};
     border: none;
-    border-radius: 4px;
-    height: 8px;
+    border-radius: 3px;
     text-align: center;
 }}
-
 QProgressBar::chunk {{
-    background-color: {COLORS_MINIMAL["accent"]};
-    border-radius: 4px;
+    background-color: {c["accent"]};
+    border-radius: 3px;
 }}
 
 /* === СКРОЛЛБАР === */
 QScrollBar:vertical {{
     background-color: transparent;
-    width: 8px;
-    margin: 4px 2px;
+    width: 7px;
+    margin: 2px 1px;
 }}
-
 QScrollBar::handle:vertical {{
-    background-color: rgba(0, 0, 0, 0.2);
-    min-height: 30px;
-    border-radius: 4px;
+    background-color: {c["border"]};
+    min-height: 20px;
+    border-radius: 3px;
 }}
-
 QScrollBar::handle:vertical:hover {{
-    background-color: rgba(0, 0, 0, 0.35);
+    background-color: {c["text_secondary"]};
 }}
-
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
 }}
-
 QScrollBar:horizontal {{
     background-color: transparent;
-    height: 8px;
-    margin: 2px 4px;
+    height: 7px;
+    margin: 1px 2px;
 }}
-
 QScrollBar::handle:horizontal {{
-    background-color: rgba(0, 0, 0, 0.2);
-    min-width: 30px;
-    border-radius: 4px;
+    background-color: {c["border"]};
+    min-width: 20px;
+    border-radius: 3px;
 }}
-
 QScrollBar::handle:horizontal:hover {{
-    background-color: rgba(0, 0, 0, 0.35);
+    background-color: {c["text_secondary"]};
 }}
-
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
     width: 0;
 }}
 
 /* === МЕТКИ === */
 QLabel {{
-    color: {COLORS_MINIMAL["text_primary"]};
+    color: {c["text_primary"]};
     background: transparent;
 }}
-
 QLabel[secondary="true"] {{
-    color: {COLORS_MINIMAL["text_secondary"]};
-    font-size: 12px;
+    color: {c["text_secondary"]};
+    font-size: 11px;
 }}
 
 /* === МЕНЮ === */
 QMenu {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: 1px solid {COLORS_MINIMAL["border"]};
-    border-radius: 12px;
-    padding: 8px;
+    background-color: {c["bg_secondary"]};
+    border: 1px solid {c["border"]};
+    border-radius: 4px;
+    padding: 3px;
 }}
-
 QMenu::item {{
-    padding: 8px 16px;
-    border-radius: 6px;
+    padding: 4px 20px 4px 8px;
+    border-radius: 3px;
 }}
-
 QMenu::item:selected {{
-    background-color: {COLORS_MINIMAL["accent_light"]};
-    color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["accent_light"]};
+    color: {c["accent"]};
 }}
-
 QMenu::separator {{
     height: 1px;
-    background-color: {COLORS_MINIMAL["border"]};
-    margin: 8px 0;
+    background-color: {c["border"]};
+    margin: 3px 0;
 }}
 
 /* === ТУЛТИПЫ === */
 QToolTip {{
-    background-color: {COLORS_MINIMAL["text_primary"]};
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 12px;
+    background-color: {c["bg_primary"]};
+    color: {c["text_primary"]};
+    border: 1px solid {c["border"]};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
 }}
 
 /* === РАЗДЕЛИТЕЛЬ === */
 QSplitter::handle {{
     background-color: transparent;
 }}
+QSplitter::handle:horizontal {{ width: 6px; }}
+QSplitter::handle:vertical   {{ height: 6px; }}
 
-QSplitter::handle:horizontal {{
-    width: 8px;
-}}
-
-QSplitter::handle:vertical {{
-    height: 8px;
-}}
-
-/* === ОКНО ПОИСКА — специфичные стили === */
-
-/* Строка поиска */
+/* === ОКНО ПОИСКА === */
 #searchBar {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border-bottom: 1px solid {COLORS_MINIMAL["border"]};
+    background-color: {c["bg_secondary"]};
+    border-bottom: 1px solid {c["border"]};
 }}
-
 #searchInput {{
-    font-size: 15px;
-    padding: 10px 16px;
-    border-radius: 10px;
-    background-color: {COLORS_MINIMAL["bg_primary"]};
-    border: none;
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    background-color: {c["bg_input"]};
+    border: 1px solid {c["border"]};
+    color: {c["text_primary"]};
 }}
-
 #searchInput:focus {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border: 2px solid {COLORS_MINIMAL["accent"]};
-    padding: 8px 14px;
+    border: 1px solid {c["border_focus"]};
 }}
-
 #searchBtn {{
-    background-color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["accent"]};
     color: white;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
-    padding: 10px 24px;
-    border-radius: 10px;
+    padding: 5px 16px;
+    border-radius: 4px;
 }}
-
 #searchBtn:hover {{
-    background-color: {COLORS_MINIMAL["accent_hover"]};
+    background-color: {c["accent_hover"]};
 }}
-
-/* Панель настроек */
 #settingsPanel {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border-bottom: 1px solid {COLORS_MINIMAL["border"]};
+    background-color: {c["bg_secondary"]};
+    border-bottom: 1px solid {c["border"]};
 }}
-
-/* Тонкий прогресс-бар */
 #thinProgress {{
-    background-color: {COLORS_MINIMAL["bg_primary"]};
+    background-color: {c["bg_primary"]};
     border: none;
     border-radius: 0;
     max-height: 3px;
 }}
-
 #thinProgress::chunk {{
-    background-color: {COLORS_MINIMAL["accent"]};
+    background-color: {c["accent"]};
     border-radius: 0;
 }}
-
-/* Таблица результатов — чистая, без рамок */
 #resultsTable {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
+    background-color: {c["bg_secondary"]};
     border: none;
     border-radius: 0;
     outline: none;
 }}
-
-/* Нижняя панель */
 #bottomBar {{
-    background-color: {COLORS_MINIMAL["bg_secondary"]};
-    border-top: 1px solid {COLORS_MINIMAL["border"]};
+    background-color: {c["bg_secondary"]};
+    border-top: 1px solid {c["border"]};
 }}
-
-/* Лог */
 #logPanel {{
-    background-color: {COLORS_MINIMAL["bg_primary"]};
+    background-color: {c["bg_primary"]};
     border: none;
-    border-radius: 6px;
-    font-family: "Consolas", "SF Mono", monospace;
+    border-radius: 4px;
+    font-family: "Consolas", monospace;
     font-size: 11px;
-    color: {COLORS_MINIMAL["text_secondary"]};
-    padding: 8px;
+    color: {c["text_secondary"]};
+    padding: 6px;
 }}
-
-/* Прогресс загрузки */
 #downloadProgress {{
-    background-color: #e5e5e5;
+    background-color: {c["border"]};
     border: none;
     border-radius: 2px;
     max-height: 4px;
 }}
-
 #downloadProgress::chunk {{
-    background-color: {COLORS_MINIMAL["success"]};
+    background-color: {c["success"]};
     border-radius: 2px;
 }}
 """
+
+
+# Начальная тема (светлая по умолчанию)
+COLORS_MINIMAL = dict(_COLORS_LIGHT)
+STYLESHEET_MINIMAL = _build_stylesheet(_COLORS_LIGHT)
+
+
+def set_dark_mode(dark: bool) -> None:
+    """Переключает активную тему. Обновляет COLORS_MINIMAL и STYLESHEET_MINIMAL."""
+    global STYLESHEET_MINIMAL
+    src = _COLORS_DARK if dark else _COLORS_LIGHT
+    COLORS_MINIMAL.clear()
+    COLORS_MINIMAL.update(src)
+    STYLESHEET_MINIMAL = _build_stylesheet(src)

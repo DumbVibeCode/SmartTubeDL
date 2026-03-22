@@ -14,11 +14,13 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QAction, QClipboard, QGuiApplication, QPixmap, QIcon
 
+import styles as _styles
 from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
 from config import settings, save_settings
 from logger import log_message
 from queues import add_to_queue, process_queue
 from config import is_downloading
+import docker_manager
 
 
 class DurationTableWidgetItem(QTableWidgetItem):
@@ -471,6 +473,14 @@ class SearchWindow(QMainWindow):
         self.settings_btn.clicked.connect(self._toggle_settings)
         search_row.addWidget(self.settings_btn)
 
+        dark_now = settings.get("dark_theme", False)
+        self.theme_btn = QPushButton("☾" if dark_now else "☀")
+        self.theme_btn.setProperty("secondary", True)
+        self.theme_btn.setFixedWidth(32)
+        self.theme_btn.setToolTip("Переключить тёмную/светлую тему")
+        self.theme_btn.clicked.connect(self._toggle_theme)
+        search_row.addWidget(self.theme_btn)
+
         layout.addWidget(search_bar)
 
         # ── Прогресс-бар (тонкий, под строкой поиска) ──
@@ -557,7 +567,23 @@ class SearchWindow(QMainWindow):
         self.invidious_input.setMaximumWidth(200)
         opts_row.addWidget(self.invidious_input)
 
+        self.invidious_status_label = QLabel("●")
+        self.invidious_status_label.setToolTip("Статус Invidious")
+        opts_row.addWidget(self.invidious_status_label)
+
+        self.invidious_toggle_btn = QPushButton("Запустить")
+        self.invidious_toggle_btn.setProperty("secondary", True)
+        self.invidious_toggle_btn.setMaximumWidth(100)
+        self.invidious_toggle_btn.clicked.connect(self._toggle_invidious)
+        opts_row.addWidget(self.invidious_toggle_btn)
+
         sp_layout.addLayout(opts_row)
+
+        # Таймер проверки статуса Invidious
+        self._invidious_timer = QTimer(self)
+        self._invidious_timer.timeout.connect(self._refresh_invidious_status)
+        self._invidious_timer.start(5000)
+        self._refresh_invidious_status()
 
         # Строка фильтра по описаниям
         desc_row = QHBoxLayout()
@@ -667,6 +693,17 @@ class SearchWindow(QMainWindow):
         visible = not self.settings_panel.isVisible()
         self.settings_panel.setVisible(visible)
         self.settings_btn.setChecked(visible)
+
+    def _toggle_theme(self):
+        """Переключает тёмную/светлую тему и применяет глобально."""
+        from PyQt6.QtWidgets import QApplication
+        dark = not settings.get("dark_theme", False)
+        settings["dark_theme"] = dark
+        _styles.set_dark_mode(dark)
+        QApplication.instance().setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        self.theme_btn.setText("☾" if dark else "☀")
+        # Обновляем inline-стили статус-метки под новую тему
+        self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
 
     def _toggle_log(self):
         """Сворачивает/разворачивает панель лога"""
@@ -807,12 +844,12 @@ class SearchWindow(QMainWindow):
             # Отладочное логирование
             log_message(f"DEBUG UI: Saving description for row {row}, length: {len(description)}")
 
-            self.table.setItem(row, 0, QTableWidgetItem(title))
+            title_item = QTableWidgetItem(title)
+            title_item.setData(Qt.ItemDataRole.UserRole, url)
+            title_item.setData(Qt.ItemDataRole.UserRole + 1, description)
+            self.table.setItem(row, 0, title_item)
             self.table.setItem(row, 1, QTableWidgetItem(channel))
             self.table.setItem(row, 2, DurationTableWidgetItem(duration))
-
-            self.video_urls[row] = url
-            self.video_descriptions[row] = description
 
         self._set_status(f"Найдено: {len(results)}", "success")
 
@@ -841,7 +878,8 @@ class SearchWindow(QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(68)
 
         rows_ids = []
-        for row, url in self.video_urls.items():
+        for row in range(self.table.rowCount()):
+            url = self._url_for_row(row)
             vid_id = extract_video_id(url)
             if vid_id:
                 rows_ids.append((row, vid_id))
@@ -868,11 +906,44 @@ class SearchWindow(QMainWindow):
             )
             item.setIcon(QIcon(pixmap))
 
+    def _refresh_invidious_status(self):
+        """Запускает проверку статуса Invidious в фоновом потоке."""
+        def check():
+            running = docker_manager.is_invidious_running()
+            def update():
+                if running:
+                    self.invidious_status_label.setStyleSheet("color: #4caf50; font-size: 16px;")
+                    self.invidious_status_label.setToolTip("Invidious запущен")
+                    self.invidious_toggle_btn.setText("Остановить")
+                else:
+                    self.invidious_status_label.setStyleSheet("color: #888; font-size: 16px;")
+                    self.invidious_status_label.setToolTip("Invidious не запущен")
+                    self.invidious_toggle_btn.setText("Запустить")
+            QTimer.singleShot(0, update)
+        threading.Thread(target=check, daemon=True).start()
+
+    def _toggle_invidious(self):
+        """Запускает или останавливает Invidious Docker контейнер."""
+        running = docker_manager.is_invidious_running()
+        if running:
+            ok, msg = docker_manager.stop_invidious()
+        else:
+            ok, msg = docker_manager.start_invidious()
+        if not ok:
+            QMessageBox.warning(self, "Docker", msg)
+        else:
+            self.invidious_toggle_btn.setEnabled(False)
+            self.invidious_toggle_btn.setText("...")
+            # Даём время контейнеру запуститься/остановиться
+            QTimer.singleShot(3000, lambda: (
+                self.invidious_toggle_btn.setEnabled(True),
+                self._refresh_invidious_status()
+            ))
+
     def _update_ytdlp(self):
         """Открывает диалог обновления yt-dlp"""
-        from styles import STYLESHEET_MINIMAL as STYLESHEET
         dialog = YtdlpUpdateDialog(self)
-        dialog.setStyleSheet(STYLESHEET)
+        dialog.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         dialog.exec()
 
     def _load_last_results(self):
@@ -923,11 +994,24 @@ class SearchWindow(QMainWindow):
         """Возвращает список выбранных строк"""
         return list(set(item.row() for item in self.table.selectedItems()))
 
+    def _url_for_row(self, row: int) -> str:
+        item = self.table.item(row, 0)
+        return (item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def _desc_for_row(self, row: int) -> str:
+        item = self.table.item(row, 0)
+        return (item.data(Qt.ItemDataRole.UserRole + 1) or "Описание отсутствует") if item else "Описание отсутствует"
+
+    def _set_desc_for_row(self, row: int, desc: str) -> None:
+        item = self.table.item(row, 0)
+        if item:
+            item.setData(Qt.ItemDataRole.UserRole + 1, desc)
+
     def _copy_url(self):
         """Копирует URL в буфер обмена"""
         rows = self._get_selected_rows()
         if rows:
-            url = self.video_urls.get(rows[0], "")
+            url = self._url_for_row(rows[0])
             if url:
                 # Обновляем время копирования, чтобы мониторинг буфера не начал скачивание
                 from clipboard_utils import update_last_copy_time
@@ -941,7 +1025,7 @@ class SearchWindow(QMainWindow):
         """Открывает видео в браузере"""
         rows = self._get_selected_rows()
         if rows:
-            url = self.video_urls.get(rows[0], "")
+            url = self._url_for_row(rows[0])
             if url:
                 webbrowser.open(url)
                 self._set_status("Открыто в браузере", "info")
@@ -954,7 +1038,7 @@ class SearchWindow(QMainWindow):
 
         row = rows[0]
         title = self.table.item(row, 0).text()
-        url = self.video_urls.get(row, "")
+        url = self._url_for_row(row)
 
         if not url:
             self._set_status("URL не найден", "warning")
@@ -962,10 +1046,9 @@ class SearchWindow(QMainWindow):
 
         # Создаём окно плеера
         from video_player import VideoPlayerWindow
-        from styles import STYLESHEET_MINIMAL as STYLESHEET
 
         player_window = VideoPlayerWindow(title, url)
-        player_window.setStyleSheet(STYLESHEET)
+        player_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         player_window.show()
         player_window.raise_()
         player_window.activateWindow()
@@ -989,29 +1072,21 @@ class SearchWindow(QMainWindow):
 
         row = rows[0]
         title = self.table.item(row, 0).text()
-        description = self.video_descriptions.get(row, "Описание отсутствует")
-        url = self.video_urls.get(row, "")
-
-        # Отладочное логирование
-        log_message(f"DEBUG Opening description window for row {row}")
-        log_message(f"DEBUG Description length: {len(description)}")
+        description = self._desc_for_row(row)
+        url = self._url_for_row(row)
 
         # Если описание короткое (обрезанное Search API), загружаем полное
         if len(description) < 200 and url:
-            log_message("DEBUG Description is short, fetching full description...")
             full_description = self._fetch_full_description(url)
             if full_description and len(full_description) > len(description):
                 description = full_description
-                # Сохраняем полное описание
-                self.video_descriptions[row] = description
-                log_message(f"DEBUG Full description loaded, length: {len(description)}")
+                self._set_desc_for_row(row, description)
 
         # Создаём и показываем окно описания
         from description import DescriptionWindow
-        from styles import STYLESHEET_MINIMAL as STYLESHEET
 
         desc_window = DescriptionWindow(title, description, url)
-        desc_window.setStyleSheet(STYLESHEET)
+        desc_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         desc_window.show()
         desc_window.raise_()
         desc_window.activateWindow()
@@ -1074,7 +1149,7 @@ class SearchWindow(QMainWindow):
 
         added = 0
         for row in rows:
-            url = self.video_urls.get(row, "")
+            url = self._url_for_row(row)
             if url and add_to_queue(url):
                 added += 1
                 log_message(f"INFO Добавлено в очередь: {url}")

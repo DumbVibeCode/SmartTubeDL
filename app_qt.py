@@ -24,7 +24,8 @@ from PyQt6.QtCore import (
     QPropertyAnimation, QEasingCurve, QPoint, QRect
 )
 
-from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
+import styles as _styles
+from styles import COLORS_MINIMAL as COLORS
 from config import settings, save_settings, load_settings, SETTINGS_FILE, format_invidious_duration
 from logger import log_message
 from queues import get_queue_count, ensure_queue_file_exists
@@ -313,11 +314,12 @@ class YouTubeDownloaderApp(QApplication):
         # Tray-приложение: не завершать при закрытии последнего окна
         self.setQuitOnLastWindowClosed(False)
 
-        # Применяем стили
-        self.setStyleSheet(STYLESHEET)
-
         # Загружаем настройки
         settings.update(load_settings())
+
+        # Применяем тему (тёмную/светлую) из настроек
+        _styles.set_dark_mode(settings.get("dark_theme", False))
+        self.setStyleSheet(_styles.STYLESHEET_MINIMAL)
 
         # Создаём системный трей
         self.tray = TrayIcon(self)
@@ -382,7 +384,7 @@ class YouTubeDownloaderApp(QApplication):
         """Показывает окно истории загрузок"""
         if not hasattr(self, 'history_window') or self.history_window is None:
             self.history_window = HistoryWindow()
-            self.history_window.setStyleSheet(STYLESHEET)
+            self.history_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
 
         self.history_window.show()
         self.history_window.raise_()
@@ -393,7 +395,7 @@ class YouTubeDownloaderApp(QApplication):
         if self.debug_window is None:
             from debug_qt import DebugWindow
             self.debug_window = DebugWindow()
-            self.debug_window.setStyleSheet(STYLESHEET)
+            self.debug_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
 
         self.debug_window.show()
         self.debug_window.raise_()
@@ -405,7 +407,7 @@ class YouTubeDownloaderApp(QApplication):
         # Убираем уже закрытые окна
         self.video_list_windows = [w for w in self.video_list_windows if w.isVisible()]
         win = VideoListWindow(url, mode)
-        win.setStyleSheet(STYLESHEET)
+        win.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         self.video_list_windows.append(win)
         win.show()
         win.raise_()
