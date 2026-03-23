@@ -243,8 +243,10 @@ def progress_hook(d):
                 globals()['global_downloaded'] = d["downloaded_bytes"]
                 update_speed(global_downloaded)
 
-            percent = float(d["_percent_str"].strip().replace("%", ""))
-            update_download_status("Загрузка...", int(percent), globals()['global_downloaded'], globals()['global_file_size'])
+            total = globals()['global_file_size']
+            downloaded = globals()['global_downloaded']
+            percent = (downloaded / total * 100) if total else 0
+            update_download_status("Загрузка...", int(percent), downloaded, total)
 
         elif d["status"] == "finished":
             update_download_status("Готово!", 100, 0, 0)
