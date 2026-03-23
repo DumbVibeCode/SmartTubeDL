@@ -696,7 +696,14 @@ class TrayIcon(QSystemTrayIcon):
             status_text += f" (в очереди: {queue_count})"
 
         self.action_status.setText(status_text)
-        self.setToolTip(f"YouTube Downloader - {status}")
+
+        import utils
+        speed = utils.download_speed
+        if status == "Загрузка..." and speed and speed != "0 KB/s":
+            tooltip = f"YouTube Downloader - {status} ({speed})"
+        else:
+            tooltip = f"YouTube Downloader - {status}"
+        self.setToolTip(tooltip)
 
 
 def main():
