@@ -23,7 +23,7 @@ from queues import add_to_queue, process_queue
 
 YDL_OPTS_BASE = {
     'quiet': True,
-    'no_color': True,
+    'color': 'never',
     'ignoreerrors': True,
     'js_runtimes': {'node': {}},
     'remote_components': {'ejs': 'github'},
@@ -65,6 +65,7 @@ class VideoListWindow(QWidget):
     sig_progress = pyqtSignal(int, str)               # percent, label_text
     sig_loading_done = pyqtSignal(str)                # итоговый статус
     sig_error = pyqtSignal(str)                       # сообщение об ошибке
+    sig_show_description = pyqtSignal(str, str, str)  # title, description, url
 
     def __init__(self, url: str, mode: str = "channel"):
         """
@@ -196,6 +197,7 @@ class VideoListWindow(QWidget):
         self.sig_progress.connect(self._on_progress)
         self.sig_loading_done.connect(self._on_loading_done)
         self.sig_error.connect(self._on_error)
+        self.sig_show_description.connect(self._open_description_window)
 
     # ------------------------------------------------------------------
     # Слоты (вызываются в главном потоке через сигналы)
@@ -475,11 +477,14 @@ class VideoListWindow(QWidget):
         self.status_label.setText("Загрузка описания...")
 
         def fetch():
-            from fetch import fetch_description_with_ytdlp
-            desc = fetch_description_with_ytdlp(url) if url else ""
+            try:
+                from fetch import fetch_description_with_ytdlp
+                desc = fetch_description_with_ytdlp(url) if url else ""
+            except Exception as e:
+                log_message(f"ERROR Ошибка загрузки описания: {e}")
+                desc = ""
             self._descriptions[video_id] = desc or "Описание отсутствует"
-            from PyQt6.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._open_description_window(title, self._descriptions[video_id], url))
+            self.sig_show_description.emit(title, self._descriptions[video_id], url)
 
         threading.Thread(target=fetch, daemon=True).start()
 
@@ -488,6 +493,8 @@ class VideoListWindow(QWidget):
         from description import DescriptionWindow
         win = DescriptionWindow(title, description, url)
         win.show()
+        win.raise_()
+        win.activateWindow()
         self.description_windows.append(win)
         win.destroyed.connect(
             lambda: self.description_windows.remove(win)
