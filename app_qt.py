@@ -702,6 +702,18 @@ class TrayIcon(QSystemTrayIcon):
         self.hide()
         QApplication.quit()
 
+        # Диагностика: какие потоки не дали завершиться
+        import threading, time
+        time.sleep(0.5)
+        alive = [t for t in threading.enumerate() if t.is_alive() and not t.daemon and t.name != "MainThread"]
+        if alive:
+            print("=== ЖИВЫЕ НЕ-DAEMON ПОТОКИ ПОСЛЕ ВЫХОДА ===")
+            for t in alive:
+                print(f"  - {t.name}: {t}")
+            print("=============================================")
+        import os
+        os._exit(0)
+
     def update_status(self, status: str, progress: int = None):
         """Обновляет статус в меню и подсказку"""
         self.download_status = status
