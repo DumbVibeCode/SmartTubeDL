@@ -425,7 +425,7 @@ class YouTubeDownloaderApp(QApplication):
             log_message(f"INFO Прямая загрузка по ссылке: {url}")
             import threading
             from download import download_video
-            threading.Thread(target=download_video, args=(url,)).start()
+            threading.Thread(target=download_video, args=(url,), daemon=True).start()
 
     def show_settings_dialog(self):
         """Диалог выбора папки для загрузки"""

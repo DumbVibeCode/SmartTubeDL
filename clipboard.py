@@ -74,19 +74,19 @@ def clipboard_monitor():
                 log_message(f"INFO Обнаружена новая ссылка: {current_clipboard}")
                 if "playlist?list=" in current_clipboard:
                     log_message("INFO Обнаружена ссылка на плейлист")
-                    threading.Thread(target=download_playlist_with_selection, args=(current_clipboard,)).start()
+                    threading.Thread(target=download_playlist_with_selection, args=(current_clipboard,), daemon=True).start()
                 elif "/channel/" in current_clipboard or "/c/" in current_clipboard or "/user/" in current_clipboard or "/@" in current_clipboard:
                     log_message("INFO Обнаружена ссылка на канал")
-                    threading.Thread(target=download_channel_with_selection, args=(current_clipboard,)).start()
+                    threading.Thread(target=download_channel_with_selection, args=(current_clipboard,), daemon=True).start()
                 else:
                     if is_downloading:
                         log_message("INFO Загрузка уже идет, добавляем в очередь")
-                        threading.Thread(target=add_to_queue, args=(current_clipboard,)).start()
+                        threading.Thread(target=add_to_queue, args=(current_clipboard,), daemon=True).start()
                     else:
                         log_message("INFO Запускаем загрузку напрямую")
-                        
+
                         current_downloading_url = current_clipboard
-                        threading.Thread(target=download_video, args=(current_clipboard,)).start()
+                        threading.Thread(target=download_video, args=(current_clipboard,), daemon=True).start()
                         clear_clipboard()  # Очищаем буфер после запуска загрузки
             # log_message("DEBUG Проверка текущего содержимого буфера обмена")
             # log_message(f"DEBUG Текущее содержимое: {current_clipboard}")
