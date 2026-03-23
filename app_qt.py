@@ -653,6 +653,7 @@ class TrayIcon(QSystemTrayIcon):
         is_video = fmt == "mp4"
         for action in self.quality_actions:
             action.setEnabled(is_video)
+        self.update_status(self.download_status)
 
     def _set_quality(self, quality: str):
         settings["video_quality"] = quality
@@ -697,12 +698,13 @@ class TrayIcon(QSystemTrayIcon):
 
         self.action_status.setText(status_text)
 
+        fmt = settings.get("download_format", "mp4").upper()
         import utils
         speed = utils.download_speed
         if status == "Загрузка..." and speed and speed != "0 KB/s":
-            tooltip = f"YouTube Downloader - {status} ({speed})"
+            tooltip = f"YouTube Downloader [{fmt}] — {status} ({speed})"
         else:
-            tooltip = f"YouTube Downloader - {status}"
+            tooltip = f"YouTube Downloader [{fmt}] — {status}"
         self.setToolTip(tooltip)
 
 
