@@ -133,7 +133,7 @@ def download_video(url, from_queue=False):
         'cookies': cookies_path,
         'restrict_filenames': False,
         'windowsfilenames': False,
-        'no_color': True,
+        'color': 'never',
         'noplaylist': True,
         'verbose': True,  # Включаем подробное логирование
         'debug': True,    # Добавляем режим отладки
