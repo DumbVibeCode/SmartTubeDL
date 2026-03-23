@@ -687,6 +687,17 @@ class TrayIcon(QSystemTrayIcon):
             w.close()
         self.app.video_list_windows.clear()
 
+        # Останавливаем QThread-ы окна поиска (они C++ потоки, не daemon)
+        sw = self.app.search_window
+        if sw is not None:
+            for attr in ("search_worker", "thumbnail_loader"):
+                t = getattr(sw, attr, None)
+                if t is not None and t.isRunning():
+                    t.quit()
+                    t.wait(500)   # ждём не более 0.5 сек
+                    if t.isRunning():
+                        t.terminate()
+
         log_message("INFO Приложение завершено")
         self.hide()
         QApplication.quit()
