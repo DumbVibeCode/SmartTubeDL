@@ -683,6 +683,10 @@ class TrayIcon(QSystemTrayIcon):
             save_settings(settings)
             log_message("INFO Настройки сохранены при выходе")
 
+        for w in self.app.video_list_windows:
+            w.close()
+        self.app.video_list_windows.clear()
+
         log_message("INFO Приложение завершено")
         self.hide()
         QApplication.quit()
