@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QAbstractItemView,
     QInputDialog
 )
-from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QImage, QFont, QPen
+from PyQt6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QFont, QPen
 from PyQt6.QtCore import (
     Qt, QTimer, QObject, pyqtSignal, QMetaObject, Q_ARG,
     QPropertyAnimation, QEasingCurve, QPoint, QRect
@@ -471,45 +471,32 @@ class TrayIcon(QSystemTrayIcon):
         log_message("INFO Системный трей инициализирован")
 
     def _create_icon(self) -> QIcon:
-        """Создаёт или загружает иконку"""
-        icon_path = os.path.join(os.getcwd(), "icon.ico")
+        """Создаёт иконку по текущему формату (всегда программная для единого стиля)."""
+        return self._create_format_icon()
 
-        if os.path.exists(icon_path):
-            try:
-                from PIL import Image
-                pil_image = Image.open(icon_path)
-                pil_image = pil_image.convert("RGBA")
-                pil_image = pil_image.resize((64, 64), Image.Resampling.LANCZOS)
+    def _create_format_icon(self, fmt: str = None) -> QIcon:
+        """Создаёт иконку с цветом по формату: красная=видео, синяя=музыка."""
+        if fmt is None:
+            fmt = settings.get("download_format", "mp4")
+        color = "#e74c3c" if fmt == "mp4" else "#2980b9"
+        label = "YT" if fmt == "mp4" else "♪"
 
-                data = pil_image.tobytes("raw", "RGBA")
-                qimage = QImage(data, 64, 64, QImage.Format.Format_RGBA8888)
-                pixmap = QPixmap.fromImage(qimage)
-
-                if not pixmap.isNull():
-                    log_message("INFO Иконка загружена из icon.ico")
-                    return QIcon(pixmap)
-            except Exception as e:
-                log_message(f"WARNING Ошибка загрузки icon.ico: {e}")
-        else:
-            log_message("WARNING icon.ico не найден")
-
-        return self._create_default_icon()
-
-    def _create_default_icon(self) -> QIcon:
-        """Создаёт иконку по умолчанию"""
         pixmap = QPixmap(64, 64)
-        pixmap.fill(QColor("#e74c3c"))
+        pixmap.fill(QColor(color))
 
         painter = QPainter(pixmap)
         painter.setPen(QColor("white"))
         font = painter.font()
-        font.setPixelSize(24)
+        font.setPixelSize(28 if label == "YT" else 34)
         font.setBold(True)
         painter.setFont(font)
-        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "YT")
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, label)
         painter.end()
 
         return QIcon(pixmap)
+
+    def _create_default_icon(self) -> QIcon:
+        return self._create_format_icon()
 
     def _create_progress_icon(self, progress: int) -> QIcon:
         """Создаёт иконку с индикатором прогресса загрузки"""
@@ -653,6 +640,8 @@ class TrayIcon(QSystemTrayIcon):
         is_video = fmt == "mp4"
         for action in self.quality_actions:
             action.setEnabled(is_video)
+        self._original_icon = self._create_format_icon(fmt)
+        self.setIcon(self._original_icon)
         self.update_status(self.download_status)
 
     def _set_quality(self, quality: str):
