@@ -17,6 +17,20 @@ from clipboard_utils import update_last_copy_time
 
 invidious_url_var = ""
 
+
+class _YtdlpLogger:
+    def debug(self, msg):
+        if msg.startswith('[debug]'):
+            return
+        log_message(f"DEBUG yt-dlp: {msg}")
+    def info(self, msg):
+        log_message(f"INFO yt-dlp: {msg}")
+    def warning(self, msg):
+        log_message(f"WARNING yt-dlp: {msg}")
+    def error(self, msg):
+        log_message(f"ERROR yt-dlp: {msg}")
+
+
 def download_video(url, from_queue=False):
     global is_downloading, global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
 
@@ -133,10 +147,8 @@ def download_video(url, from_queue=False):
         'cookies': cookies_path,
         'restrict_filenames': False,
         'windowsfilenames': False,
-        'color': 'never',
         'noplaylist': True,
-        'verbose': True,  # Включаем подробное логирование
-        'debug': True,    # Добавляем режим отладки
+        'logger': _YtdlpLogger(),
         'js_runtimes': {'node': {}},                # JS runtime для YouTube challenge
         'remote_components': {'ejs': 'github'},  # EJS solver для YouTube
     }
