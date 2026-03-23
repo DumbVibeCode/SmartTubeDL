@@ -80,6 +80,8 @@ class VideoListWindow(QWidget):
         self._video_urls: dict[str, str] = {}          # video_id -> watch URL
         self._original_data: dict[str, tuple] = {}     # video_id -> (title, duration, date)
         self._valid_entries: list = []                  # raw yt-dlp entries
+        self._descriptions: dict[str, str] = {}        # video_id -> description (кэш)
+        self.description_windows: list = []
 
         kind_ru = "канала" if mode == "channel" else "плейлиста"
         self.setWindowTitle(f"Загрузка видео с {kind_ru}")
@@ -434,6 +436,9 @@ class VideoListWindow(QWidget):
             lambda: self._copy_url(video_id))
         menu.addAction("Открыть в браузере").triggered.connect(
             lambda: self._open_in_browser(video_id))
+        menu.addSeparator()
+        menu.addAction("Посмотреть описание").triggered.connect(
+            lambda: self._show_description(row))
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _copy_url(self, video_id: str):
@@ -452,6 +457,42 @@ class VideoListWindow(QWidget):
         url = self._video_urls.get(video_id, "")
         if url:
             webbrowser.open(url)
+
+    def _show_description(self, row: int):
+        """Показывает описание видео (загружает по требованию)."""
+        video_id = self._video_id_at_row(row)
+        if not video_id:
+            return
+        url = self._video_urls.get(video_id, "")
+        title_item = self.table.item(row, 0)
+        title = title_item.text() if title_item else ""
+
+        # Если описание уже в кэше — сразу показываем
+        if video_id in self._descriptions:
+            self._open_description_window(title, self._descriptions[video_id], url)
+            return
+
+        self.status_label.setText("Загрузка описания...")
+
+        def fetch():
+            from fetch import fetch_description_with_ytdlp
+            desc = fetch_description_with_ytdlp(url) if url else ""
+            self._descriptions[video_id] = desc or "Описание отсутствует"
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: self._open_description_window(title, self._descriptions[video_id], url))
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def _open_description_window(self, title: str, description: str, url: str):
+        self.status_label.setText(f"Видео: {self._count_visible()}")
+        from description import DescriptionWindow
+        win = DescriptionWindow(title, description, url)
+        win.show()
+        self.description_windows.append(win)
+        win.destroyed.connect(
+            lambda: self.description_windows.remove(win)
+            if win in self.description_windows else None
+        )
 
     def _on_double_click(self, index):
         video_id = self._video_id_at_row(index.row())
