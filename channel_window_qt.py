@@ -478,8 +478,8 @@ class VideoListWindow(QWidget):
 
         def fetch():
             try:
-                from fetch import fetch_description_with_ytdlp
-                desc = fetch_description_with_ytdlp(url) if url else ""
+                from fetch import fetch_description_with_bs
+                desc = fetch_description_with_bs(url) if url else ""
             except Exception as e:
                 log_message(f"ERROR Ошибка загрузки описания: {e}")
                 desc = ""
