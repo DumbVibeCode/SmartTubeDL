@@ -37,7 +37,7 @@ def download_video(url, from_queue=False):
         queue_count = get_queue_count()
         if queue_count > 0:
             log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
-            threading.Thread(target=process_queue).start()
+            threading.Thread(target=process_queue, daemon=True).start()
         else:
             log_message("INFO Очередь пуста после завершения загрузки")
             clear_queue_file()
@@ -75,7 +75,7 @@ def download_video(url, from_queue=False):
 
             if info.get('is_premiere', False) or info.get('live_status', '') == 'is_upcoming':
                 log_message(f"INFO Пропуск премьеры: {url}")
-                threading.Thread(target=show_notification, args=(tray_icon, "Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна.")).start()
+                threading.Thread(target=show_notification, args=(tray_icon, "Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна."), daemon=True).start()
                 on_download_complete()
                 if from_queue:
                     remove_from_queue(url)
@@ -96,7 +96,7 @@ def download_video(url, from_queue=False):
 
     except yt_dlp.utils.DownloadError as e:
         log_message(f"ERROR Видео недоступно: {url}. Ошибка: {e}")
-        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Видео недоступно: {str(e)}")).start()
+        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Видео недоступно: {str(e)}"), daemon=True).start()
         if from_queue:
             remove_from_queue(url)
         on_download_complete()
@@ -105,7 +105,7 @@ def download_video(url, from_queue=False):
     except Exception as e:
         log_message(f"ERROR Ошибка при проверке видео: {url}. Подробности: {e}")
         log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
-        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Не удалось загрузить видео: {str(e)}")).start()
+        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Не удалось загрузить видео: {str(e)}"), daemon=True).start()
         if from_queue:
             remove_from_queue(url)
         on_download_complete()
@@ -156,7 +156,7 @@ def download_video(url, from_queue=False):
         ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
 
     try:
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружается...")).start()
+        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружается..."), daemon=True).start()
         
         log_message(f"DEBUG ydl_opts: {ydl_opts}")
         ydl_opts["progress_hooks"] = [progress_hook]
@@ -199,13 +199,13 @@ def download_video(url, from_queue=False):
         if from_queue:
             remove_from_queue(url)
 
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружено успешно!")).start()
+        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружено успешно!"), daemon=True).start()
 
         log_message(f"SUCCESS Загрузка завершена: {url}")
 
     except Exception as e:
         error_message = f"ERROR Ошибка загрузки видео: {url}. Подробности: {e}"
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", f"Ошибка: {str(e)}")).start()
+        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", f"Ошибка: {str(e)}"), daemon=True).start()
         log_message(error_message)
         log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
 

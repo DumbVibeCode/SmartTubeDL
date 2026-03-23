@@ -95,7 +95,7 @@ def process_queue():
         return
     
     log_message(f"INFO Начало загрузки URL из очереди: {url}")
-    threading.Thread(target=download_video, args=(url, True)).start()            
+    threading.Thread(target=download_video, args=(url, True), daemon=True).start()            
 
 def check_queue_on_startup():
     """Проверяет наличие URL в очереди при запуске программы"""
@@ -103,4 +103,4 @@ def check_queue_on_startup():
     if count > 0:
         log_message(f"При запуске обнаружено {count} URL в очереди")
         time.sleep(3)
-        threading.Thread(target=process_queue).start()
+        threading.Thread(target=process_queue, daemon=True).start()
