@@ -420,49 +420,40 @@ def search_via_youtube_api(query, api_key, search_type, order, max_results, sear
         if search_type == 'video':
             video_ids = [item['id']['videoId'] for item in results if 'id' in item and 'videoId' in item['id']]
             if video_ids:
+                from config import format_duration
                 videos_url = "https://www.googleapis.com/youtube/v3/videos"
-                videos_params = {
-                    'key': api_key,
-                    'part': 'contentDetails',
-                    'id': ','.join(video_ids)
-                }
-                response = requests.get(videos_url, params=videos_params)
-                if response.status_code == 200:
-                    video_data = response.json()
-                    for video in video_data.get('items', []):
-                        duration_iso = video.get('contentDetails', {}).get('duration', '')
-                        if duration_iso:
-                            # Конвертируем ISO 8601 в читаемый формат
-                            from config import format_duration
-                            video_durations[video['id']] = format_duration(duration_iso)
+                for chunk in [video_ids[i:i+50] for i in range(0, len(video_ids), 50)]:
+                    videos_params = {
+                        'key': api_key,
+                        'part': 'contentDetails',
+                        'id': ','.join(chunk)
+                    }
+                    response = requests.get(videos_url, params=videos_params)
+                    if response.status_code == 200:
+                        for video in response.json().get('items', []):
+                            duration_iso = video.get('contentDetails', {}).get('duration', '')
+                            if duration_iso:
+                                video_durations[video['id']] = format_duration(duration_iso)
 
         if search_type == 'channel':
             channel_ids = [item['id']['channelId'] for item in results]
             channels_url = "https://www.googleapis.com/youtube/v3/channels"
-            channels_params = {
-                'key': api_key,
-                'part': 'statistics',
-                'id': ','.join(channel_ids)
-            }
-            response = requests.get(channels_url, params=channels_params)
-            if response.status_code == 200:
-                channel_data = response.json()
-                for channel in channel_data.get('items', []):
-                    channel_stats[channel['id']] = channel['statistics'].get('videoCount', 'N/A')
+            for chunk in [channel_ids[i:i+50] for i in range(0, len(channel_ids), 50)]:
+                channels_params = {'key': api_key, 'part': 'statistics', 'id': ','.join(chunk)}
+                response = requests.get(channels_url, params=channels_params)
+                if response.status_code == 200:
+                    for channel in response.json().get('items', []):
+                        channel_stats[channel['id']] = channel['statistics'].get('videoCount', 'N/A')
 
         elif search_type == 'playlist':
             playlist_ids = [item['id']['playlistId'] for item in results]
             playlists_url = "https://www.googleapis.com/youtube/v3/playlists"
-            playlists_params = {
-                'key': api_key,
-                'part': 'contentDetails',
-                'id': ','.join(playlist_ids)
-            }
-            response = requests.get(playlists_url, params=playlists_params)
-            if response.status_code == 200:
-                playlist_data = response.json()
-                for playlist in playlist_data.get('items', []):
-                    channel_stats[playlist['id']] = playlist['contentDetails'].get('itemCount', 'N/A')
+            for chunk in [playlist_ids[i:i+50] for i in range(0, len(playlist_ids), 50)]:
+                playlists_params = {'key': api_key, 'part': 'contentDetails', 'id': ','.join(chunk)}
+                response = requests.get(playlists_url, params=playlists_params)
+                if response.status_code == 200:
+                    for playlist in response.json().get('items', []):
+                        channel_stats[playlist['id']] = playlist['contentDetails'].get('itemCount', 'N/A')
 
         for item in results:
             if search_type == 'video':
