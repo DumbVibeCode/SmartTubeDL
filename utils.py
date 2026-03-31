@@ -20,6 +20,9 @@ stop_requested = False       # True = остановить текущую заг
 current_download_url = ""    # URL текущей активной загрузки
 is_paused = False            # True = загрузка поставлена на паузу
 
+# Кэш названий для очереди {url: title}
+queue_titles: dict = {}
+
 # utils.py
 def update_progress(completed: int, total: int, progress_var: tk.DoubleVar = None, root: tk.Tk = None, status_var: tk.StringVar = None):
     """Обновляет прогресс-бар и статусную строку"""

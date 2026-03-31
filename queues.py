@@ -18,7 +18,7 @@ def ensure_queue_file_exists():
         except Exception as e:
             log_message(f"ERROR Ошибка при создании файла очереди: {e}")
 
-def add_to_queue(url):
+def add_to_queue(url, title=None):
     """Добавляет URL в файловую очередь загрузок"""
     urls = get_queue_urls()
     if url in urls:
@@ -27,6 +27,9 @@ def add_to_queue(url):
     try:
         with open(QUEUE_FILE, "a", encoding="utf-8") as f:
             f.write(f"{url}\n")
+        if title:
+            import utils as _u
+            _u.queue_titles[url] = title
         log_message(f"INFO Добавлено в очередь: {url}")
         return True
     except Exception as e:
@@ -67,6 +70,8 @@ def remove_from_queue(url):
             with open(QUEUE_FILE, "w", encoding="utf-8") as f:
                 for u in urls:
                     f.write(f"{u}\n")
+            import utils as _u
+            _u.queue_titles.pop(url, None)
             log_message(f"URL удален из очереди: {url}")
         except Exception as e:
             log_message(f"Ошибка при обновлении очереди: {e}")

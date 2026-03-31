@@ -1,4 +1,5 @@
 import threading
+import re
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -12,6 +13,17 @@ from queues import get_queue_urls, remove_from_queue
 from logger import log_message
 
 
+def _display_title(url: str) -> str:
+    """Возвращает название из кэша или укороченный URL."""
+    title = _utils.queue_titles.get(url)
+    if title:
+        return title
+    m = re.search(r'[?&]v=([^&]{6,})', url)
+    if m:
+        return f"[{m.group(1)}]  {url}"
+    return url
+
+
 class QueueWindow(QWidget):
     """Окно очереди загрузок с поддержкой паузы"""
 
@@ -23,7 +35,6 @@ class QueueWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Заголовок
         header = QLabel("Очередь загрузок")
         header_font = QFont()
         header_font.setPointSize(12)
@@ -31,12 +42,11 @@ class QueueWindow(QWidget):
         header.setFont(header_font)
         layout.addWidget(header)
 
-        # Таблица
         self.table = QTableWidget()
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Статус", "URL"])
+        self.table.setHorizontalHeaderLabels(["Статус", "Название"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
 
@@ -46,7 +56,6 @@ class QueueWindow(QWidget):
 
         layout.addWidget(self.table)
 
-        # Кнопки
         btn_layout = QHBoxLayout()
 
         self.pause_btn = QPushButton("Пауза")
@@ -67,7 +76,6 @@ class QueueWindow(QWidget):
 
         layout.addLayout(btn_layout)
 
-        # Автообновление раз в секунду
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(1000)
@@ -76,8 +84,8 @@ class QueueWindow(QWidget):
     def _refresh(self):
         is_paused = _utils.is_paused
         current_url = _utils.current_download_url
-        is_dl = bool(current_url)  # current_download_url надёжнее config.is_downloading
-        queue_urls = [u for u in get_queue_urls() if u != current_url]  # не дублировать текущий
+        is_dl = bool(current_url)
+        queue_urls = [u for u in get_queue_urls() if u != current_url]
 
         rows = []
         if is_dl:
@@ -95,9 +103,11 @@ class QueueWindow(QWidget):
         self.table.setRowCount(len(rows))
         for i, (status, url) in enumerate(rows):
             self.table.setItem(i, 0, QTableWidgetItem(status))
-            self.table.setItem(i, 1, QTableWidgetItem(url))
+            title_item = QTableWidgetItem(_display_title(url))
+            title_item.setData(Qt.ItemDataRole.UserRole, url)
+            title_item.setToolTip(url)
+            self.table.setItem(i, 1, title_item)
 
-        # Обновляем кнопку паузы
         if is_paused:
             self.pause_btn.setText("Возобновить")
             self.pause_btn.setEnabled(True)
@@ -107,6 +117,19 @@ class QueueWindow(QWidget):
         else:
             self.pause_btn.setText("Пауза")
             self.pause_btn.setEnabled(False)
+
+    def _selected_urls(self) -> list[str]:
+        """Возвращает URL всех выделенных строк (без дублей)."""
+        seen = set()
+        urls = []
+        for item in self.table.selectedItems():
+            if item.column() != 1:
+                continue
+            url = item.data(Qt.ItemDataRole.UserRole)
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        return urls
 
     def _toggle_pause(self):
         if _utils.is_paused:
@@ -119,31 +142,29 @@ class QueueWindow(QWidget):
             log_message("INFO Запрошена пауза")
 
     def _delete_selected(self):
-        row = self.table.currentRow()
-        if row < 0:
+        urls = self._selected_urls()
+        if not urls:
             return
 
-        status_item = self.table.item(row, 0)
-        url_item = self.table.item(row, 1)
-        if not url_item:
-            return
-
-        url = url_item.text()
-
-        if url == _utils.current_download_url:
+        # Не даём удалить текущую загрузку
+        if _utils.current_download_url in urls:
             QMessageBox.information(
                 self, "Нельзя удалить",
                 "Сначала поставьте загрузку на паузу, затем удалите."
             )
             return
 
-        if _utils.is_paused and get_queue_urls() and get_queue_urls()[0] == url:
-            _utils.is_paused = False
-            from tray import update_download_status
-            update_download_status("Ожидание...", -1)
+        queue = get_queue_urls()
+        paused_url = queue[0] if (_utils.is_paused and queue) else None
 
-        remove_from_queue(url)
-        log_message(f"INFO Удалено из очереди: {url}")
+        for url in urls:
+            if url == paused_url:
+                _utils.is_paused = False
+                from tray import update_download_status
+                update_download_status("Ожидание...", -1)
+            remove_from_queue(url)
+            log_message(f"INFO Удалено из очереди: {url}")
+
         self._refresh()
 
     def closeEvent(self, event):

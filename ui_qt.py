@@ -1150,7 +1150,8 @@ class SearchWindow(QMainWindow):
         added = 0
         for row in rows:
             url = self._url_for_row(row)
-            if url and add_to_queue(url):
+            title = self.table.item(row, 0).text() if self.table.item(row, 0) else ""
+            if url and add_to_queue(url, title or None):
                 added += 1
                 log_message(f"INFO Добавлено в очередь: {url}")
 

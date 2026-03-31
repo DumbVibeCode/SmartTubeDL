@@ -416,7 +416,8 @@ class VideoListWindow(QWidget):
         added = 0
         for vid in video_ids:
             url = self._video_urls.get(vid)
-            if url and add_to_queue(url):
+            title = self._original_data.get(vid, (None,))[0]
+            if url and add_to_queue(url, title or None):
                 added += 1
         self.status_label.setText(f"Добавлено в очередь: {added}")
         log_message(f"INFO Добавлено в очередь: {added} видео")
