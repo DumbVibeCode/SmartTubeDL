@@ -156,14 +156,24 @@ class QueueWindow(QWidget):
 
         queue = get_queue_urls()
         paused_url = queue[0] if (_utils.is_paused and queue) else None
+        deleted_paused = False
 
         for url in urls:
             if url == paused_url:
                 _utils.is_paused = False
-                from tray import update_download_status
-                update_download_status("Ожидание...", -1)
-            remove_from_queue(url)
+                deleted_paused = True
+            remove_from_queue(url)  # сначала удаляем — потом обновляем статус
             log_message(f"INFO Удалено из очереди: {url}")
+
+        if deleted_paused:
+            from tray import update_download_status
+            remaining = get_queue_urls()
+            if remaining:
+                # Есть ещё элементы — запускаем следующий
+                from queues import process_queue
+                threading.Thread(target=process_queue, daemon=True).start()
+            else:
+                update_download_status("Ожидание...", -1)
 
         self._refresh()
 
