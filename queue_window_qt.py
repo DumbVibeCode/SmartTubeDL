@@ -74,14 +74,13 @@ class QueueWindow(QWidget):
         self._refresh()
 
     def _refresh(self):
-        import config
-        is_dl = config.is_downloading
         is_paused = _utils.is_paused
         current_url = _utils.current_download_url
-        queue_urls = get_queue_urls()
+        is_dl = bool(current_url)  # current_download_url надёжнее config.is_downloading
+        queue_urls = [u for u in get_queue_urls() if u != current_url]  # не дублировать текущий
 
         rows = []
-        if is_dl and current_url:
+        if is_dl:
             rows.append(("↓ Загружается", current_url))
             for url in queue_urls:
                 rows.append(("⏳ Ожидание", url))
@@ -129,17 +128,16 @@ class QueueWindow(QWidget):
         if not url_item:
             return
 
-        status = status_item.text() if status_item else ""
         url = url_item.text()
 
-        if "Загружается" in status:
+        if url == _utils.current_download_url:
             QMessageBox.information(
                 self, "Нельзя удалить",
                 "Сначала поставьте загрузку на паузу, затем удалите."
             )
             return
 
-        if "На паузе" in status:
+        if _utils.is_paused and get_queue_urls() and get_queue_urls()[0] == url:
             _utils.is_paused = False
 
         remove_from_queue(url)
