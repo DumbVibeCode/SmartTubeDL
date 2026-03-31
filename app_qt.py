@@ -324,6 +324,9 @@ class YouTubeDownloaderApp(QApplication):
         # Создаём системный трей
         self.tray = TrayIcon(self)
 
+        # Устанавливаем иконку приложения — наследуется всеми окнами
+        self.setWindowIcon(self.tray._create_format_icon())
+
         # Инициализируем thread-safe сигналы для download.py
         _signals = _TraySignals()
         _signals.notify.connect(self._on_notify)
@@ -735,6 +738,9 @@ class TrayIcon(QSystemTrayIcon):
     def update_status(self, status: str, progress: int = None):
         """Обновляет статус в меню и подсказку"""
         self.download_status = status
+        # Восстанавливаем иконку когда загрузок нет
+        if status in ("Ожидание...", "Готово!") and self._original_icon:
+            self.setIcon(self._original_icon)
         queue_count = get_queue_count()
 
         status_text = f"Статус: {status}"
