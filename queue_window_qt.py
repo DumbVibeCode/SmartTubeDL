@@ -139,6 +139,8 @@ class QueueWindow(QWidget):
 
         if _utils.is_paused and get_queue_urls() and get_queue_urls()[0] == url:
             _utils.is_paused = False
+            from tray import update_download_status
+            update_download_status("Ожидание...", -1)
 
         remove_from_queue(url)
         log_message(f"INFO Удалено из очереди: {url}")
