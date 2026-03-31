@@ -348,6 +348,9 @@ class YouTubeDownloaderApp(QApplication):
         # Окна каналов/плейлистов (может быть несколько одновременно)
         self.video_list_windows = []
 
+        # Окно очереди
+        self.queue_window = None
+
         log_message("INFO Приложение запущено (PyQt6)")
         QTimer.singleShot(500, self._check_queue_on_startup)
 
@@ -412,6 +415,16 @@ class YouTubeDownloaderApp(QApplication):
         self.history_window.show()
         self.history_window.raise_()
         self.history_window.activateWindow()
+
+    def show_queue_window(self):
+        """Показывает окно очереди загрузок"""
+        if self.queue_window is None:
+            from queue_window_qt import QueueWindow
+            self.queue_window = QueueWindow()
+            self.queue_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        self.queue_window.show()
+        self.queue_window.raise_()
+        self.queue_window.activateWindow()
 
     def show_debug_window(self):
         """Показывает окно отладки с логами"""
@@ -565,6 +578,9 @@ class TrayIcon(QSystemTrayIcon):
 
         action_history = menu.addAction("История загрузок")
         action_history.triggered.connect(self.app.show_history_window)
+
+        action_queue = menu.addAction("Очередь загрузок")
+        action_queue.triggered.connect(self.app.show_queue_window)
 
         action_search = menu.addAction("Поиск на YouTube")
         action_search.triggered.connect(self.app.show_search_window)

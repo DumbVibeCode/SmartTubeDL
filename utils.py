@@ -13,7 +13,12 @@ download_speed = "0 KB/s"
 last_update_time = time.time()
 last_downloaded_bytes = 0
 
-save_settings_var = None 
+save_settings_var = None
+
+# Управление загрузкой (пауза/стоп)
+stop_requested = False       # True = остановить текущую загрузку
+current_download_url = ""    # URL текущей активной загрузки
+is_paused = False            # True = загрузка поставлена на паузу
 
 # utils.py
 def update_progress(completed: int, total: int, progress_var: tk.DoubleVar = None, root: tk.Tk = None, status_var: tk.StringVar = None):

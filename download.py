@@ -9,7 +9,8 @@ import time
 import traceback
 from bs4 import BeautifulSoup
 import re
-from queues import add_to_queue, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
+from queues import add_to_queue, add_to_queue_front, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
+import utils as _dl_utils
 from tray import show_notification, tray_icon, update_download_status
 from config import initialize_settings, settings, is_downloading
 from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
@@ -22,13 +23,18 @@ class _YtdlpLogger:
     def debug(self, msg):
         if msg.startswith('[debug]'):
             return
-        log_message(f"DEBUG yt-dlp: {msg}")
+        # log_message(f"DEBUG yt-dlp: {msg}")
     def info(self, msg):
         log_message(f"INFO yt-dlp: {msg}")
     def warning(self, msg):
         log_message(f"WARNING yt-dlp: {msg}")
     def error(self, msg):
         log_message(f"ERROR yt-dlp: {msg}")
+
+
+class _UserStop(Exception):
+    """Исключение для остановки загрузки пользователем (пауза)"""
+    pass
 
 
 def download_video(url, from_queue=False):
@@ -40,6 +46,9 @@ def download_video(url, from_queue=False):
         return
 
     is_downloading = True
+    _dl_utils.current_download_url = url
+    _dl_utils.stop_requested = False
+    _dl_utils.is_paused = False
     log_message(f"DEBUG Путь к cookies.txt: {os.path.abspath('cookies.txt')}")  # Логирование пути к cookies.txt
     log_message(f"DEBUG: Текущая директория: {os.getcwd()}")
     log_message(f"DEBUG: Наличие файла cookies.txt в текущей директории: {os.path.exists('cookies.txt')}")
@@ -167,9 +176,10 @@ def download_video(url, from_queue=False):
     else:
         ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
 
+    _paused_by_user = False
     try:
         threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружается..."), daemon=True).start()
-        
+
         log_message(f"DEBUG ydl_opts: {ydl_opts}")
         ydl_opts["progress_hooks"] = [progress_hook]
 
@@ -215,6 +225,14 @@ def download_video(url, from_queue=False):
 
         log_message(f"SUCCESS Загрузка завершена: {url}")
 
+    except _UserStop:
+        _paused_by_user = True
+        add_to_queue_front(url)
+        _dl_utils.is_paused = True
+        _dl_utils.stop_requested = False
+        update_download_status("На паузе", 0)
+        log_message(f"INFO Загрузка приостановлена: {url}")
+
     except Exception as e:
         error_message = f"ERROR Ошибка загрузки видео: {url}. Подробности: {e}"
         threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", f"Ошибка: {str(e)}"), daemon=True).start()
@@ -227,10 +245,18 @@ def download_video(url, from_queue=False):
         return
 
     finally:
-        on_download_complete()
+        _dl_utils.current_download_url = ""
+        if not _paused_by_user:
+            on_download_complete()
+        else:
+            global is_downloading
+            is_downloading = False
 
 def progress_hook(d):
     global global_file_size, global_downloaded, last_update_time, last_downloaded_bytes
+
+    if _dl_utils.stop_requested:
+        raise _UserStop()
 
     try:
         if d["status"] == "downloading":

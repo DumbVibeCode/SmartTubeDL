@@ -44,6 +44,20 @@ def get_queue_urls():
         log_message(f"Ошибка при чтении очереди: {e}")
         return []
 
+def add_to_queue_front(url):
+    """Добавляет URL в начало очереди (используется при паузе)"""
+    urls = get_queue_urls()
+    if url in urls:
+        urls.remove(url)
+    urls.insert(0, url)
+    try:
+        with open(QUEUE_FILE, "w", encoding="utf-8") as f:
+            for u in urls:
+                f.write(f"{u}\n")
+        log_message(f"INFO URL добавлен в начало очереди: {url}")
+    except Exception as e:
+        log_message(f"ERROR Ошибка при добавлении в начало очереди: {e}")
+
 def remove_from_queue(url):
     """Удаляет URL из очереди после загрузки"""
     urls = get_queue_urls()
