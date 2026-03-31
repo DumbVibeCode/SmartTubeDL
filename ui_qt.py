@@ -647,6 +647,16 @@ class SearchWindow(QMainWindow):
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         action_row.addWidget(self.status_label, 1)
 
+        save_btn = QPushButton("Сохранить список")
+        save_btn.setProperty("secondary", True)
+        save_btn.clicked.connect(self._save_results)
+        action_row.addWidget(save_btn)
+
+        load_btn = QPushButton("Загрузить список")
+        load_btn.setProperty("secondary", True)
+        load_btn.clicked.connect(self._load_results)
+        action_row.addWidget(load_btn)
+
         self.log_toggle_btn = QPushButton("Лог")
         self.log_toggle_btn.setProperty("secondary", True)
         self.log_toggle_btn.setCheckable(True)
@@ -952,6 +962,47 @@ class SearchWindow(QMainWindow):
         if results:
             self._on_search_finished(results)
             self._set_status(f"Восстановлено: {len(results)}", "info")
+
+    def _save_results(self):
+        """Сохраняет текущие результаты поиска в JSON-файл"""
+        import json
+        from PyQt6.QtWidgets import QFileDialog
+        results = settings.get("last_search_results", [])
+        if not results:
+            self._set_status("Нет результатов для сохранения", "warning")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить список", "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            self._set_status(f"Сохранено: {len(results)} результатов", "success")
+            log_message(f"INFO Список результатов сохранён: {path}")
+        except Exception as e:
+            self._set_status(f"Ошибка сохранения: {e}", "error")
+
+    def _load_results(self):
+        """Загружает результаты поиска из JSON-файла"""
+        import json
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Загрузить список", "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            if not isinstance(results, list):
+                raise ValueError("Неверный формат файла")
+            self._on_search_finished(results)
+            self._set_status(f"Загружено: {len(results)} результатов", "success")
+            log_message(f"INFO Список результатов загружен: {path}")
+        except Exception as e:
+            self._set_status(f"Ошибка загрузки: {e}", "error")
 
     def _set_status(self, text, status_type="info"):
         """Устанавливает текст статуса"""
