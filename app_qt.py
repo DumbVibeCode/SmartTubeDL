@@ -349,6 +349,29 @@ class YouTubeDownloaderApp(QApplication):
         self.video_list_windows = []
 
         log_message("INFO Приложение запущено (PyQt6)")
+        QTimer.singleShot(500, self._check_queue_on_startup)
+
+    def _check_queue_on_startup(self):
+        count = get_queue_count()
+        if count == 0:
+            return
+        from queues import process_queue, get_queue_urls
+        urls = get_queue_urls()
+        preview = "\n".join(f"  • {u}" for u in urls[:5])
+        if len(urls) > 5:
+            preview += f"\n  … и ещё {len(urls) - 5}"
+        reply = QMessageBox.question(
+            None,
+            "Незавершённая очередь",
+            f"В очереди {count} ссылок{'а' if 2 <= count <= 4 else '' if count == 1 else ''}:\n\n{preview}\n\nНачать загрузку?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            import threading
+            threading.Thread(target=process_queue, daemon=True).start()
+            log_message(f"INFO Запущена очередь при старте ({count} шт.)")
+        else:
+            log_message("INFO Очередь при старте пропущена пользователем")
 
     def show_toast(self, title: str, message: str, duration: int = 2000):
         """Показывает кастомное всплывающее уведомление"""
