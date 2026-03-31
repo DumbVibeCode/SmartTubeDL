@@ -249,7 +249,6 @@ def download_video(url, from_queue=False):
         if not _paused_by_user:
             on_download_complete()
         else:
-            global is_downloading
             is_downloading = False
 
 def progress_hook(d):
