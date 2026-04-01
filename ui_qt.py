@@ -626,6 +626,15 @@ class SearchWindow(QMainWindow):
 
         layout.addWidget(self.table, 1)
 
+        # ── Фильтр по результатам ──
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(16, 4, 16, 0)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию, каналу...")
+        self.filter_input.textChanged.connect(self._filter_results)
+        filter_row.addWidget(self.filter_input)
+        layout.addLayout(filter_row)
+
         # ── Нижняя панель (статус + кнопки + лог) ──
         bottom = QWidget()
         bottom.setObjectName("bottomBar")
@@ -835,10 +844,13 @@ class SearchWindow(QMainWindow):
             self._set_status("Ничего не найдено", "warning")
             return
 
-        # Очищаем таблицу
+        # Очищаем таблицу и фильтр
         self.table.setRowCount(0)
         self.video_urls.clear()
         self.video_descriptions.clear()
+        self.filter_input.blockSignals(True)
+        self.filter_input.clear()
+        self.filter_input.blockSignals(False)
 
         # Заполняем таблицу
         for item in results:
@@ -962,6 +974,23 @@ class SearchWindow(QMainWindow):
         if results:
             self._on_search_finished(results)
             self._set_status(f"Восстановлено: {len(results)}", "info")
+
+    def _filter_results(self, text: str):
+        """Фильтрует таблицу результатов по названию и каналу"""
+        text = text.lower()
+        visible = 0
+        for row in range(self.table.rowCount()):
+            title = (self.table.item(row, 0).text() if self.table.item(row, 0) else "").lower()
+            channel = (self.table.item(row, 1).text() if self.table.item(row, 1) else "").lower()
+            hidden = text != "" and text not in title and text not in channel
+            self.table.setRowHidden(row, hidden)
+            if not hidden:
+                visible += 1
+        total = self.table.rowCount()
+        if text:
+            self._set_status(f"Фильтр: {visible} из {total}", "info")
+        else:
+            self._set_status(f"Найдено: {total}", "success")
 
     def _save_results(self):
         """Сохраняет текущие результаты поиска в JSON-файл"""
