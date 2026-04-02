@@ -1023,8 +1023,12 @@ class SearchWindow(QMainWindow):
         if not path:
             return
         try:
+            data = {
+                "query": self.search_input.text().strip(),
+                "results": results,
+            }
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(results, f, ensure_ascii=False, indent=2)
+                json.dump(data, f, ensure_ascii=False, indent=2)
             self._set_status(f"Сохранено: {len(results)} результатов", "success")
             log_message(f"INFO Список результатов сохранён: {path}")
         except Exception as e:
@@ -1041,10 +1045,18 @@ class SearchWindow(QMainWindow):
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
-                results = json.load(f)
-            if not isinstance(results, list):
+                data = json.load(f)
+            # Поддержка старого формата (просто список) и нового (dict с query)
+            if isinstance(data, list):
+                results, query = data, ""
+            elif isinstance(data, dict):
+                results = data.get("results", [])
+                query = data.get("query", "")
+            else:
                 raise ValueError("Неверный формат файла")
             self._on_search_finished(results)
+            if query:
+                self.search_input.setText(query)
             self._set_status(f"Загружено: {len(results)} результатов", "success")
             log_message(f"INFO Список результатов загружен: {path}")
         except Exception as e:
