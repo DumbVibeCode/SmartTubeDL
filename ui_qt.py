@@ -471,6 +471,13 @@ class SearchWindow(QMainWindow):
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
         self.search_input.setCompleter(self._completer)
 
+        self.history_btn = QPushButton("▾")
+        self.history_btn.setProperty("secondary", True)
+        self.history_btn.setFixedWidth(24)
+        self.history_btn.setToolTip("История запросов")
+        self.history_btn.clicked.connect(self._show_history_menu)
+        search_row.addWidget(self.history_btn)
+
         self.search_btn = QPushButton("Найти")
         self.search_btn.setObjectName("searchBtn")
         self.search_btn.clicked.connect(self._on_search)
@@ -793,6 +800,27 @@ class SearchWindow(QMainWindow):
         self.desc_filter_input.setEnabled(is_video)
         if not is_video:
             self.desc_filter_input.clear()
+
+    def _show_history_menu(self):
+        """Показывает меню с историей поисковых запросов"""
+        history = settings.get("search_history", [])
+        if not history:
+            return
+        menu = QMenu(self)
+        for query in history[:20]:
+            action = menu.addAction(query)
+            action.triggered.connect(lambda _, q=query: (
+                self.search_input.setText(q),
+                self._on_search()
+            ))
+        menu.addSeparator()
+        clear_action = menu.addAction("Очистить историю")
+        clear_action.triggered.connect(self._clear_history)
+        menu.exec(self.history_btn.mapToGlobal(self.history_btn.rect().bottomLeft()))
+
+    def _clear_history(self):
+        settings["search_history"] = []
+        self._history_model.setStringList([])
 
     def _on_search(self):
         """Запускает поиск"""
