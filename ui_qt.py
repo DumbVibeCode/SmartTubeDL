@@ -462,6 +462,15 @@ class SearchWindow(QMainWindow):
         self.search_input.returnPressed.connect(self._on_search)
         search_row.addWidget(self.search_input, 1)
 
+        # История поисковых запросов
+        from PyQt6.QtWidgets import QCompleter
+        from PyQt6.QtCore import QStringListModel
+        self._history_model = QStringListModel(settings.get("search_history", []))
+        self._completer = QCompleter(self._history_model, self.search_input)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.search_input.setCompleter(self._completer)
+
         self.search_btn = QPushButton("Найти")
         self.search_btn.setObjectName("searchBtn")
         self.search_btn.clicked.connect(self._on_search)
@@ -791,6 +800,14 @@ class SearchWindow(QMainWindow):
         if not query:
             self._set_status("Введите поисковый запрос!", "error")
             return
+
+        # Сохраняем в историю запросов
+        history = settings.get("search_history", [])
+        if query in history:
+            history.remove(query)
+        history.insert(0, query)
+        settings["search_history"] = history[:50]
+        self._history_model.setStringList(settings["search_history"])
 
         # Сохраняем настройки
         settings["last_search_query"] = query
