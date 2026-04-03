@@ -354,6 +354,9 @@ class YouTubeDownloaderApp(QApplication):
         # Окно очереди
         self.queue_window = None
 
+        # Окно поиска ВКонтакте
+        self.vk_window = None
+
         log_message("INFO Приложение запущено (PyQt6)")
         QTimer.singleShot(500, self._check_queue_on_startup)
 
@@ -451,6 +454,16 @@ class YouTubeDownloaderApp(QApplication):
         win.show()
         win.raise_()
         win.activateWindow()
+
+    def show_vk_search_window(self):
+        """Показывает окно поиска ВКонтакте"""
+        if self.vk_window is None:
+            from vk_window_qt import VKSearchWindow
+            self.vk_window = VKSearchWindow()
+            self.vk_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        self.vk_window.show()
+        self.vk_window.raise_()
+        self.vk_window.activateWindow()
 
     def show_direct_download_dialog(self):
         """Диалог для скачивания по произвольной ссылке"""
@@ -587,6 +600,9 @@ class TrayIcon(QSystemTrayIcon):
 
         action_search = menu.addAction("Поиск на YouTube")
         action_search.triggered.connect(self.app.show_search_window)
+
+        action_vk = menu.addAction("Поиск ВКонтакте")
+        action_vk.triggered.connect(self.app.show_vk_search_window)
 
         action_direct = menu.addAction("Скачать по ссылке")
         action_direct.triggered.connect(self.app.show_direct_download_dialog)
@@ -728,6 +744,13 @@ class TrayIcon(QSystemTrayIcon):
                     t.wait(500)   # ждём не более 0.5 сек
                     if t.isRunning():
                         t.terminate()
+
+        # Закрываем браузер VK (Selenium) если он был открыт
+        if self.app.vk_window is not None:
+            try:
+                self.app.vk_window.quit_browser()
+            except Exception:
+                pass
 
         log_message("INFO Приложение завершено")
         self.hide()

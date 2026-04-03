@@ -105,6 +105,7 @@ def download_video(url, from_queue=False):
                 return
 
             video_title = info.get("title", "video")
+            _dl_utils.queue_titles[url] = video_title  # для отображения в окне очереди
             safe_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
 
             if settings["conversion_enabled"]:

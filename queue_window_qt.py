@@ -18,6 +18,8 @@ def _display_title(url: str) -> str:
     title = _utils.queue_titles.get(url)
     if title:
         return title
+    if url.startswith("vk:"):
+        return url[3:]  # убираем префикс
     m = re.search(r'[?&]v=([^&]{6,})', url)
     if m:
         return f"[{m.group(1)}]  {url}"
@@ -87,7 +89,13 @@ class QueueWindow(QWidget):
         is_dl = bool(current_url)
         queue_urls = [u for u in get_queue_urls() if u != current_url]
 
+        # VK
+        current_vk = _utils.current_vk_key
+        vk_queue = list(_utils.vk_queue)
+
         rows = []
+
+        # YouTube
         if is_dl:
             rows.append(("↓ Загружается", current_url))
             for url in queue_urls:
@@ -99,6 +107,12 @@ class QueueWindow(QWidget):
         else:
             for url in queue_urls:
                 rows.append(("⏳ Ожидание", url))
+
+        # VK (показываем отдельной группой)
+        if current_vk:
+            rows.append(("↓ Загружается", current_vk))
+        for item in vk_queue:
+            rows.append(("⏳ Ожидание", item["key"]))
 
         self.table.setRowCount(len(rows))
         for i, (status, url) in enumerate(rows):
@@ -146,8 +160,31 @@ class QueueWindow(QWidget):
         if not urls:
             return
 
-        # Не даём удалить текущую загрузку
-        if _utils.current_download_url in urls:
+        vk_keys = [u for u in urls if u.startswith("vk:")]
+        yt_urls  = [u for u in urls if not u.startswith("vk:")]
+
+        # VK-элементы: просто убираем из списка ожидания
+        if vk_keys:
+            cur = _utils.current_vk_key
+            if cur in vk_keys:
+                QMessageBox.information(
+                    self, "Нельзя удалить",
+                    "ВК-трек сейчас скачивается — дождитесь завершения."
+                )
+                vk_keys = [k for k in vk_keys if k != cur]
+            _utils.vk_queue = [
+                item for item in _utils.vk_queue if item["key"] not in vk_keys
+            ]
+            for k in vk_keys:
+                _utils.queue_titles.pop(k, None)
+            log_message(f"INFO Удалено из VK-очереди: {vk_keys}")
+
+        if not yt_urls:
+            self._refresh()
+            return
+
+        # Не даём удалить текущую YouTube-загрузку
+        if _utils.current_download_url in yt_urls:
             QMessageBox.information(
                 self, "Нельзя удалить",
                 "Сначала поставьте загрузку на паузу, затем удалите."
@@ -158,18 +195,17 @@ class QueueWindow(QWidget):
         paused_url = queue[0] if (_utils.is_paused and queue) else None
         deleted_paused = False
 
-        for url in urls:
+        for url in yt_urls:
             if url == paused_url:
                 _utils.is_paused = False
                 deleted_paused = True
-            remove_from_queue(url)  # сначала удаляем — потом обновляем статус
+            remove_from_queue(url)
             log_message(f"INFO Удалено из очереди: {url}")
 
         if deleted_paused:
             from tray import update_download_status
             remaining = get_queue_urls()
             if remaining:
-                # Есть ещё элементы — запускаем следующий
                 from queues import process_queue
                 threading.Thread(target=process_queue, daemon=True).start()
             else:

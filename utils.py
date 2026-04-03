@@ -23,6 +23,10 @@ is_paused = False            # True = загрузка поставлена на
 # Кэш названий для очереди {url: title}
 queue_titles: dict = {}
 
+# VK-очередь (параллельная с YouTube, не записывается в файл)
+vk_queue: list = []        # [{"key": "vk:...", "label": "Исполнитель - Название"}, ...]
+current_vk_key: str = ""   # ключ текущего скачивания ВК
+
 # utils.py
 def update_progress(completed: int, total: int, progress_var: tk.DoubleVar = None, root: tk.Tk = None, status_var: tk.StringVar = None):
     """Обновляет прогресс-бар и статусную строку"""
