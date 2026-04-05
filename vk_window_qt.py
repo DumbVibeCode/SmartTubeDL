@@ -19,7 +19,7 @@ import utils as _utils
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QProgressBar, QMenu, QMessageBox, QFileDialog, QSizePolicy
+    QProgressBar, QMenu, QMessageBox, QFileDialog, QSizePolicy, QTabWidget
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont
@@ -156,6 +156,47 @@ def _safe_name(text: str) -> str:
     return "".join(c for c in text if c not in '<>:"/\\|?*').strip() or "track"
 
 
+# ── Вкладка результатов ───────────────────────────────────────────────────────
+
+class _VKResultTab(QWidget):
+    """Одна вкладка с результатами поиска ВК (таблица + фильтр)."""
+
+    def __init__(self, query: str = ""):
+        super().__init__()
+        self.query = query
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Исполнитель", "Название", "Длит.", "Владелец"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setHighlightSections(False)
+
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
+
+        layout.addWidget(self.table, 1)
+
+        frow = QHBoxLayout()
+        frow.setContentsMargins(0, 4, 0, 0)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по исполнителю, названию...")
+        frow.addWidget(self.filter_input)
+        layout.addLayout(frow)
+
+
 # ── Главное окно ──────────────────────────────────────────────────────────────
 
 class VKSearchWindow(QWidget):
@@ -244,35 +285,12 @@ class VKSearchWindow(QWidget):
         self.prog_bar.setVisible(False)
         root.addWidget(self.prog_bar)
 
-        # Таблица
-        self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Исполнитель", "Название", "Длит.", "Владелец"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.doubleClicked.connect(self._download_selected)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_ctx_menu)
-        hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.sectionClicked.connect(self._sort_col)
-        hdr.setHighlightSections(False)
-        self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(24)
-        root.addWidget(self.table, 1)
-
-        # Фильтр
-        frow = QHBoxLayout(); frow.setContentsMargins(0, 0, 0, 0)
-        self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("Фильтр по исполнителю, названию...")
-        self.filter_input.textChanged.connect(self._filter)
-        frow.addWidget(self.filter_input)
-        root.addLayout(frow)
+        # Вкладки результатов
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        root.addWidget(self.tabs, 1)
 
         # Статус + скорость + batch
         bot = QHBoxLayout()
@@ -330,50 +348,83 @@ class VKSearchWindow(QWidget):
         ok = self._is_logged_in()
         self._sig.browser_ready.emit(ok)
 
+    # ── Вспомогательные методы для вкладок ───────────────────────────────────
+
+    def _t(self):
+        w = self.tabs.currentWidget()
+        return w.table if isinstance(w, _VKResultTab) else None
+
+    def _f(self):
+        w = self.tabs.currentWidget()
+        return w.filter_input if isinstance(w, _VKResultTab) else None
+
+    def _current_tab(self):
+        w = self.tabs.currentWidget()
+        return w if isinstance(w, _VKResultTab) else None
+
+    def _new_tab(self, query: str) -> _VKResultTab:
+        tab = _VKResultTab(query)
+        tab.filter_input.textChanged.connect(self._filter)
+        tab.table.doubleClicked.connect(self._download_selected)
+        tab.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tab.table.customContextMenuRequested.connect(self._show_ctx_menu)
+        tab.table.horizontalHeader().sectionClicked.connect(self._sort_col)
+        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        idx = self.tabs.addTab(tab, title)
+        self.tabs.setCurrentIndex(idx)
+        return tab
+
+    def _close_tab(self, index: int):
+        self.tabs.removeTab(index)
+
     # ── Таблица ───────────────────────────────────────────────────────────────
 
     def _populate_table(self, results: list):
-        self.table.setRowCount(0)
-        self.filter_input.blockSignals(True)
-        self.filter_input.clear()
-        self.filter_input.blockSignals(False)
+        query = getattr(self, '_pending_vk_query', self.query_input.text().strip())
+        tab = self._new_tab(query)
+        tab.filter_input.blockSignals(True)
+        tab.filter_input.clear()
+        tab.filter_input.blockSignals(False)
 
         for row_data in results:
             if len(row_data) < 6:
                 continue
             artist, title, duration, owner, url, full_id = row_data[:6]
-            r = self.table.rowCount()
-            self.table.insertRow(r)
+            r = tab.table.rowCount()
+            tab.table.insertRow(r)
 
             artist_item = QTableWidgetItem(artist)
-            # Сохраняем скрытые поля в UserRole
             artist_item.setData(Qt.ItemDataRole.UserRole,     url)
             artist_item.setData(Qt.ItemDataRole.UserRole + 1, full_id)
-            self.table.setItem(r, 0, artist_item)
-            self.table.setItem(r, 1, QTableWidgetItem(title))
-            self.table.setItem(r, 2, QTableWidgetItem(duration))
-            self.table.setItem(r, 3, QTableWidgetItem(owner))
+            tab.table.setItem(r, 0, artist_item)
+            tab.table.setItem(r, 1, QTableWidgetItem(title))
+            tab.table.setItem(r, 2, QTableWidgetItem(duration))
+            tab.table.setItem(r, 3, QTableWidgetItem(owner))
 
-        total = self.table.rowCount()
+        total = tab.table.rowCount()
         self._sig.status.emit(f"Найдено треков: {total}" if total else "Ничего не найдено")
 
     def _row_data(self, row: int):
-        item = self.table.item(row, 0)
+        t = self._t()
+        item = t.item(row, 0) if t else None
         if not item:
             return None
         return {
             "artist":   item.text(),
-            "title":    self.table.item(row, 1).text() if self.table.item(row, 1) else "",
-            "duration": self.table.item(row, 2).text() if self.table.item(row, 2) else "",
-            "owner":    self.table.item(row, 3).text() if self.table.item(row, 3) else "",
+            "title":    t.item(row, 1).text() if t.item(row, 1) else "",
+            "duration": t.item(row, 2).text() if t.item(row, 2) else "",
+            "owner":    t.item(row, 3).text() if t.item(row, 3) else "",
             "url":      item.data(Qt.ItemDataRole.UserRole) or "",
             "full_id":  item.data(Qt.ItemDataRole.UserRole + 1) or "",
         }
 
     def _selected_rows_data(self) -> list[dict]:
+        t = self._t()
+        if not t:
+            return []
         seen = set()
         result = []
-        for idx in self.table.selectedItems():
+        for idx in t.selectedItems():
             r = idx.row()
             if r not in seen:
                 seen.add(r)
@@ -383,23 +434,29 @@ class VKSearchWindow(QWidget):
         return result
 
     def _filter(self, text: str):
-        t = text.lower()
+        t = self._t()
+        if not t:
+            return
+        lo = text.lower()
         visible = 0
-        for r in range(self.table.rowCount()):
-            artist = (self.table.item(r, 0).text() if self.table.item(r, 0) else "").lower()
-            title  = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").lower()
-            hidden = bool(t) and t not in artist and t not in title
-            self.table.setRowHidden(r, hidden)
+        for r in range(t.rowCount()):
+            artist = (t.item(r, 0).text() if t.item(r, 0) else "").lower()
+            title  = (t.item(r, 1).text() if t.item(r, 1) else "").lower()
+            hidden = bool(lo) and lo not in artist and lo not in title
+            t.setRowHidden(r, hidden)
             if not hidden:
                 visible += 1
-        total = self.table.rowCount()
-        self.status_lbl.setText(f"Фильтр: {visible} из {total}" if t else f"Найдено треков: {total}")
+        total = t.rowCount()
+        self.status_lbl.setText(f"Фильтр: {visible} из {total}" if lo else f"Найдено треков: {total}")
 
     def _sort_col(self, col: int):
+        t = self._t()
+        if not t:
+            return
         rev = self._sort_rev.get(col, False)
         if col == 2:  # длительность — числовая
             def key(r):
-                txt = self.table.item(r, 2).text() if self.table.item(r, 2) else ""
+                txt = t.item(r, 2).text() if t.item(r, 2) else ""
                 try:
                     p = txt.split(":")
                     return int(p[0]) * 60 + int(p[1]) if len(p) == 2 else 0
@@ -407,19 +464,18 @@ class VKSearchWindow(QWidget):
                     return 0
         else:
             def key(r):
-                item = self.table.item(r, col)
+                item = t.item(r, col)
                 return item.text().lower() if item else ""
 
-        rows = list(range(self.table.rowCount()))
+        rows = list(range(t.rowCount()))
         rows.sort(key=key, reverse=rev)
         self._sort_rev[col] = not rev
 
-        # Переупорядочиваем строки через временный буфер данных
         buf = []
         for r in rows:
             row_buf = []
-            for c in range(self.table.columnCount()):
-                it = self.table.item(r, c)
+            for c in range(t.columnCount()):
+                it = t.item(r, c)
                 row_buf.append({
                     "text": it.text() if it else "",
                     "ur":  it.data(Qt.ItemDataRole.UserRole)     if it else None,
@@ -433,12 +489,15 @@ class VKSearchWindow(QWidget):
                 if c == 0:
                     it.setData(Qt.ItemDataRole.UserRole,     d["ur"])
                     it.setData(Qt.ItemDataRole.UserRole + 1, d["ur1"])
-                self.table.setItem(r, c, it)
+                t.setItem(r, c, it)
 
     # ── Контекстное меню ──────────────────────────────────────────────────────
 
     def _show_ctx_menu(self, pos):
-        row = self.table.rowAt(pos.y())
+        t = self._t()
+        if not t:
+            return
+        row = t.rowAt(pos.y())
         if row < 0:
             return
         menu = QMenu(self)
@@ -448,8 +507,8 @@ class VKSearchWindow(QWidget):
         menu.addAction("Скачать трек",         self._download_one)
         menu.addAction("Скачать выбранные",    self._download_selected)
         menu.addSeparator()
-        menu.addAction("Выбрать все", self.table.selectAll)
-        menu.exec(self.table.viewport().mapToGlobal(pos))
+        menu.addAction("Выбрать все", t.selectAll)
+        menu.exec(t.viewport().mapToGlobal(pos))
 
     def _copy_artist_title(self):
         rows = self._selected_rows_data()
@@ -592,7 +651,7 @@ class VKSearchWindow(QWidget):
         except ValueError:
             count = 30
 
-        self.table.setRowCount(0)
+        self._pending_vk_query = query
         self.search_btn.setEnabled(False)
         self._sig.status.emit("Поиск...")
 

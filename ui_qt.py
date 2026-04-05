@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QComboBox, QCheckBox, QProgressBar,
     QGroupBox, QMessageBox, QMenu, QSplitter, QHeaderView,
-    QAbstractItemView, QDialog
+    QAbstractItemView, QDialog, QTabWidget
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
 from PyQt6.QtGui import QAction, QClipboard, QGuiApplication, QPixmap, QIcon
@@ -401,6 +401,47 @@ class YtdlpUpdateDialog(QDialog):
         log_message(f"INFO yt-dlp update: {message}")
 
 
+class _ResultTab(QWidget):
+    """Одна вкладка с результатами поиска (таблица + фильтр)."""
+
+    def __init__(self, query: str = ""):
+        super().__init__()
+        self.query = query
+        self.results: list = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.table = QTableWidget()
+        self.table.setObjectName("resultsTable")
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Название", "Канал", "Длительность"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setHighlightSections(False)
+
+        layout.addWidget(self.table, 1)
+
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(16, 4, 16, 4)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию, каналу...")
+        filter_row.addWidget(self.filter_input)
+        layout.addLayout(filter_row)
+
+
 class SearchWindow(QMainWindow):
     """Окно поиска YouTube"""
 
@@ -618,38 +659,12 @@ class SearchWindow(QMainWindow):
 
         layout.addWidget(self.settings_panel)
 
-        # ── Таблица результатов (максимум площади) ──
-        self.table = QTableWidget()
-        self.table.setObjectName("resultsTable")
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Название", "Канал", "Длительность"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.setAlternatingRowColors(False)
-        self.table.setShowGrid(False)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_context_menu)
-        self.table.doubleClicked.connect(self._on_double_click)
-        self.table.verticalHeader().setVisible(False)
-
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setHighlightSections(False)
-
-        layout.addWidget(self.table, 1)
-
-        # ── Фильтр по результатам ──
-        filter_row = QHBoxLayout()
-        filter_row.setContentsMargins(16, 4, 16, 0)
-        self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("Фильтр по названию, каналу...")
-        self.filter_input.textChanged.connect(self._filter_results)
-        filter_row.addWidget(self.filter_input)
-        layout.addLayout(filter_row)
+        # ── Вкладки результатов ──
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        layout.addWidget(self.tabs, 1)
 
         # ── Нижняя панель (статус + кнопки + лог) ──
         bottom = QWidget()
@@ -722,6 +737,65 @@ class SearchWindow(QMainWindow):
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self._update_log)
         self.log_timer.start(1000)
+
+    # ── Вспомогательные методы для работы с вкладками ──────────────────────
+
+    def _t(self):
+        """Таблица текущей вкладки (или None)."""
+        w = self.tabs.currentWidget()
+        return w.table if isinstance(w, _ResultTab) else None
+
+    def _f(self):
+        """Фильтр текущей вкладки (или None)."""
+        w = self.tabs.currentWidget()
+        return w.filter_input if isinstance(w, _ResultTab) else None
+
+    def _current_tab(self):
+        """Текущая вкладка _ResultTab (или None)."""
+        w = self.tabs.currentWidget()
+        return w if isinstance(w, _ResultTab) else None
+
+    def _new_tab(self, query: str) -> _ResultTab:
+        """Создаёт новую вкладку, добавляет и переключается на неё."""
+        tab = _ResultTab(query)
+        tab.filter_input.textChanged.connect(self._filter_results)
+        tab.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tab.table.customContextMenuRequested.connect(self._show_context_menu)
+        tab.table.doubleClicked.connect(self._on_double_click)
+        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        idx = self.tabs.addTab(tab, title)
+        self.tabs.setCurrentIndex(idx)
+        return tab
+
+    def _close_tab(self, index: int):
+        """Закрывает вкладку."""
+        self.tabs.removeTab(index)
+
+    def _fill_tab(self, tab: _ResultTab, results: list):
+        """Заполняет таблицу вкладки списком результатов."""
+        tab.results = results
+        tab.table.setRowCount(0)
+        tab.filter_input.blockSignals(True)
+        tab.filter_input.clear()
+        tab.filter_input.blockSignals(False)
+        for item in results:
+            row = tab.table.rowCount()
+            tab.table.insertRow(row)
+            title = item.get("title", "Без названия")
+            channel = item.get("channel", item.get("author", ""))
+            duration = item.get("duration", "")
+            url = item.get("url", "")
+            description = item.get("description", "Описание отсутствует")
+            title_item = QTableWidgetItem(title)
+            title_item.setData(Qt.ItemDataRole.UserRole, url)
+            title_item.setData(Qt.ItemDataRole.UserRole + 1, description)
+            tab.table.setItem(row, 0, title_item)
+            tab.table.setItem(row, 1, QTableWidgetItem(channel))
+            tab.table.setItem(row, 2, DurationTableWidgetItem(duration))
+        tab.table.setIconSize(QSize(0, 0))
+        tab.table.verticalHeader().setDefaultSectionSize(24)
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _toggle_settings(self):
         """Сворачивает/разворачивает панель настроек"""
@@ -874,6 +948,7 @@ class SearchWindow(QMainWindow):
             desc_filter=self.desc_filter_input.text().strip()
         )
 
+        self._pending_query = query
         self.search_worker.finished.connect(self._on_search_finished)
         self.search_worker.error.connect(self._on_search_error)
         self.search_worker.progress.connect(self.progress.setValue)
@@ -881,7 +956,7 @@ class SearchWindow(QMainWindow):
         self.search_worker.start()
 
     def _on_search_finished(self, results):
-        """Обработка результатов поиска"""
+        """Обработка результатов поиска — открывает новую вкладку."""
         self.search_btn.setEnabled(True)
         self.progress.setVisible(False)
 
@@ -889,47 +964,16 @@ class SearchWindow(QMainWindow):
             self._set_status("Ничего не найдено", "warning")
             return
 
-        # Очищаем таблицу и фильтр
-        self.table.setRowCount(0)
-        self.video_urls.clear()
-        self.video_descriptions.clear()
-        self.filter_input.blockSignals(True)
-        self.filter_input.clear()
-        self.filter_input.blockSignals(False)
-
-        # Заполняем таблицу
-        for item in results:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            title = item.get("title", "Без названия")
-            channel = item.get("channel", item.get("author", ""))
-            duration = item.get("duration", "")
-            url = item.get("url", "")
-            description = item.get("description", "Описание отсутствует")
-
-            # Отладочное логирование
-            log_message(f"DEBUG UI: Saving description for row {row}, length: {len(description)}")
-
-            title_item = QTableWidgetItem(title)
-            title_item.setData(Qt.ItemDataRole.UserRole, url)
-            title_item.setData(Qt.ItemDataRole.UserRole + 1, description)
-            self.table.setItem(row, 0, title_item)
-            self.table.setItem(row, 1, QTableWidgetItem(channel))
-            self.table.setItem(row, 2, DurationTableWidgetItem(duration))
+        query = getattr(self, '_pending_query', self.search_input.text().strip())
+        tab = self._new_tab(query)
+        self._fill_tab(tab, results)
 
         self._set_status(f"Найдено: {len(results)}", "success")
-
-        # Сохраняем результаты
         settings["last_search_results"] = results
         log_message(f"INFO Найдено {len(results)} результатов")
 
-        # Загружаем превью если включено
         if self.check_thumbnails.isChecked():
             self._start_thumbnail_loading()
-        else:
-            self.table.setIconSize(QSize(0, 0))
-            self.table.verticalHeader().setDefaultSectionSize(24)
 
     def _on_search_error(self, error):
         """Обработка ошибки поиска"""
@@ -938,14 +982,18 @@ class SearchWindow(QMainWindow):
         self._set_status(f"Ошибка: {error}", "error")
 
     def _start_thumbnail_loading(self):
-        """Запускает фоновую загрузку превью для текущих результатов"""
+        """Запускает фоновую загрузку превью для текущей вкладки."""
         from description import extract_video_id
 
-        self.table.setIconSize(QSize(107, 60))
-        self.table.verticalHeader().setDefaultSectionSize(68)
+        tab = self._current_tab()
+        if not tab:
+            return
+        self._thumbnail_tab = tab
+        tab.table.setIconSize(QSize(107, 60))
+        tab.table.verticalHeader().setDefaultSectionSize(68)
 
         rows_ids = []
-        for row in range(self.table.rowCount()):
+        for row in range(tab.table.rowCount()):
             url = self._url_for_row(row)
             vid_id = extract_video_id(url)
             if vid_id:
@@ -959,8 +1007,11 @@ class SearchWindow(QMainWindow):
         self.thumbnail_loader.start()
 
     def _on_thumbnail_ready(self, row, image_bytes):
-        """Устанавливает превью в ячейку таблицы (вызывается в главном потоке)"""
-        item = self.table.item(row, 0)
+        """Устанавливает превью в ячейку таблицы (вызывается в главном потоке)."""
+        tab = getattr(self, '_thumbnail_tab', None) or self._current_tab()
+        if not tab:
+            return
+        item = tab.table.item(row, 0)
         if not item:
             return
         pixmap = QPixmap()
@@ -1014,35 +1065,40 @@ class SearchWindow(QMainWindow):
         dialog.exec()
 
     def _load_last_results(self):
-        """Загружает последние результаты поиска"""
+        """Восстанавливает последние результаты поиска во вкладку."""
         results = settings.get("last_search_results", [])
         if results:
-            self._on_search_finished(results)
+            query = settings.get("last_search_query", "")
+            tab = self._new_tab(query or "Восстановлено")
+            self._fill_tab(tab, results)
             self._set_status(f"Восстановлено: {len(results)}", "info")
 
     def _filter_results(self, text: str):
-        """Фильтрует таблицу результатов по названию и каналу"""
+        """Фильтрует таблицу текущей вкладки по названию и каналу."""
+        t = self._t()
+        if not t:
+            return
         text = text.lower()
         visible = 0
-        for row in range(self.table.rowCount()):
-            title = (self.table.item(row, 0).text() if self.table.item(row, 0) else "").lower()
-            channel = (self.table.item(row, 1).text() if self.table.item(row, 1) else "").lower()
+        for row in range(t.rowCount()):
+            title = (t.item(row, 0).text() if t.item(row, 0) else "").lower()
+            channel = (t.item(row, 1).text() if t.item(row, 1) else "").lower()
             hidden = text != "" and text not in title and text not in channel
-            self.table.setRowHidden(row, hidden)
+            t.setRowHidden(row, hidden)
             if not hidden:
                 visible += 1
-        total = self.table.rowCount()
+        total = t.rowCount()
         if text:
             self._set_status(f"Фильтр: {visible} из {total}", "info")
         else:
             self._set_status(f"Найдено: {total}", "success")
 
     def _save_results(self):
-        """Сохраняет текущие результаты поиска в JSON-файл"""
+        """Сохраняет результаты текущей вкладки в JSON-файл."""
         import json
         from PyQt6.QtWidgets import QFileDialog
-        results = settings.get("last_search_results", [])
-        if not results:
+        tab = self._current_tab()
+        if not tab or not tab.results:
             self._set_status("Нет результатов для сохранения", "warning")
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -1051,19 +1107,16 @@ class SearchWindow(QMainWindow):
         if not path:
             return
         try:
-            data = {
-                "query": self.search_input.text().strip(),
-                "results": results,
-            }
+            data = {"query": tab.query, "results": tab.results}
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            self._set_status(f"Сохранено: {len(results)} результатов", "success")
+            self._set_status(f"Сохранено: {len(tab.results)} результатов", "success")
             log_message(f"INFO Список результатов сохранён: {path}")
         except Exception as e:
             self._set_status(f"Ошибка сохранения: {e}", "error")
 
     def _load_results(self):
-        """Загружает результаты поиска из JSON-файла"""
+        """Загружает результаты поиска из JSON-файла в новую вкладку."""
         import json
         from PyQt6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(
@@ -1074,7 +1127,6 @@ class SearchWindow(QMainWindow):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Поддержка старого формата (просто список) и нового (dict с query)
             if isinstance(data, list):
                 results, query = data, ""
             elif isinstance(data, dict):
@@ -1082,7 +1134,9 @@ class SearchWindow(QMainWindow):
                 query = data.get("query", "")
             else:
                 raise ValueError("Неверный формат файла")
-            self._on_search_finished(results)
+            tab = self._new_tab(query or "Загружено")
+            tab.query = query
+            self._fill_tab(tab, results)
             if query:
                 self.search_input.setText(query)
             self._set_status(f"Загружено: {len(results)} результатов", "success")
@@ -1103,7 +1157,8 @@ class SearchWindow(QMainWindow):
 
     def _show_context_menu(self, pos):
         """Показывает контекстное меню"""
-        if not self.table.selectedItems():
+        t = self._t()
+        if not t or not t.selectedItems():
             return
 
         menu = QMenu(self)
@@ -1125,22 +1180,28 @@ class SearchWindow(QMainWindow):
         action_description = menu.addAction("Показать описание")
         action_description.triggered.connect(self._show_description)
 
-        menu.exec(self.table.viewport().mapToGlobal(pos))
+        t = self._t()
+        if t:
+            menu.exec(t.viewport().mapToGlobal(pos))
 
     def _get_selected_rows(self):
-        """Возвращает список выбранных строк"""
-        return list(set(item.row() for item in self.table.selectedItems()))
+        """Возвращает список выбранных строк."""
+        t = self._t()
+        return list(set(item.row() for item in t.selectedItems())) if t else []
 
     def _url_for_row(self, row: int) -> str:
-        item = self.table.item(row, 0)
+        t = self._t()
+        item = t.item(row, 0) if t else None
         return (item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
 
     def _desc_for_row(self, row: int) -> str:
-        item = self.table.item(row, 0)
+        t = self._t()
+        item = t.item(row, 0) if t else None
         return (item.data(Qt.ItemDataRole.UserRole + 1) or "Описание отсутствует") if item else "Описание отсутствует"
 
     def _set_desc_for_row(self, row: int, desc: str) -> None:
-        item = self.table.item(row, 0)
+        t = self._t()
+        item = t.item(row, 0) if t else None
         if item:
             item.setData(Qt.ItemDataRole.UserRole + 1, desc)
 
@@ -1174,7 +1235,8 @@ class SearchWindow(QMainWindow):
             return
 
         row = rows[0]
-        title = self.table.item(row, 0).text()
+        t = self._t()
+        title = t.item(row, 0).text() if t else ""
         url = self._url_for_row(row)
 
         if not url:
@@ -1208,7 +1270,8 @@ class SearchWindow(QMainWindow):
             return
 
         row = rows[0]
-        title = self.table.item(row, 0).text()
+        t = self._t()
+        title = t.item(row, 0).text() if t else ""
         description = self._desc_for_row(row)
         url = self._url_for_row(row)
 
@@ -1284,10 +1347,11 @@ class SearchWindow(QMainWindow):
             self._set_status("Выберите видео для загрузки", "warning")
             return
 
+        t = self._t()
         added = 0
         for row in rows:
             url = self._url_for_row(row)
-            title = self.table.item(row, 0).text() if self.table.item(row, 0) else ""
+            title = t.item(row, 0).text() if t and t.item(row, 0) else ""
             if url and add_to_queue(url, title or None):
                 added += 1
                 log_message(f"INFO Добавлено в очередь: {url}")
