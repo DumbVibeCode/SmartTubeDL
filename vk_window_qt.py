@@ -290,6 +290,15 @@ class VKSearchWindow(QWidget):
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+
+        new_tab_btn = QPushButton("+")
+        new_tab_btn.setFixedWidth(28)
+        new_tab_btn.setToolTip("Новая вкладка")
+        new_tab_btn.setProperty("secondary", True)
+        new_tab_btn.clicked.connect(lambda: self._new_tab("Новая вкладка"))
+        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+
+        self._new_tab("Поиск")
         root.addWidget(self.tabs, 1)
 
         # Статус + скорость + batch
@@ -381,7 +390,10 @@ class VKSearchWindow(QWidget):
 
     def _populate_table(self, results: list):
         query = getattr(self, '_pending_vk_query', self.query_input.text().strip())
-        tab = self._new_tab(query)
+        tab = self._current_tab() or self._new_tab(query)
+        tab.query = query
+        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        self.tabs.setTabText(self.tabs.currentIndex(), title)
         tab.filter_input.blockSignals(True)
         tab.filter_input.clear()
         tab.filter_input.blockSignals(False)

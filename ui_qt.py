@@ -664,6 +664,16 @@ class SearchWindow(QMainWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+
+        new_tab_btn = QPushButton("+")
+        new_tab_btn.setFixedWidth(28)
+        new_tab_btn.setToolTip("Новая вкладка")
+        new_tab_btn.setProperty("secondary", True)
+        new_tab_btn.clicked.connect(lambda: self._new_tab("Новая вкладка"))
+        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+
+        # Начальная вкладка
+        self._new_tab("Поиск")
         layout.addWidget(self.tabs, 1)
 
         # ── Нижняя панель (статус + кнопки + лог) ──
@@ -965,7 +975,10 @@ class SearchWindow(QMainWindow):
             return
 
         query = getattr(self, '_pending_query', self.search_input.text().strip())
-        tab = self._new_tab(query)
+        tab = self._current_tab() or self._new_tab(query)
+        tab.query = query
+        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        self.tabs.setTabText(self.tabs.currentIndex(), title)
         self._fill_tab(tab, results)
 
         self._set_status(f"Найдено: {len(results)}", "success")
@@ -1065,11 +1078,14 @@ class SearchWindow(QMainWindow):
         dialog.exec()
 
     def _load_last_results(self):
-        """Восстанавливает последние результаты поиска во вкладку."""
+        """Восстанавливает последние результаты поиска в начальную вкладку."""
         results = settings.get("last_search_results", [])
         if results:
             query = settings.get("last_search_query", "")
-            tab = self._new_tab(query or "Восстановлено")
+            tab = self._current_tab() or self._new_tab(query or "Поиск")
+            tab.query = query
+            title = (query[:22] + "…") if len(query) > 22 else (query or "Поиск")
+            self.tabs.setTabText(self.tabs.currentIndex(), title)
             self._fill_tab(tab, results)
             self._set_status(f"Восстановлено: {len(results)}", "info")
 
@@ -1134,8 +1150,10 @@ class SearchWindow(QMainWindow):
                 query = data.get("query", "")
             else:
                 raise ValueError("Неверный формат файла")
-            tab = self._new_tab(query or "Загружено")
+            tab = self._current_tab() or self._new_tab(query or "Загружено")
             tab.query = query
+            title = (query[:22] + "…") if len(query) > 22 else (query or "Загружено")
+            self.tabs.setTabText(self.tabs.currentIndex(), title)
             self._fill_tab(tab, results)
             if query:
                 self.search_input.setText(query)
