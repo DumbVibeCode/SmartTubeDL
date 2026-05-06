@@ -728,16 +728,32 @@ class VKSearchWindow(QWidget):
             except Exception:
                 pass
 
-            # Кликаем «Показать все»
+            # Кликаем «Показать все» только если она стоит ДО первого audio_row
+            # (это кнопка заголовка секции треков). Кнопка плейлистов идёт ПОСЛЕ
+            # audio_row-ов, поэтому compareDocumentPosition её отсеет.
             try:
-                links = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='section=recoms_block']")
-                target = next((l for l in links if "Показать все" in (l.text or "")), None) or (links[0] if links else None)
-                if target:
-                    self._sig.status.emit("Открываю «Показать всё»...")
-                    self.driver.execute_script("arguments[0].click();", target)
-                    WebDriverWait(self.driver, 10).until(
-                        lambda d: "section=recoms_block" in d.current_url
-                    )
+                show_all = self.driver.execute_script("""
+                    var firstRow = document.querySelector('.audio_row');
+                    if (!firstRow) return null;
+                    var links = Array.from(document.querySelectorAll('a'));
+                    for (var i = 0; i < links.length; i++) {
+                        var a = links[i];
+                        if (a.textContent.trim() !== 'Показать все') continue;
+                        // DOCUMENT_POSITION_FOLLOWING (4) — firstRow стоит ПОСЛЕ a
+                        if (a.compareDocumentPosition(firstRow) & 4) return a;
+                    }
+                    return null;
+                """)
+                if show_all:
+                    self._sig.status.emit("Открываю все треки...")
+                    prev_url = self.driver.current_url
+                    self.driver.execute_script("arguments[0].click();", show_all)
+                    try:
+                        WebDriverWait(self.driver, 10).until(
+                            lambda d: d.current_url != prev_url
+                        )
+                    except Exception:
+                        pass
                     WebDriverWait(self.driver, 10).until(
                         EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
                     )
