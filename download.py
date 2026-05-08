@@ -15,6 +15,7 @@ from tray import show_notification, tray_icon, update_download_status
 from config import initialize_settings, settings, is_downloading
 from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
 from clipboard_utils import update_last_copy_time
+from mailru_download import is_mailru_url, download_mailru_playlist
 
 invidious_url_var = ""
 
@@ -39,6 +40,15 @@ class _UserStop(Exception):
 
 def download_video(url, from_queue=False):
     global is_downloading, global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
+
+    # Mail.ru плейлисты качаем отдельно, не через yt-dlp
+    if is_mailru_url(url):
+        threading.Thread(
+            target=_download_mailru,
+            args=(url,),
+            daemon=True,
+        ).start()
+        return
 
     if is_downloading:
         log_message(f"INFO Загрузка уже идет, добавляем URL в очередь: {url}")
@@ -89,7 +99,7 @@ def download_video(url, from_queue=False):
         log_message(f"INFO URL содержит параметр плейлиста: {url}. Загружаем только видео.")
 
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"}}) as ydl:
+        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"}, "extractor_args": {"youtube": {"player_client": ["web", "android"]}}}) as ydl:
             info = ydl.extract_info(url, download=False)
 
             if not info:
@@ -159,8 +169,9 @@ def download_video(url, from_queue=False):
         'windowsfilenames': False,
         'noplaylist': True,
         'logger': _YtdlpLogger(),
-        'js_runtimes': {'node': {}},                # JS runtime для YouTube challenge
-        'remote_components': {'ejs': 'github'},  # EJS solver для YouTube
+        'js_runtimes': {'node': {}},
+        'remote_components': {'ejs': 'github'},
+        'extractor_args': {'youtube': {'player_client': ['web', 'android']}},
     }
     
     
@@ -251,6 +262,28 @@ def download_video(url, from_queue=False):
             on_download_complete()
         else:
             is_downloading = False
+
+def _download_mailru(url: str):
+    """Скачивает плейлист mail.ru в папку загрузок."""
+    save_path = settings["download_folder"]
+
+    def status_cb(msg):
+        update_download_status(msg, None)
+
+    def progress_cb(pct):
+        update_download_status("Загрузка...", int(pct))
+
+    def done_cb(ok, fail):
+        update_download_status("Ожидание...", 100)
+        msg = f"Mail.ru: скачано {ok} треков" + (f", ошибок: {fail}" if fail else "")
+        threading.Thread(
+            target=show_notification,
+            args=(tray_icon, "Mail.ru", msg),
+            daemon=True,
+        ).start()
+
+    download_mailru_playlist(url, save_path, status_cb, progress_cb, done_cb)
+
 
 def progress_hook(d):
     global global_file_size, global_downloaded, last_update_time, last_downloaded_bytes

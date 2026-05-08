@@ -54,15 +54,18 @@ VK_HISTORY_FILE = os.path.join(os.getcwd(), "vk_history.json")
 # ── Сигналы (thread-safe) ─────────────────────────────────────────────────────
 
 class _Sig(QObject):
-    status         = pyqtSignal(str)
-    progress       = pyqtSignal(float)   # 0-100
-    speed          = pyqtSignal(str)
-    batch          = pyqtSignal(str)
-    show_progress  = pyqtSignal(bool)
-    results_ready  = pyqtSignal(list)
-    browser_ready  = pyqtSignal(bool)    # True = залогинен
-    error          = pyqtSignal(str)
-    search_done    = pyqtSignal()        # разблокировать кнопку
+    status              = pyqtSignal(str)
+    progress            = pyqtSignal(float)   # 0-100
+    speed               = pyqtSignal(str)
+    batch               = pyqtSignal(str)
+    show_progress       = pyqtSignal(bool)
+    results_ready       = pyqtSignal(list)
+    video_results_ready     = pyqtSignal(list)          # видео: [(title,dur,views,thumb_url,video_url)]
+    video_description_ready = pyqtSignal(str, str)     # (заголовок, текст описания)
+    thumb_ready             = pyqtSignal(object, bytes) # (QLabel, raw PNG/JPEG bytes)
+    browser_ready       = pyqtSignal(bool)    # True = залогинен
+    error               = pyqtSignal(str)
+    search_done         = pyqtSignal()        # разблокировать кнопку
 
 
 # ── История ───────────────────────────────────────────────────────────────────
@@ -197,6 +200,51 @@ class _VKResultTab(QWidget):
         layout.addLayout(frow)
 
 
+# ── Вкладка видео ────────────────────────────────────────────────────────────
+
+class _VKVideoTab(QWidget):
+    """Вкладка с результатами видео ВК (таблица с превью)."""
+
+    THUMB_W, THUMB_H = 160, 90
+
+    def __init__(self, query: str = ""):
+        super().__init__()
+        self.query = query
+        self.results: list = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Превью", "Название", "Длит.", "Просмотры"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setHighlightSections(False)
+
+        self.table.setColumnWidth(0, self.THUMB_W)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(self.THUMB_H + 4)
+
+        layout.addWidget(self.table, 1)
+
+        frow = QHBoxLayout()
+        frow.setContentsMargins(0, 4, 0, 0)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию...")
+        frow.addWidget(self.filter_input)
+        layout.addLayout(frow)
+
+
 # ── Главное окно ──────────────────────────────────────────────────────────────
 
 class VKSearchWindow(QWidget):
@@ -321,6 +369,9 @@ class VKSearchWindow(QWidget):
         self._sig.show_progress.connect(self._on_show_progress)
         self._sig.progress.connect(lambda v: self.prog_bar.setValue(int(v)))
         self._sig.results_ready.connect(self._populate_table)
+        self._sig.video_results_ready.connect(self._populate_video_tab)
+        self._sig.video_description_ready.connect(self._on_video_description)
+        self._sig.thumb_ready.connect(self._on_thumb_ready)
         self._sig.browser_ready.connect(self._on_browser_ready)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
         self._sig.search_done.connect(lambda: self.search_btn.setEnabled(True))
@@ -361,15 +412,19 @@ class VKSearchWindow(QWidget):
 
     def _t(self):
         w = self.tabs.currentWidget()
-        return w.table if isinstance(w, _VKResultTab) else None
+        return w.table if isinstance(w, (_VKResultTab, _VKVideoTab)) else None
 
     def _f(self):
         w = self.tabs.currentWidget()
-        return w.filter_input if isinstance(w, _VKResultTab) else None
+        return w.filter_input if isinstance(w, (_VKResultTab, _VKVideoTab)) else None
 
     def _current_tab(self):
         w = self.tabs.currentWidget()
         return w if isinstance(w, _VKResultTab) else None
+
+    def _current_video_tab(self):
+        w = self.tabs.currentWidget()
+        return w if isinstance(w, _VKVideoTab) else None
 
     def _new_tab(self, query: str) -> _VKResultTab:
         tab = _VKResultTab(query)
@@ -380,6 +435,17 @@ class VKSearchWindow(QWidget):
         tab.table.horizontalHeader().sectionClicked.connect(self._sort_col)
         title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
         idx = self.tabs.addTab(tab, title)
+        self.tabs.setCurrentIndex(idx)
+        return tab
+
+    def _new_video_tab(self, query: str) -> _VKVideoTab:
+        tab = _VKVideoTab(query)
+        tab.filter_input.textChanged.connect(self._filter)
+        tab.table.doubleClicked.connect(self._download_selected)
+        tab.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tab.table.customContextMenuRequested.connect(self._show_video_ctx_menu)
+        title = (query[:22] + "…") if len(query) > 22 else (query or "Видео")
+        idx = self.tabs.addTab(tab, f"🎬 {title}")
         self.tabs.setCurrentIndex(idx)
         return tab
 
@@ -450,16 +516,22 @@ class VKSearchWindow(QWidget):
         if not t:
             return
         lo = text.lower()
+        is_video = isinstance(self.tabs.currentWidget(), _VKVideoTab)
         visible = 0
         for r in range(t.rowCount()):
-            artist = (t.item(r, 0).text() if t.item(r, 0) else "").lower()
-            title  = (t.item(r, 1).text() if t.item(r, 1) else "").lower()
-            hidden = bool(lo) and lo not in artist and lo not in title
+            if is_video:
+                val = (t.item(r, 1).text() if t.item(r, 1) else "").lower()
+            else:
+                artist = (t.item(r, 0).text() if t.item(r, 0) else "").lower()
+                title  = (t.item(r, 1).text() if t.item(r, 1) else "").lower()
+                val = artist + " " + title
+            hidden = bool(lo) and lo not in val
             t.setRowHidden(r, hidden)
             if not hidden:
                 visible += 1
         total = t.rowCount()
-        self.status_lbl.setText(f"Фильтр: {visible} из {total}" if lo else f"Найдено треков: {total}")
+        label = "видео" if is_video else "треков"
+        self.status_lbl.setText(f"Фильтр: {visible} из {total}" if lo else f"Найдено {label}: {total}")
 
     def _sort_col(self, col: int):
         t = self._t()
@@ -502,6 +574,98 @@ class VKSearchWindow(QWidget):
                     it.setData(Qt.ItemDataRole.UserRole,     d["ur"])
                     it.setData(Qt.ItemDataRole.UserRole + 1, d["ur1"])
                 t.setItem(r, c, it)
+
+    # ── Контекстное меню видео ───────────────────────────────────────────────
+
+    def _show_video_ctx_menu(self, pos):
+        t = self._t()
+        if not t:
+            return
+        row = t.rowAt(pos.y())
+        if row < 0:
+            return
+        if not t.item(row, 1):
+            return
+        t.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction("Описание", self._show_video_description)
+        menu.addSeparator()
+        menu.addAction("Скачать видео",        self._download_selected)
+        menu.addAction("Копировать ссылку",    self._copy_video_link)
+        menu.addSeparator()
+        menu.addAction("Выбрать все", t.selectAll)
+        menu.exec(t.viewport().mapToGlobal(pos))
+
+    def _selected_video_url(self) -> str:
+        t = self._t()
+        if not t:
+            return ""
+        for item in t.selectedItems():
+            if item.column() == 1:
+                return item.data(Qt.ItemDataRole.UserRole) or ""
+        return ""
+
+    def _copy_video_link(self):
+        url = self._selected_video_url()
+        if url:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(url)
+            self._sig.status.emit("Ссылка скопирована")
+
+    def _show_video_description(self):
+        url = self._selected_video_url()
+        if not url or not self.driver:
+            return
+        threading.Thread(target=self._fetch_video_description, args=(url,), daemon=True).start()
+
+    def _fetch_video_description(self, url: str):
+        try:
+            self._sig.status.emit("Загружаю описание...")
+            self.driver.get(url)
+            time.sleep(3)
+            soup = BeautifulSoup(self.driver.page_source, "html.parser")
+
+            desc = ""
+
+            # Основной контейнер описания — data-testid="showmoretext"
+            block = soup.find(attrs={"data-testid": "showmoretext"})
+            if block:
+                # Текст внутри vkitShowMoreText__text (класс с хэш-суффиксом)
+                text_el = block.find(class_=lambda c: c and "vkitShowMoreText__text" in " ".join(c))
+                if text_el:
+                    desc = text_el.get_text(separator="\n", strip=True)
+                else:
+                    desc = block.get_text(separator="\n", strip=True)
+
+            # Fallback: meta og:description
+            if not desc:
+                for meta in soup.find_all("meta"):
+                    if meta.get("property") == "og:description" or meta.get("name") == "description":
+                        desc = meta.get("content", "")
+                        if desc:
+                            break
+
+            title_el = soup.find("title")
+            title = title_el.get_text(strip=True) if title_el else url
+
+            self._sig.video_description_ready.emit(title, desc or "Описание не найдено")
+        except Exception as e:
+            self._sig.video_description_ready.emit("Ошибка", str(e))
+
+    def _on_video_description(self, title: str, desc: str):
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumSize(520, 380)
+        lay = QVBoxLayout(dlg)
+        te = QTextEdit()
+        te.setReadOnly(True)
+        te.setPlainText(desc)
+        lay.addWidget(te)
+        btn = QPushButton("Закрыть")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn)
+        dlg.exec()
 
     # ── Контекстное меню ──────────────────────────────────────────────────────
 
@@ -668,6 +832,20 @@ class VKSearchWindow(QWidget):
         self._sig.status.emit("Поиск...")
 
         # Определяем тип запроса
+
+        # Видео: vk.com/video/@id... или vkvideo.ru/@...
+        m_video = re.match(
+            r'^(?:https?://)?(?:www\.)?(?:vk\.com/video|vkvideo\.ru)([/?@].*)?$',
+            query.strip(), re.I
+        )
+        if m_video:
+            vurl = query.strip()
+            if not vurl.startswith('http'):
+                vurl = 'https://' + vurl
+            threading.Thread(
+                target=self._worker_video, args=(vurl, count), daemon=True
+            ).start()
+            return
 
         # Прямая ссылка на аудиозаписи: vk.com/audios-129016356
         m_audios = re.match(
@@ -886,6 +1064,178 @@ class VKSearchWindow(QWidget):
         finally:
             self._sig.search_done.emit()
 
+    # ── Видео ────────────────────────────────────────────────────────────────
+
+    def _worker_video(self, url: str, count: int):
+        try:
+            self._sig.status.emit("Открываю страницу видео...")
+            self.driver.get(url)
+            time.sleep(2)
+
+            limit = count if count > 0 else None
+            last_h = self.driver.execute_script("return document.body.scrollHeight")
+            for i in range(50):
+                parsed = self._parse_video_html(self.driver.page_source, limit)
+                self._sig.status.emit(f"Загружаю видео... ({len(parsed)})")
+                if limit and len(parsed) >= limit:
+                    break
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                new_h = self.driver.execute_script("return document.body.scrollHeight")
+                if new_h == last_h:
+                    break
+                last_h = new_h
+
+            results = self._parse_video_html(self.driver.page_source, limit)
+            log_message(f"INFO VK video: найдено {len(results)} видео")
+            self._sig.video_results_ready.emit(results)
+        except Exception as e:
+            log_message(f"ERROR VK video: {e}")
+            self._sig.status.emit(f"Ошибка: {e}")
+        finally:
+            self._sig.search_done.emit()
+
+    @staticmethod
+    def _parse_video_html(html: str, max_count) -> list:
+        """Парсит страницу видео ВК, возвращает [(title, dur, views, thumb_url, video_url)]."""
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Href может быть /video-NNN_NNN или https://vkvideo.ru/video-NNN_NNN
+        video_link_re = re.compile(r'(?:https?://[^/]+)?/video-?\d+_\d+')
+        all_links = soup.find_all("a", href=video_link_re)
+
+        # На каждую карточку обычно две ссылки с одним URL:
+        # 1) ссылка-превью (содержит <img>, текст пустой)
+        # 2) ссылка-название (текст = заголовок видео)
+        # Группируем по нормализованному URL и берём лучшее из обеих ссылок.
+        url_order: list[str] = []
+        url_data: dict[str, dict] = {}
+
+        for link in all_links:
+            try:
+                href = link.get("href", "")
+                video_url = href if href.startswith("http") else "https://vk.com" + href
+                base = video_url.split("?")[0]
+
+                if base not in url_data:
+                    url_data[base] = {"url": video_url, "title": "", "thumb": "", "dur": ""}
+                    url_order.append(base)
+
+                entry = url_data[base]
+
+                # Название: берём первый непустой текст, не похожий на длительность
+                if not entry["title"]:
+                    txt = link.get_text(strip=True)
+                    if txt and len(txt) > 2 and not re.match(r'^\d{1,2}:\d{2}', txt):
+                        entry["title"] = txt
+
+                # Превью: берём из <img> внутри ссылки
+                if not entry["thumb"]:
+                    img = link.find("img")
+                    if img:
+                        entry["thumb"] = img.get("src") or img.get("data-src") or ""
+
+                # Длительность: ищем M:SS или H:MM:SS в тексте ссылки
+                if not entry["dur"]:
+                    m = re.search(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b', link.get_text())
+                    if m:
+                        entry["dur"] = m.group(1)
+            except Exception:
+                continue
+
+        results = []
+        for base in url_order:
+            if max_count and len(results) >= max_count:
+                break
+            d = url_data[base]
+            results.append((
+                (d["title"] or "Без названия")[:120],
+                d["dur"], "", d["thumb"], d["url"]
+            ))
+        return results
+
+    def _populate_video_tab(self, results: list):
+        query = getattr(self, '_pending_vk_query', '')
+        tab = self._current_video_tab() or self._new_video_tab(query)
+        tab.query = query
+        tab.results = results
+        short = (query[:22] + "…") if len(query) > 22 else (query or "Видео")
+        self.tabs.setTabText(self.tabs.currentIndex(), f"🎬 {short}")
+
+        tab.table.setRowCount(0)
+        for title, dur, views, thumb, vurl in results:
+            r = tab.table.rowCount()
+            tab.table.insertRow(r)
+
+            # Превью — QLabel, изображение загружается асинхронно
+            lbl = QLabel()
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setFixedSize(_VKVideoTab.THUMB_W, _VKVideoTab.THUMB_H)
+            tab.table.setCellWidget(r, 0, lbl)
+            if thumb:
+                threading.Thread(
+                    target=self._load_video_thumb, args=(thumb, lbl), daemon=True
+                ).start()
+
+            # Название + URL в UserRole
+            title_item = QTableWidgetItem(title)
+            title_item.setData(Qt.ItemDataRole.UserRole, vurl)
+            title_item.setToolTip(vurl)
+            tab.table.setItem(r, 1, title_item)
+            tab.table.setItem(r, 2, QTableWidgetItem(dur))
+            tab.table.setItem(r, 3, QTableWidgetItem(views))
+
+        total = tab.table.rowCount()
+        self._sig.status.emit(f"Найдено видео: {total}" if total else "Видео не найдено")
+        if not total:
+            log_message(f"WARNING VK video: таблица пуста. Проверьте HTML-структуру страницы.")
+
+    def _load_video_thumb(self, url: str, lbl):
+        try:
+            resp = _requests.get(url, timeout=10, headers={"Referer": "https://vk.com/"})
+            if resp.status_code == 200:
+                self._sig.thumb_ready.emit(lbl, resp.content)
+        except Exception:
+            pass
+
+    def _on_thumb_ready(self, lbl, data: bytes):
+        from PyQt6.QtGui import QPixmap
+        px = QPixmap()
+        px.loadFromData(data)
+        if not px.isNull():
+            px = px.scaled(
+                _VKVideoTab.THUMB_W, _VKVideoTab.THUMB_H,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            lbl.setPixmap(px)
+
+    def _download_vk_videos_selected(self):
+        tab = self._current_video_tab()
+        if not tab:
+            return
+        t = tab.table
+        seen, urls = set(), []
+        for item in t.selectedItems():
+            if item.column() != 1:
+                continue
+            url = item.data(Qt.ItemDataRole.UserRole)
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        if not urls:
+            self._sig.status.emit("Не выбрано ни одного видео")
+            return
+        import config as _cfg
+        from download import download_video
+        from queues import add_to_queue
+        for url in urls:
+            if _cfg.is_downloading:
+                add_to_queue(url)
+            else:
+                threading.Thread(target=download_video, args=(url,), daemon=True).start()
+        self._sig.status.emit(f"Добавлено в очередь: {len(urls)} видео")
+
     def _scroll_and_parse(self, count: int) -> list:
         limit = count if count > 0 else None
         results = self._parse_html(self.driver.page_source, limit)
@@ -983,6 +1333,9 @@ class VKSearchWindow(QWidget):
         ).start()
 
     def _download_selected(self):
+        if isinstance(self.tabs.currentWidget(), _VKVideoTab):
+            self._download_vk_videos_selected()
+            return
         rows = self._selected_rows_data()
         if not rows:
             self._sig.status.emit("Не выбрано ни одного трека")
