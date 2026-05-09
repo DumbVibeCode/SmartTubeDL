@@ -281,7 +281,7 @@ class VKSearchWindow(QWidget):
 
         # Заголовок + статус браузера
         top = QHBoxLayout()
-        h = QLabel("Поиск музыки ВКонтакте")
+        h = QLabel("Поиск музыки и видео")
         f = QFont(); f.setPointSize(12); f.setBold(True); h.setFont(f)
         top.addWidget(h)
         top.addStretch()
@@ -295,12 +295,19 @@ class VKSearchWindow(QWidget):
         self.recheck_btn.clicked.connect(self._recheck_login)
         top.addWidget(self.recheck_btn)
 
+        self.yt_cookies_btn = QPushButton("Куки YouTube")
+        self.yt_cookies_btn.setProperty("secondary", True)
+        self.yt_cookies_btn.setEnabled(False)
+        self.yt_cookies_btn.setToolTip("Сохранить куки YouTube из браузера в cookies.txt для загрузки 18+ видео")
+        self.yt_cookies_btn.clicked.connect(self._save_youtube_cookies)
+        top.addWidget(self.yt_cookies_btn)
+
         root.addLayout(top)
 
         # Строка поиска
         row = QHBoxLayout(); row.setSpacing(6)
         self.query_input = QLineEdit()
-        self.query_input.setPlaceholderText("Исполнитель / название, ссылка vk.com/... или wall...")
+        self.query_input.setPlaceholderText("Исполнитель / название, ссылка vk.com/..., my.mail.ru/music/...")
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
 
@@ -385,6 +392,7 @@ class VKSearchWindow(QWidget):
 
     def _on_browser_ready(self, ok: bool):
         self.recheck_btn.setEnabled(True)
+        self.yt_cookies_btn.setEnabled(True)
         if ok:
             self.browser_lbl.setText("● Залогинен в ВК")
             self.browser_lbl.setStyleSheet("color: #4caf50; font-weight: bold;")
@@ -407,6 +415,54 @@ class VKSearchWindow(QWidget):
     def _do_recheck(self):
         ok = self._is_logged_in()
         self._sig.browser_ready.emit(ok)
+
+    def _save_youtube_cookies(self):
+        if not self.driver:
+            QMessageBox.warning(self, "Браузер не готов", "Браузер ещё не запущен.")
+            return
+        self.yt_cookies_btn.setEnabled(False)
+        self._sig.status.emit("Открываю YouTube...")
+        threading.Thread(target=self._do_save_youtube_cookies, daemon=True).start()
+
+    def _do_save_youtube_cookies(self):
+        try:
+            prev_url = self.driver.current_url
+            self.driver.get("https://www.youtube.com")
+            time.sleep(3)
+
+            cookies = self.driver.get_cookies()
+            yt_cookies = [c for c in cookies if 'youtube' in c.get('domain', '') or 'google' in c.get('domain', '')]
+
+            cookies_path = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+            )
+            with open(cookies_path, 'w', encoding='utf-8') as f:
+                f.write("# Netscape HTTP Cookie File\n")
+                for c in yt_cookies:
+                    domain   = c.get('domain', '')
+                    httponly = '#HttpOnly_' if c.get('httpOnly', False) else ''
+                    secure   = 'TRUE' if c.get('secure', False) else 'FALSE'
+                    subdomain = 'TRUE' if domain.startswith('.') else 'FALSE'
+                    expiry   = str(int(c.get('expiry', 0)))
+                    name     = c.get('name', '')
+                    value    = c.get('value', '')
+                    f.write(f"{httponly}{domain}\t{subdomain}\t{c.get('path','/')}\t{secure}\t{expiry}\t{name}\t{value}\n")
+
+            log_message(f"INFO YouTube cookies сохранены: {len(yt_cookies)} шт. -> {cookies_path}")
+            self._sig.status.emit(f"✓ Куки YouTube сохранены ({len(yt_cookies)} шт.)")
+
+            # Возвращаемся на предыдущую страницу
+            if prev_url and prev_url != "data:,":
+                self.driver.get(prev_url)
+        except Exception as e:
+            log_message(f"ERROR save_youtube_cookies: {e}")
+            self._sig.status.emit(f"Ошибка: {e}")
+        finally:
+            QMetaObject.invokeMethod(
+                self.yt_cookies_btn, "setEnabled",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(bool, True)
+            )
 
     # ── Вспомогательные методы для вкладок ───────────────────────────────────
 
@@ -814,10 +870,6 @@ class VKSearchWindow(QWidget):
     # ── Поиск ────────────────────────────────────────────────────────────────
 
     def _on_search(self):
-        if not self.driver:
-            QMessageBox.warning(self, "Браузер не готов",
-                                "Подождите, пока браузер запустится и войдите в ВК.")
-            return
         query = self.query_input.text().strip()
         if not query:
             self._sig.status.emit("Введите запрос!")
@@ -830,6 +882,27 @@ class VKSearchWindow(QWidget):
         self._pending_vk_query = query
         self.search_btn.setEnabled(False)
         self._sig.status.emit("Поиск...")
+
+        # ── Mail.ru (не требует браузера) ────────────────────────────────────
+        if re.match(r'^https?://my\.mail\.ru/music/', query, re.I):
+            threading.Thread(
+                target=self._worker_mailru, args=(query,), daemon=True
+            ).start()
+            return
+
+        # ── Неизвестный Гений (не требует браузера) ───────────────────────
+        if re.match(r'^https?://(?:www\.)?neizvestniy-geniy\.ru/users/\d+/works/', query, re.I):
+            threading.Thread(
+                target=self._worker_neizvestniy, args=(query,), daemon=True
+            ).start()
+            return
+
+        # ── Всё остальное требует браузера ВК ────────────────────────────────
+        if not self.driver:
+            QMessageBox.warning(self, "Браузер не готов",
+                                "Подождите, пока браузер запустится и войдите в ВК.")
+            self.search_btn.setEnabled(True)
+            return
 
         # Определяем тип запроса
 
@@ -1060,6 +1133,44 @@ class VKSearchWindow(QWidget):
             self._sig.results_ready.emit(results)
         except Exception as e:
             log_message(f"ERROR VK wall: {e}")
+            self._sig.status.emit(f"Ошибка: {e}")
+        finally:
+            self._sig.search_done.emit()
+
+    # ── Mail.ru ──────────────────────────────────────────────────────────────
+
+    def _worker_mailru(self, url: str):
+        try:
+            from mailru_download import _fetch_tracks
+            self._sig.status.emit("Загружаю плейлист Mail.ru...")
+            tracks, owner = _fetch_tracks(url)
+            # Формат _VKResultTab: (artist, title, dur, owner, url, full_id)
+            results = [
+                (t['artist'], t['title'], t.get('duration', ''),
+                 owner, t['url'], f"mailru:{i}")
+                for i, t in enumerate(tracks)
+            ]
+            self._sig.results_ready.emit(results)
+        except Exception as e:
+            log_message(f"ERROR mailru worker: {e}")
+            self._sig.status.emit(f"Ошибка: {e}")
+        finally:
+            self._sig.search_done.emit()
+
+    # ── Неизвестный Гений ────────────────────────────────────────────────────
+
+    def _worker_neizvestniy(self, url: str):
+        try:
+            from neizvestniy_download import fetch_works
+            tracks, author = fetch_works(url, status_cb=lambda s: self._sig.status.emit(s))
+            results = [
+                (t['artist'], t['title'], t.get('duration', ''),
+                 'НГ', t['url'], f"ng:{i}")
+                for i, t in enumerate(tracks)
+            ]
+            self._sig.results_ready.emit(results)
+        except Exception as e:
+            log_message(f"ERROR neizvestniy worker: {e}")
             self._sig.status.emit(f"Ошибка: {e}")
         finally:
             self._sig.search_done.emit()
@@ -1321,13 +1432,16 @@ class VKSearchWindow(QWidget):
         if not d["full_id"]:
             self._sig.status.emit("Нет ID трека")
             return
-        base = _safe_name(f"{d['artist']} - {d['title']}") or "track"
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить трек", base + ".mp3",
-            "Аудио MP3 (*.mp3);;Все файлы (*.*)"
-        )
-        if not path:
+        folder = settings.get("download_folder", "")
+        if not folder:
+            self._sig.status.emit("Укажите папку загрузок в настройках")
             return
+        base = _safe_name(f"{d['artist']} - {d['title']}") or "track"
+        path = os.path.join(folder, base + ".mp3")
+        cnt, orig = 1, path
+        while os.path.exists(path):
+            path = f"{orig[:-4]} ({cnt}).mp3"
+            cnt += 1
         threading.Thread(
             target=self._dl_single_worker, args=(d, path), daemon=True
         ).start()
@@ -1340,11 +1454,9 @@ class VKSearchWindow(QWidget):
         if not rows:
             self._sig.status.emit("Не выбрано ни одного трека")
             return
-        folder = QFileDialog.getExistingDirectory(
-            self, f"Папка для {len(rows)} треков",
-            settings.get("download_folder", "")
-        )
+        folder = settings.get("download_folder", "")
         if not folder:
+            self._sig.status.emit("Укажите папку загрузок в настройках")
             return
         threading.Thread(
             target=self._dl_batch_worker, args=(rows, folder), daemon=True
@@ -1352,17 +1464,27 @@ class VKSearchWindow(QWidget):
 
     def _dl_single_worker(self, d: dict, path: str):
         label = f"{d['artist']} - {d['title']}"
+        is_mailru = d["full_id"].startswith("mailru:")
+        is_ng     = d["full_id"].startswith("ng:")
+        is_direct = is_mailru or is_ng
+        source_lbl = "Mail.ru" if is_mailru else ("НГ" if is_ng else "ВК")
         key = f"vk:{d['full_id']}"
-        _utils.queue_titles[key] = f"[ВК] {label}"
+        _utils.queue_titles[key] = f"[{source_lbl}] {label}"
         _utils.current_vk_key = key
         self._sig.show_progress.emit(True)
         self._sig.progress.emit(0)
         self._tray_status("Загрузка...", 0)
         ok = False
-        if self.driver:
+        if not is_direct and self.driver:
             ok = self._dl_via_browser(d["full_id"], path)
         if not ok and d["url"].startswith("http"):
-            ok = self._dl_direct(d["url"], path)
+            if is_mailru:
+                referer = "https://my.mail.ru/"
+            elif is_ng:
+                referer = "https://www.neizvestniy-geniy.ru/"
+            else:
+                referer = "https://vk.com/"
+            ok = self._dl_direct(d["url"], path, referer=referer)
         _utils.current_vk_key = ""
         _utils.queue_titles.pop(key, None)
         self._sig.show_progress.emit(False)
@@ -1420,11 +1542,20 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit(f"{base[:50]}...")
             self._tray_status("Загрузка...", int(progress))
 
+            is_mailru = d["full_id"].startswith("mailru:")
+            is_ng     = d["full_id"].startswith("ng:")
+            is_direct = is_mailru or is_ng
             ok = False
-            if self.driver:
+            if not is_direct and self.driver:
                 ok = self._dl_via_browser(d["full_id"], path)
             if not ok and d["url"].startswith("http"):
-                ok = self._dl_direct(d["url"], path)
+                if is_mailru:
+                    referer = "https://my.mail.ru/"
+                elif is_ng:
+                    referer = "https://www.neizvestniy-geniy.ru/"
+                else:
+                    referer = "https://vk.com/"
+                ok = self._dl_direct(d["url"], path, referer=referer)
 
             _utils.queue_titles.pop(key, None)
 
@@ -1594,17 +1725,17 @@ class VKSearchWindow(QWidget):
         else:
             return self._dl_direct(url, path)
 
-    def _dl_direct(self, url: str, path: str) -> bool:
+    def _dl_direct(self, url: str, path: str, referer: str = "https://vk.com/") -> bool:
         if not REQUESTS_OK:
             return False
         try:
             cookies = {}
-            if self.driver:
+            if self.driver and "vk.com" in referer:
                 for c in self.driver.get_cookies():
                     cookies[c["name"]] = c["value"]
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://vk.com/",
+                "Referer": referer,
             }
             with _requests.get(url, headers=headers, cookies=cookies, stream=True, timeout=120) as r:
                 r.raise_for_status()

@@ -1,4 +1,10 @@
 import os
+
+# Добавляем Node.js в PATH чтобы yt-dlp мог решать n-challenge
+_nodejs_dir = r'C:\Program Files\nodejs'
+if os.path.isdir(_nodejs_dir) and _nodejs_dir not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = _nodejs_dir + os.pathsep + os.environ.get('PATH', '')
+
 from config import format_duration, format_invidious_duration, initialize_settings
 from convert import convert_to_mp3, convert_to_mp4
 from download_history import add_to_history
@@ -15,9 +21,17 @@ from tray import show_notification, tray_icon, update_download_status
 from config import initialize_settings, settings, is_downloading
 from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
 from clipboard_utils import update_last_copy_time
-from mailru_download import is_mailru_url, download_mailru_playlist
 
 invidious_url_var = ""
+
+_AGE_ERRORS = ("sign in to confirm your age", "age-restricted", "inappropriate for some users")
+
+def _is_age_error(e) -> bool:
+    return any(s in str(e).lower() for s in _AGE_ERRORS)
+
+def _auth_opts() -> dict:
+    """Опции для обхода возрастных ограничений: Firefox куки + Node.js для n-challenge."""
+    return {'cookiesfrombrowser': ('firefox',), 'js_runtimes': {'node': {}}}
 
 
 class _YtdlpLogger:
@@ -40,15 +54,6 @@ class _UserStop(Exception):
 
 def download_video(url, from_queue=False):
     global is_downloading, global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
-
-    # Mail.ru плейлисты качаем отдельно, не через yt-dlp
-    if is_mailru_url(url):
-        threading.Thread(
-            target=_download_mailru,
-            args=(url,),
-            daemon=True,
-        ).start()
-        return
 
     if is_downloading:
         log_message(f"INFO Загрузка уже идет, добавляем URL в очередь: {url}")
@@ -94,39 +99,59 @@ def download_video(url, from_queue=False):
         return
 
     save_path = settings["download_folder"]
+    cookies_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt'))
+    _has_cookies = os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 100
 
     if "&list=" in url:
         log_message(f"INFO URL содержит параметр плейлиста: {url}. Загружаем только видео.")
 
+    def _extract_info(extra_opts: dict):
+        opts = {
+            "quiet": True, "noplaylist": True,
+            "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"},
+        }
+        if _has_cookies:
+            opts['cookies'] = cookies_path
+        opts.update(extra_opts)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
     try:
-        with yt_dlp.YoutubeDL({"quiet": True, "noplaylist": True, "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"}, "extractor_args": {"youtube": {"player_client": ["web", "android"]}}}) as ydl:
-            info = ydl.extract_info(url, download=False)
-
-            if not info:
-                log_message(f"ERROR Не удалось получить информацию о видео: {url}")
-                raise Exception("Не удалось извлечь информацию о видео")
-
-            if info.get('is_premiere', False) or info.get('live_status', '') == 'is_upcoming':
-                log_message(f"INFO Пропуск премьеры: {url}")
-                threading.Thread(target=show_notification, args=(tray_icon, "Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна."), daemon=True).start()
-                on_download_complete()
-                if from_queue:
-                    remove_from_queue(url)
-                return
-
-            video_title = info.get("title", "video")
-            _dl_utils.queue_titles[url] = video_title  # для отображения в окне очереди
-            safe_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
-
-            if settings["conversion_enabled"]:
-                video_ext = settings["download_format"]
+        try:
+            info = _extract_info({})
+        except yt_dlp.utils.DownloadError as e:
+            if _is_age_error(e):
+                log_message("INFO Видео требует авторизации — повтор с куками Firefox")
+                update_download_status("Авторизация...", 0)
+                info = _extract_info(_auth_opts())
             else:
-                video_ext = info.get("ext", "mp4")
+                raise
 
-            file_name = f"{safe_title}.{video_ext}"
-            file_path = os.path.join(save_path, file_name)
+        if not info:
+            log_message(f"ERROR Не удалось получить информацию о видео: {url}")
+            raise Exception("Не удалось извлечь информацию о видео")
 
-            log_message(f"INFO Планируется загрузка файла: {file_path}")
+        if info.get('is_premiere', False) or info.get('live_status', '') == 'is_upcoming':
+            log_message(f"INFO Пропуск премьеры: {url}")
+            threading.Thread(target=show_notification, args=(tray_icon, "Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна."), daemon=True).start()
+            on_download_complete()
+            if from_queue:
+                remove_from_queue(url)
+            return
+
+        video_title = info.get("title", "video")
+        _dl_utils.queue_titles[url] = video_title
+        safe_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
+
+        if settings["conversion_enabled"]:
+            video_ext = settings["download_format"]
+        else:
+            video_ext = info.get("ext", "mp4")
+
+        file_name = f"{safe_title}.{video_ext}"
+        file_path = os.path.join(save_path, file_name)
+
+        log_message(f"INFO Планируется загрузка файла: {file_path}")
 
     except yt_dlp.utils.DownloadError as e:
         log_message(f"ERROR Видео недоступно: {url}. Ошибка: {e}")
@@ -154,36 +179,20 @@ def download_video(url, from_queue=False):
     }
     selected_quality = quality_map.get(settings["video_quality"], "best")
 
-    # Используем полный путь к файлу cookies.txt
-    # cookies_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
-    # cookies_path = r'c:\Down 1\YTD\cookies.txt'
-    # cookies_path = os.path.abspath('cookies.txt')  # Или явно: 'C:\\Down 1\\YTD\\cookies.txt'
-    cookies_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt'))
-    print("Путь к cookies.txt:", cookies_path)
-    # 
-    # Используем cookies.txt из текущей директории
     ydl_opts = {
         'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
-        'cookies': cookies_path,
         'restrict_filenames': False,
         'windowsfilenames': False,
         'noplaylist': True,
         'logger': _YtdlpLogger(),
         'js_runtimes': {'node': {}},
         'remote_components': {'ejs': 'github'},
-        'extractor_args': {'youtube': {'player_client': ['web', 'android']}},
     }
-    
-    
-    try:
-        with open('cookies.txt', 'r', encoding='utf-8') as f:
-            cookies_content = f.read()
-            log_message(f"DEBUG: Размер файла cookies.txt: {len(cookies_content)} байт")
-            log_message(f"DEBUG: Первые 100 символов cookies.txt: {cookies_content[:100]}")
-    except Exception as e:
-        log_message(f"ERROR: Не удалось прочитать cookies.txt: {e}")
-    
+    if _has_cookies:
+        ydl_opts['cookies'] = cookies_path
+
     if settings["download_format"] == "mp3":
+        # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
         ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
     else:
         ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
@@ -195,34 +204,45 @@ def download_video(url, from_queue=False):
         log_message(f"DEBUG ydl_opts: {ydl_opts}")
         ydl_opts["progress_hooks"] = [progress_hook]
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            
-            
-            
-            info = ydl.extract_info(url, download=True)
-            downloaded_file = ydl.prepare_filename(info)
+        def _do_download(extra_opts: dict):
+            opts = dict(ydl_opts)
+            opts.update(extra_opts)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                dl_info = ydl.extract_info(url, download=True)
+                return dl_info, ydl.prepare_filename(dl_info)
 
-            # Сохраняем в историю с длительностью
-            video_duration = info.get('duration', 0)
-            video_title = info.get('title', 'Неизвестное видео')
-            log_message(f"DEBUG Сохранение в историю: {video_title}, длительность: {video_duration} сек")
+        try:
+            info, downloaded_file = _do_download({})
+        except yt_dlp.utils.DownloadError as e:
+            if _is_age_error(e):
+                log_message("INFO Загрузка требует авторизации — повтор с куками Firefox")
+                update_download_status("Авторизация...", 0)
+                info, downloaded_file = _do_download(_auth_opts())
+            else:
+                raise
 
-            add_to_history(
-                url=url,
-                title=video_title,
-                format_type=settings["download_format"],
-                duration=video_duration
-            )
+        # Сохраняем в историю с длительностью
+        video_duration = info.get('duration', 0)
+        video_title = info.get('title', 'Неизвестное видео')
+        log_message(f"DEBUG Сохранение в историю: {video_title}, длительность: {video_duration} сек")
 
-            log_message(f"SUCCESS Файл загружен: {downloaded_file}")
+        add_to_history(
+            url=url,
+            title=video_title,
+            format_type=settings["download_format"],
+            duration=video_duration
+        )
+
+        log_message(f"SUCCESS Файл загружен: {downloaded_file}")
 
         if settings["conversion_enabled"]:
-            if settings["download_format"] == "mp3" and downloaded_file.endswith((".m4a", ".webm", ".mp4", ".mkv")):
+            fmt = settings["download_format"]
+            if fmt == "mp3" and downloaded_file.endswith((".m4a", ".webm", ".mp4", ".mkv", ".opus")):
                 log_message("INFO Конвертация в MP3...")
                 converted_file = convert_to_mp3(downloaded_file, update_download_status)
                 if converted_file:
                     log_message(f"SUCCESS Конвертация завершена: {converted_file}")
-            elif settings["download_format"] == "mp4" and downloaded_file.endswith((".m4a", ".webm", ".mp4", ".mkv")):
+            elif fmt == "mp4" and downloaded_file.endswith((".m4a", ".webm", ".mkv")):
                 log_message("INFO Конвертация в MP4...")
                 converted_file = convert_to_mp4(downloaded_file, update_download_status)
                 if converted_file:
@@ -262,28 +282,6 @@ def download_video(url, from_queue=False):
             on_download_complete()
         else:
             is_downloading = False
-
-def _download_mailru(url: str):
-    """Скачивает плейлист mail.ru в папку загрузок."""
-    save_path = settings["download_folder"]
-
-    def status_cb(msg):
-        update_download_status(msg, None)
-
-    def progress_cb(pct):
-        update_download_status("Загрузка...", int(pct))
-
-    def done_cb(ok, fail):
-        update_download_status("Ожидание...", 100)
-        msg = f"Mail.ru: скачано {ok} треков" + (f", ошибок: {fail}" if fail else "")
-        threading.Thread(
-            target=show_notification,
-            args=(tray_icon, "Mail.ru", msg),
-            daemon=True,
-        ).start()
-
-    download_mailru_playlist(url, save_path, status_cb, progress_cb, done_cb)
-
 
 def progress_hook(d):
     global global_file_size, global_downloaded, last_update_time, last_downloaded_bytes

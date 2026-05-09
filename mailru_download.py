@@ -18,8 +18,11 @@ def _safe_name(text: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', '_', text).strip() or 'track'
 
 
-def _fetch_tracks(url: str) -> list[dict]:
-    """Парсит страницу плейлиста mail.ru, возвращает [{title, artist, url}]."""
+def _fetch_tracks(url: str) -> tuple[list[dict], str]:
+    """
+    Парсит страницу плейлиста mail.ru.
+    Возвращает (tracks, owner), где tracks = [{title, artist, duration, url}].
+    """
     import json as _json
     headers = {
         'User-Agent': (
@@ -33,10 +36,17 @@ def _fetch_tracks(url: str) -> list[dict]:
     resp.raise_for_status()
     html = resp.text
 
+    # Владелец: <span class="b-music__playlist-header__owner__name ...">Имя</span>
+    owner = 'Mail.ru'
+    owner_m = re.search(r'b-music__playlist-header__owner__name[^>]*>([^<]+)<', html)
+    if owner_m:
+        owner = owner_m.group(1).strip()
+
     tracks = []
     seen: set[str] = set()
+    dur_re = re.compile(r'itemprop=["\']duration["\'][^>]*>([^<]+)<')
 
-    # Данные треков лежат в <script class="data-song" type="text/plain">{...}</script>
+    # Данные треков: <script class="data-song" type="text/plain">{...}</script>
     for m in re.finditer(
         r'<script[^>]+class="data-song"[^>]*>\s*(.*?)\s*</script>',
         html, re.DOTALL
@@ -46,22 +56,28 @@ def _fetch_tracks(url: str) -> list[dict]:
             mp3_url = data.get('url', '')
             if not mp3_url:
                 continue
-            # URL может быть protocol-relative (//moosic.my.mail.ru/...)
             if mp3_url.startswith('//'):
                 mp3_url = 'https:' + mp3_url
             if mp3_url in seen:
                 continue
             seen.add(mp3_url)
+
+            # Длительность из HTML перед тегом <script>
+            preceding = html[max(0, m.start() - 300): m.start()]
+            dur_m = dur_re.search(preceding)
+            duration = dur_m.group(1).strip() if dur_m else ''
+
             tracks.append({
-                'title':  data.get('name', f'track_{len(tracks)+1}'),
-                'artist': data.get('author', ''),
-                'url':    mp3_url,
+                'title':    data.get('name', f'track_{len(tracks)+1}'),
+                'artist':   data.get('author', ''),
+                'duration': duration,
+                'url':      mp3_url,
             })
         except Exception as e:
             log_message(f"DEBUG mailru json parse: {e}")
 
-    log_message(f"INFO mailru: найдено {len(tracks)} треков")
-    return tracks
+    log_message(f"INFO mailru: найдено {len(tracks)} треков, владелец: {owner}")
+    return tracks, owner
 
 
 def download_mailru_playlist(
@@ -87,7 +103,7 @@ def download_mailru_playlist(
 
     _status("Загружаю страницу Mail.ru...")
     try:
-        tracks = _fetch_tracks(url)
+        tracks, _owner = _fetch_tracks(url)
     except Exception as e:
         log_message(f"ERROR mailru fetch: {e}")
         _status(f"Ошибка загрузки страницы: {e}")

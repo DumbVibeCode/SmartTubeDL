@@ -2,8 +2,12 @@
 Окна интерфейса на PyQt6
 """
 
+import os
+import json
 import threading
 import webbrowser
+
+_TABS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_tabs.json')
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,
@@ -748,6 +752,9 @@ class SearchWindow(QMainWindow):
         self.log_timer.timeout.connect(self._update_log)
         self.log_timer.start(1000)
 
+        # Восстанавливаем вкладки после инициализации UI
+        self._load_tabs()
+
     # ── Вспомогательные методы для работы с вкладками ──────────────────────
 
     def _t(self):
@@ -1421,8 +1428,51 @@ class SearchWindow(QMainWindow):
             from logger import log_message
             log_message(f"ERROR Ошибка при очистке лога: {e}")
 
+    def _save_tabs(self):
+        """Сохраняет все непустые вкладки в файл."""
+        data = []
+        cur = self.tabs.currentIndex()
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if isinstance(tab, _ResultTab) and tab.results:
+                data.append({
+                    'query':   tab.query,
+                    'results': tab.results,
+                    'active':  i == cur,
+                })
+        try:
+            with open(_TABS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_tabs(self):
+        """Восстанавливает вкладки из файла."""
+        try:
+            if not os.path.exists(_TABS_FILE):
+                return
+            with open(_TABS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not data:
+                return
+            # Убираем начальную пустую вкладку
+            if self.tabs.count() == 1:
+                w = self.tabs.widget(0)
+                if isinstance(w, _ResultTab) and not w.results:
+                    self.tabs.removeTab(0)
+            active_idx = 0
+            for td in data:
+                tab = self._new_tab(td.get('query', ''))
+                self._fill_tab(tab, td.get('results', []))
+                if td.get('active'):
+                    active_idx = self.tabs.indexOf(tab)
+            self.tabs.setCurrentIndex(active_idx)
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         """Закрытие окна - прячем, а не закрываем (приложение живёт в трее)"""
+        self._save_tabs()
         # Сохраняем настройки
         settings["last_search_query"] = self.search_input.text()
         settings["search_type"] = self.type_combo.currentText()
