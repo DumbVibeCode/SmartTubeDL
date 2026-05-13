@@ -49,6 +49,7 @@ except Exception:
     REQUESTS_OK = False
 
 VK_HISTORY_FILE = os.path.join(os.getcwd(), "vk_history.json")
+_VK_TABS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vk_search_tabs.json")
 
 
 # ── Сигналы (thread-safe) ─────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ class _Sig(QObject):
     video_description_ready = pyqtSignal(str, str)      # (заголовок, текст описания)
     thumb_ready              = pyqtSignal(object, bytes) # (QLabel, raw PNG/JPEG bytes)
     playlist_results_ready   = pyqtSignal(list)          # [(title, author, count_str, pl_url)]
+    track_unavailable        = pyqtSignal(str)           # full_id недоступного трека
     browser_ready       = pyqtSignal(bool)    # True = залогинен
     error               = pyqtSignal(str)
     search_done         = pyqtSignal()        # разблокировать кнопку
@@ -157,7 +159,8 @@ def _fmt_sec(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 def _safe_name(text: str) -> str:
-    return "".join(c for c in text if c not in '<>:"/\\|?*').strip() or "track"
+    name = "".join(c for c in text if c not in '<>:"/\\|?*').strip().rstrip('. ')
+    return name or "track"
 
 
 # ── Вкладка результатов ───────────────────────────────────────────────────────
@@ -167,7 +170,8 @@ class _VKResultTab(QWidget):
 
     def __init__(self, query: str = ""):
         super().__init__()
-        self.query = query
+        self.query   = query
+        self.results: list = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -300,6 +304,7 @@ class VKSearchWindow(QWidget):
 
         self._build_ui()
         self._connect_signals()
+        self._load_vk_tabs()
 
         if not SELENIUM_OK:
             QMessageBox.critical(
@@ -330,6 +335,11 @@ class VKSearchWindow(QWidget):
         self.browser_lbl = QLabel("● Браузер запускается...")
         self.browser_lbl.setStyleSheet("color: orange; font-weight: bold;")
         top.addWidget(self.browser_lbl)
+
+        self.open_browser_btn = QPushButton("Открыть браузер")
+        self.open_browser_btn.setProperty("secondary", True)
+        self.open_browser_btn.clicked.connect(self._open_browser)
+        top.addWidget(self.open_browser_btn)
 
         self.recheck_btn = QPushButton("Проверить вход")
         self.recheck_btn.setProperty("secondary", True)
@@ -422,6 +432,7 @@ class VKSearchWindow(QWidget):
         self._sig.video_description_ready.connect(self._on_video_description)
         self._sig.thumb_ready.connect(self._on_thumb_ready)
         self._sig.playlist_results_ready.connect(self._populate_playlist_tab)
+        self._sig.track_unavailable.connect(self._mark_track_unavailable)
         self._sig.browser_ready.connect(self._on_browser_ready)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
         self._sig.search_done.connect(lambda: self.search_btn.setEnabled(True))
@@ -434,6 +445,7 @@ class VKSearchWindow(QWidget):
             self.batch_lbl.setText("")
 
     def _on_browser_ready(self, ok: bool):
+        self.open_browser_btn.setEnabled(True)
         self.recheck_btn.setEnabled(True)
         self.yt_cookies_btn.setEnabled(True)
         if ok:
@@ -444,6 +456,33 @@ class VKSearchWindow(QWidget):
             self.browser_lbl.setText("● Войдите в ВК в браузере")
             self.browser_lbl.setStyleSheet("color: #e74c3c; font-weight: bold;")
             self.search_btn.setEnabled(True)  # всё равно даём попробовать
+
+    def _open_browser(self):
+        """Открывает браузер, если он закрыт или не отвечает."""
+        # Проверяем, жив ли текущий браузер
+        alive = False
+        if self.driver:
+            try:
+                _ = self.driver.current_url
+                alive = True
+            except Exception:
+                self.driver = None
+
+        if alive:
+            self._sig.status.emit("Браузер уже открыт")
+            return
+
+        if not SELENIUM_OK:
+            QMessageBox.critical(self, "Ошибка", "Selenium не установлен.")
+            return
+
+        self.open_browser_btn.setEnabled(False)
+        self.recheck_btn.setEnabled(False)
+        self.yt_cookies_btn.setEnabled(False)
+        self.search_btn.setEnabled(False)
+        self.browser_lbl.setText("● Браузер запускается...")
+        self.browser_lbl.setStyleSheet("color: orange; font-weight: bold;")
+        threading.Thread(target=self._browser_worker, daemon=True).start()
 
     def _recheck_login(self):
         """Ручная проверка состояния входа в ВК"""
@@ -571,7 +610,8 @@ class VKSearchWindow(QWidget):
     def _populate_table(self, results: list):
         query = getattr(self, '_pending_vk_query', self.query_input.text().strip())
         tab = self._current_tab() or self._new_tab(query)
-        tab.query = query
+        tab.query               = query
+        tab.results             = list(results)
         tab.mobile_playlist_url = getattr(self, '_pending_mobile_playlist_url', None)
         tab.playlist_url        = getattr(self, '_pending_playlist_url', None)
         self._pending_mobile_playlist_url = None
@@ -744,34 +784,35 @@ class VKSearchWindow(QWidget):
     def _fetch_video_description(self, url: str):
         try:
             self._sig.status.emit("Загружаю описание...")
-            self.driver.get(url)
-            time.sleep(3)
-            soup = BeautifulSoup(self.driver.page_source, "html.parser")
+            self.driver.set_page_load_timeout(4)
+            try:
+                self.driver.get(url)
+            except Exception:
+                pass
+            finally:
+                self.driver.set_page_load_timeout(30)
 
-            desc = ""
+            result = None
+            for _ in range(40):
+                time.sleep(0.2)
+                result = self.driver.execute_script("""
+                    var desc = '';
+                    var block = document.querySelector('[data-testid="showmoretext"]');
+                    if (block) desc = (block.innerText || block.textContent || '').trim();
+                    if (!desc) {
+                        var m = document.querySelector('meta[property="og:description"]')
+                             || document.querySelector('meta[name="description"]');
+                        if (m) desc = (m.content || '').trim();
+                    }
+                    var title = (document.title || '').trim();
+                    return (desc || title) ? {desc: desc, title: title} : null;
+                """)
+                if result:
+                    break
+            desc  = (result or {}).get("desc",  "") or "Описание не найдено"
+            title = (result or {}).get("title", "") or url
 
-            # Основной контейнер описания — data-testid="showmoretext"
-            block = soup.find(attrs={"data-testid": "showmoretext"})
-            if block:
-                # Текст внутри vkitShowMoreText__text (класс с хэш-суффиксом)
-                text_el = block.find(class_=lambda c: c and "vkitShowMoreText__text" in " ".join(c))
-                if text_el:
-                    desc = text_el.get_text(separator="\n", strip=True)
-                else:
-                    desc = block.get_text(separator="\n", strip=True)
-
-            # Fallback: meta og:description
-            if not desc:
-                for meta in soup.find_all("meta"):
-                    if meta.get("property") == "og:description" or meta.get("name") == "description":
-                        desc = meta.get("content", "")
-                        if desc:
-                            break
-
-            title_el = soup.find("title")
-            title = title_el.get_text(strip=True) if title_el else url
-
-            self._sig.video_description_ready.emit(title, desc or "Описание не найдено")
+            self._sig.video_description_ready.emit(title, desc)
         except Exception as e:
             self._sig.video_description_ready.emit("Ошибка", str(e))
 
@@ -1604,7 +1645,55 @@ class VKSearchWindow(QWidget):
                 self._sig.status.emit("Плейлист пуст или недоступен")
                 return
 
+            # Создаём папку заранее
+            safe_pl   = _safe_name(pl_title) or "playlist"
+            pl_folder = os.path.join(folder, safe_pl)
+            os.makedirs(pl_folder, exist_ok=True)
+
+            # Описание: запрашиваем через requests параллельно с загрузкой треков
+            desc_result = [""]
+            def _fetch_desc_bg():
+                try:
+                    if not REQUESTS_OK:
+                        return
+                    cookies = {c['name']: c['value'] for c in self.driver.get_cookies()}
+                    r = _requests.get(
+                        pl_url, cookies=cookies, timeout=8,
+                        headers={
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                          'Chrome/131.0.0.0 Safari/537.36',
+                            'Referer': 'https://vk.com/',
+                        }
+                    )
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    meta = soup.find("meta", property="og:description")
+                    if meta and meta.get("content"):
+                        desc_result[0] = meta["content"].strip()
+                except Exception as e:
+                    log_message(f"WARNING desc_bg: {e}")
+
+            desc_thread = threading.Thread(target=_fetch_desc_bg, daemon=True)
+            desc_thread.start()
+
+            # Скачиваем треки (браузер занят мобильной страницей)
             self._dl_cdp_batch(rows, folder, pl_url, mobile_url, pl_title)
+
+            # Ждём описания (обычно уже готово), при неудаче — browser-fallback
+            desc_thread.join(timeout=5)
+            desc = desc_result[0]
+            if not desc:
+                desc = self._fetch_playlist_desc_sync(pl_url)
+
+            info_lines = [pl_title]
+            if desc:
+                info_lines += ["", desc]
+            info_lines += ["", f"Треков: {len(rows)}", f"Ссылка: {pl_url}"]
+            try:
+                with open(os.path.join(pl_folder, "info.txt"), "w", encoding="utf-8") as f:
+                    f.write("\n".join(info_lines))
+            except Exception as ie:
+                log_message(f"WARNING info.txt: {ie}")
         except Exception as e:
             log_message(f"ERROR playlist full dl: {e}")
             self._sig.status.emit(f"Ошибка: {e}")
@@ -1642,25 +1731,62 @@ class VKSearchWindow(QWidget):
             target=self._fetch_playlist_description, args=(pl_url, pl_title), daemon=True
         ).start()
 
+    def _fetch_playlist_desc_sync(self, pl_url: str) -> str:
+        """Синхронно получает описание плейлиста (для воркер-потоков)."""
+        try:
+            self.driver.set_page_load_timeout(3)
+            try:
+                self.driver.get(pl_url)
+            except Exception:
+                pass
+            finally:
+                self.driver.set_page_load_timeout(30)
+            for _ in range(30):
+                time.sleep(0.2)
+                desc = self.driver.execute_script("""
+                    var el = document.querySelector('[class*="vkitAudioListHeader__description"]')
+                          || document.querySelector('[class*="audio_pl__description"]');
+                    if (el) { var t = (el.innerText||el.textContent||'').trim(); if(t) return t; }
+                    var m = document.querySelector('meta[property="og:description"]')
+                         || document.querySelector('meta[name="description"]');
+                    return m ? (m.content||'').trim() : '';
+                """) or ""
+                if desc:
+                    return desc
+        except Exception as e:
+            log_message(f"WARNING fetch_playlist_desc_sync: {e}")
+        return ""
+
     def _fetch_playlist_description(self, url: str, title: str):
         try:
             self._sig.status.emit("Загружаю описание...")
-            self.driver.get(url)
-            time.sleep(2)
-            soup = BeautifulSoup(self.driver.page_source, "html.parser")
+            # Ставим короткий таймаут — страница начнёт рендериться, описание появится,
+            # а мы не ждём загрузки всех ресурсов (как при ручной остановке браузера)
+            self.driver.set_page_load_timeout(3)
+            try:
+                self.driver.get(url)
+            except Exception:
+                pass  # TimeoutException — нормально, страница уже частично загружена
+            finally:
+                self.driver.set_page_load_timeout(30)
 
             desc = ""
-            block = soup.find(class_=lambda c: c and "audio_pl__description" in c)
-            if block:
-                desc = block.get_text(separator="\n", strip=True)
-            if not desc:
-                for meta in soup.find_all("meta"):
-                    if meta.get("property") == "og:description" or meta.get("name") == "description":
-                        desc = meta.get("content", "")
-                        if desc:
-                            break
-
-            self._sig.video_description_ready.emit(title, desc or "Описание не найдено")
+            for _ in range(30):   # ещё до 6 сек если описание не сразу
+                time.sleep(0.2)
+                desc = self.driver.execute_script("""
+                    var el = document.querySelector('[class*="vkitAudioListHeader__description"]')
+                          || document.querySelector('[class*="audio_pl__description"]');
+                    if (el) {
+                        var t = (el.innerText || el.textContent || '').trim();
+                        if (t) return t;
+                    }
+                    var m = document.querySelector('meta[property="og:description"]')
+                         || document.querySelector('meta[name="description"]');
+                    return m ? (m.content || '').trim() : '';
+                """) or ""
+                if desc:
+                    break
+            self._sig.video_description_ready.emit(title, desc.strip() or "Описание не найдено")
         except Exception as e:
             self._sig.video_description_ready.emit("Ошибка", str(e))
 
@@ -1876,6 +2002,17 @@ class VKSearchWindow(QWidget):
         mobile_items = self.driver.find_elements(By.CLASS_NAME, "audio_item") if mobile_url else []
         log_message(f"INFO cdp_batch: mobile items={len(mobile_items)}, tracks={total}")
 
+        # Строим карту full_id → элемент (для правильного клика по выбранным трекам)
+        id_to_el = {}
+        for el in mobile_items:
+            fid = el.get_attribute("data-full-id") or ""
+            if not fid:
+                did = el.get_attribute("data-id") or ""
+                fid = did.replace("audio", "")
+            if fid:
+                id_to_el[fid] = el
+
+        unavailable = []
         jobs = []   # (index, d, audio_url, path)
         for i, d in enumerate(rows, 1):
             num   = f"{i:02d}"
@@ -1886,18 +2023,34 @@ class VKSearchWindow(QWidget):
             self._sig.progress.emit(i / total * 50)
 
             audio_url = None
+            full_id   = d.get("full_id", "")
             try:
-                # Запоминаем текущий src — ждём именно его смены
                 prev_src = self.driver.execute_script(
                     "var a=document.querySelector('audio'); return a?a.src:'';"
                 ) or ''
-
-                # Очищаем performance log (get_log сбрасывает буфер)
                 self.driver.get_log("performance")
 
-                # Кликаем трек по индексу
-                if mobile_items and i - 1 < len(mobile_items):
-                    item_el   = mobile_items[i - 1]
+                # Ищем элемент по full_id, иначе по индексу (для полного плейлиста)
+                item_el = id_to_el.get(full_id)
+                if item_el is None and i - 1 < len(mobile_items):
+                    item_el = mobile_items[i - 1]
+
+                if item_el is not None:
+                    # Проверяем, доступен ли трек
+                    restricted = self.driver.execute_script(
+                        "return arguments[0].classList.contains('audio_item__restricted') "
+                        "|| !!arguments[0].querySelector('.audio_item__restricted, "
+                        "[class*=\"restricted\"], [class*=\"unavailable\"]');",
+                        item_el
+                    )
+                    if restricted:
+                        log_message(f"INFO CDP [{i}]: трек недоступен — {base}")
+                        unavailable.append(base)
+                        if full_id:
+                            self._sig.track_unavailable.emit(full_id)
+                        jobs.append((i, d, None, path))
+                        continue
+
                     play_btns = item_el.find_elements(
                         By.CSS_SELECTOR, ".ai_play, [class*='play'], button"
                     )
@@ -1912,17 +2065,14 @@ class VKSearchWindow(QWidget):
                         if(el) el.click();
                     """, d.get("title", ""))
 
-                # Ждём URL: проверяем и <audio>.src и performance log в каждой итерации
                 for _ in range(40):
                     time.sleep(0.15)
-
                     src = self.driver.execute_script(
                         "var a=document.querySelector('audio');"
                         "return (a&&a.src&&a.src.startsWith('http'))?a.src:null;"
                     )
                     if src and src != prev_src:
                         audio_url = src; break
-
                     for entry in self.driver.get_log("performance"):
                         try:
                             u = json.loads(entry["message"]).get("message", {}) \
@@ -1949,7 +2099,11 @@ class VKSearchWindow(QWidget):
             if audio_url:
                 log_message(f"INFO CDP [{i}]: {audio_url[:70]}")
             else:
-                log_message(f"WARNING CDP [{i}]: URL не получен для '{d.get('title','')}'")
+                if base not in unavailable:
+                    log_message(f"WARNING CDP [{i}]: URL не получен — '{base}'")
+                    unavailable.append(base)
+                    if full_id:
+                        self._sig.track_unavailable.emit(full_id)
 
             jobs.append((i, d, audio_url, path))
 
@@ -1984,10 +2138,19 @@ class VKSearchWindow(QWidget):
         self._sig.show_progress.emit(False)
         self._sig.batch.emit("")
         self._tray_status("Ожидание...", -1)
-        if fail_count == 0:
+
+        n_unavail = len(unavailable)
+        if fail_count == 0 and n_unavail == 0:
             self._sig.status.emit(f"✓ Скачано {ok_count} треков → {folder}")
         else:
-            self._sig.status.emit(f"Скачано {ok_count}, ошибок: {fail_count}")
+            parts = [f"Скачано {ok_count}"]
+            if fail_count:
+                parts.append(f"ошибок: {fail_count}")
+            if n_unavail:
+                parts.append(f"недоступно: {n_unavail}")
+            self._sig.status.emit(", ".join(parts))
+            if n_unavail:
+                log_message("INFO CDP недоступные треки: " + "; ".join(unavailable))
 
     def _dl_mobile_batch_from_url(self, rows: list[dict], folder: str, mobile_url: str):
         """Переходит на мобильную страницу плейлиста и скачивает треки."""
@@ -2575,9 +2738,152 @@ class VKSearchWindow(QWidget):
             log_message(f"ERROR VK m3u8 manual: {e}")
             return False
 
+    # ── Сохранение / загрузка вкладок ────────────────────────────────────────
+
+    def _save_vk_tabs(self):
+        data = []
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            entry = {"active": i == self.tabs.currentIndex()}
+            if isinstance(tab, _VKResultTab) and tab.results:
+                entry.update({"type": "audio",    "query": tab.query,
+                               "results": tab.results,
+                               "mobile_playlist_url": getattr(tab, "mobile_playlist_url", None),
+                               "playlist_url":        getattr(tab, "playlist_url",        None),
+                               "current_row": tab.table.currentRow()})
+            elif isinstance(tab, _VKVideoTab) and tab.results:
+                entry.update({"type": "video",    "query": tab.query, "results": tab.results,
+                               "current_row": tab.table.currentRow()})
+            elif isinstance(tab, _VKPlaylistTab) and tab.results:
+                entry.update({"type": "playlist", "query": tab.query, "results": tab.results,
+                               "current_row": tab.table.currentRow()})
+            else:
+                continue
+            data.append(entry)
+        try:
+            with open(_VK_TABS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log_message(f"WARNING save vk tabs: {e}")
+
+    def _load_vk_tabs(self):
+        if not os.path.exists(_VK_TABS_FILE):
+            return
+        try:
+            with open(_VK_TABS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        if not data:
+            return
+
+        # Удаляем начальную пустую вкладку
+        if self.tabs.count() > 0:
+            self.tabs.removeTab(0)
+
+        active_idx = 0
+        for entry in data:
+            t       = entry.get("type")
+            query   = entry.get("query", "")
+            results = entry.get("results", [])
+            if not results:
+                continue
+
+            if t == "audio":
+                tab = self._new_tab(query)
+                tab.results             = results
+                tab.mobile_playlist_url = entry.get("mobile_playlist_url")
+                tab.playlist_url        = entry.get("playlist_url")
+                for row_data in results:
+                    if len(row_data) < 6:
+                        continue
+                    artist, title, duration, owner, url, full_id = row_data[:6]
+                    r = tab.table.rowCount(); tab.table.insertRow(r)
+                    ai = QTableWidgetItem(artist)
+                    ai.setData(Qt.ItemDataRole.UserRole,     url)
+                    ai.setData(Qt.ItemDataRole.UserRole + 1, full_id)
+                    tab.table.setItem(r, 0, ai)
+                    tab.table.setItem(r, 1, QTableWidgetItem(title))
+                    tab.table.setItem(r, 2, QTableWidgetItem(duration))
+                    tab.table.setItem(r, 3, QTableWidgetItem(owner))
+                self._restore_row(tab.table, entry.get("current_row", -1))
+
+            elif t == "video":
+                tab = self._new_video_tab(query)
+                tab.results = results
+                for row_data in results:
+                    title, dur, views, thumb, vurl = (list(row_data) + [""] * 5)[:5]
+                    r = tab.table.rowCount(); tab.table.insertRow(r)
+                    lbl = QLabel()
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    lbl.setFixedSize(_VKVideoTab.THUMB_W, _VKVideoTab.THUMB_H)
+                    tab.table.setCellWidget(r, 0, lbl)
+                    if thumb:
+                        threading.Thread(
+                            target=self._load_video_thumb, args=(thumb, lbl), daemon=True
+                        ).start()
+                    ti = QTableWidgetItem(title)
+                    ti.setData(Qt.ItemDataRole.UserRole, vurl); ti.setToolTip(vurl)
+                    tab.table.setItem(r, 1, ti)
+                    tab.table.setItem(r, 2, QTableWidgetItem(dur))
+                    tab.table.setItem(r, 3, QTableWidgetItem(views))
+                self._restore_row(tab.table, entry.get("current_row", -1))
+
+            elif t == "playlist":
+                tab = self._new_playlist_tab(query)
+                tab.results = results
+                for row_data in results:
+                    pl_title, author, count_str, pl_url = (list(row_data) + [""] * 4)[:4]
+                    r = tab.table.rowCount(); tab.table.insertRow(r)
+                    ti = QTableWidgetItem(pl_title)
+                    ti.setData(Qt.ItemDataRole.UserRole, pl_url); ti.setToolTip(pl_url)
+                    tab.table.setItem(r, 0, ti)
+                    tab.table.setItem(r, 1, QTableWidgetItem(author))
+                    tab.table.setItem(r, 2, QTableWidgetItem(count_str))
+                self._restore_row(tab.table, entry.get("current_row", -1))
+
+            if entry.get("active"):
+                active_idx = self.tabs.count() - 1
+
+        if self.tabs.count() == 0:
+            self._new_tab("Поиск")
+        else:
+            self.tabs.setCurrentIndex(active_idx)
+
+    def _mark_track_unavailable(self, full_id: str):
+        """Помечает трек серым во всех вкладках результатов."""
+        from PyQt6.QtGui import QColor, QBrush
+        gray = QBrush(QColor(150, 150, 150))
+        for i in range(self.tabs.count()):
+            tab = self.tabs.widget(i)
+            if not isinstance(tab, _VKResultTab):
+                continue
+            t = tab.table
+            for r in range(t.rowCount()):
+                item = t.item(r, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole + 1) == full_id:
+                    for c in range(t.columnCount()):
+                        cell = t.item(r, c)
+                        if cell:
+                            cell.setForeground(gray)
+                    # Добавляем пометку к исполнителю
+                    if item.text() and "⛔" not in item.text():
+                        item.setText("⛔ " + item.text())
+                    break
+
+    @staticmethod
+    def _restore_row(table, row: int):
+        if row >= 0 and row < table.rowCount():
+            table.setCurrentCell(row, 0)
+            table.scrollTo(
+                table.model().index(row, 0),
+                QAbstractItemView.ScrollHint.PositionAtCenter
+            )
+
     # ── Закрытие ─────────────────────────────────────────────────────────────
 
     def closeEvent(self, event):
+        self._save_vk_tabs()
         event.accept()
         self.hide()
 
