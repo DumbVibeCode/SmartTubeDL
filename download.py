@@ -193,7 +193,7 @@ def download_video(url, from_queue=False):
 
     if settings["download_format"] == "mp3":
         # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
-        ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best'
+        ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
     else:
         ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
 

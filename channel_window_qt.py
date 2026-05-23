@@ -67,10 +67,11 @@ class VideoListWindow(QWidget):
     sig_error = pyqtSignal(str)                       # сообщение об ошибке
     sig_show_description = pyqtSignal(str, str, str)  # title, description, url
 
-    def __init__(self, url: str, mode: str = "channel"):
+    def __init__(self, url: str, mode: str = "channel", state: dict = None):
         """
-        :param url: URL канала или плейлиста
-        :param mode: "channel" или "playlist"
+        :param url:   URL канала или плейлиста
+        :param mode:  "channel" или "playlist"
+        :param state: сохранённое состояние (если есть — не грузим с YouTube)
         """
         super().__init__()
         self.url = url
@@ -96,7 +97,10 @@ class VideoListWindow(QWidget):
         self._setup_ui()
         self._connect_signals()
 
-        threading.Thread(target=self._load_info, daemon=True).start()
+        if state:
+            self._restore_from_state(state)
+        else:
+            threading.Thread(target=self._load_info, daemon=True).start()
 
     # ------------------------------------------------------------------
     # UI
@@ -198,6 +202,58 @@ class VideoListWindow(QWidget):
         self.sig_loading_done.connect(self._on_loading_done)
         self.sig_error.connect(self._on_error)
         self.sig_show_description.connect(self._open_description_window)
+
+    # ------------------------------------------------------------------
+    # Сохранение / восстановление состояния
+    # ------------------------------------------------------------------
+
+    def get_state(self) -> dict:
+        """Возвращает сериализуемое состояние окна."""
+        rows = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            if not item:
+                continue
+            video_id = item.data(Qt.ItemDataRole.UserRole) or ""
+            rows.append({
+                "video_id": video_id,
+                "title":    item.text(),
+                "duration": self.table.item(r, 1).text() if self.table.item(r, 1) else "",
+                "date":     self.table.item(r, 2).text() if self.table.item(r, 2) else "",
+                "url":      self._video_urls.get(video_id, ""),
+            })
+        return {
+            "url":      self.url,
+            "mode":     self.mode,
+            "title":    self.windowTitle(),
+            "subtitle": self.subtitle_label.text(),
+            "rows":     rows,
+            "vscroll":  self.table.verticalScrollBar().value(),
+        }
+
+    def _restore_from_state(self, state: dict):
+        """Заполняет таблицу из сохранённого состояния без запроса к YouTube."""
+        self.setWindowTitle(state.get("title", self.windowTitle()))
+        self.subtitle_label.setText(state.get("subtitle", "Восстановлено"))
+        self.load_panel.setVisible(False)
+
+        for row_data in state.get("rows", []):
+            video_id = row_data.get("video_id", "")
+            title    = row_data.get("title", "")
+            duration = row_data.get("duration", "")
+            date     = row_data.get("date", "")
+            url      = row_data.get("url", "")
+            if video_id and url:
+                self._video_urls[video_id] = url
+            self._on_add_row(video_id, title, duration, date)
+
+        total = self.table.rowCount()
+        self.status_label.setText(f"Видео: {total} (восстановлено)")
+
+        vscroll = state.get("vscroll", 0)
+        if vscroll > 0:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(50, lambda: self.table.verticalScrollBar().setValue(vscroll))
 
     # ------------------------------------------------------------------
     # Слоты (вызываются в главном потоке через сигналы)

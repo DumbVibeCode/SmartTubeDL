@@ -268,7 +268,7 @@ class _VKPlaylistTab(QWidget):
         self.table.setColumnCount(3)
         self.table.setHorizontalHeaderLabels(["Название", "Автор", "Треков"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
 
@@ -1018,7 +1018,7 @@ class VKSearchWindow(QWidget):
         _q = query.strip()
         if 'vk.com' in _q.lower() and (
             re.search(r'section=(?:recoms|playlists|playlist|owner_playlists)', _q, re.I)
-            or re.match(r'^(?:https?://)?(?:www\.)?vk\.com/music(?:/playlists?)?(?:\?|$)', _q, re.I)
+            or re.match(r'^(?:https?://)?(?:www\.)?vk\.com/music(?:/playlists?|/catalog/[A-Za-z0-9_-]+)?(?:\?|$)', _q, re.I)
         ):
             vurl = _q if _q.startswith('http') else 'https://' + _q
             threading.Thread(
@@ -1198,64 +1198,60 @@ class VKSearchWindow(QWidget):
     def _worker_wall(self, owner_id: str, post_id: str, count: int):
         try:
             self._sig.status.emit("Открываю пост...")
-            wall_url = f"https://m.vk.com/wall{owner_id}_{post_id}"
-            self.driver.get(wall_url)
+            desk_url = f"https://vk.com/wall{owner_id}_{post_id}"
+            self.driver.get(desk_url)
             time.sleep(3)
-            html = self.driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
 
-            pl_link = soup.find("a", href=lambda h: h and ("audio_playlist" in h or "/music/playlist/" in h))
-            if pl_link and "act=audio_playlists" not in pl_link.get("href", ""):
-                href = pl_link["href"]
-                full_url = href if href.startswith("http") else "https://m.vk.com" + href
-                self._sig.status.emit("Загружаю плейлист из поста...")
-                self.driver.get(full_url)
-                time.sleep(3)
-                for _ in range(10):
-                    last = self.driver.execute_script("return document.body.scrollHeight")
-                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(1.5)
-                    if self.driver.execute_script("return document.body.scrollHeight") == last:
-                        break
-                html = self.driver.page_source
-                soup = BeautifulSoup(html, "html.parser")
+            results = self._parse_wall_scripts(self.driver.page_source, count)
+            log_message(f"INFO wall scripts: найдено {len(results)} треков")
 
-            self._sig.status.emit("Парсю треки...")
-            audio_items = soup.find_all("div", class_="audio_item")
-            results = []
-            seen = set()
-            for item in audio_items:
-                try:
-                    full_id = (item.get("data-full-id") or item.get("data-id") or item.get("id") or "").replace("audio", "")
-                    if not full_id or full_id in seen:
-                        continue
-                    artist = (item.select_one(".ai_artist") or type("", (), {"get_text": lambda *a, **k: "Неизвестен"})()).get_text(strip=True)
-                    title  = (item.select_one(".ai_title")  or type("", (), {"get_text": lambda *a, **k: "Без названия"})()).get_text(strip=True)
-                    dur_tag = item.select_one(".ai_dur")
-                    duration = ""
-                    if dur_tag:
-                        sec = dur_tag.get("data-dur")
-                        if sec:
-                            try:
-                                s = int(sec); duration = f"{s//60}:{s%60:02d}"
-                            except Exception:
-                                pass
-                        if not duration:
-                            duration = dur_tag.get_text(strip=True)
-                    if title == "Без названия" and artist == "Неизвестен":
-                        continue
-                    seen.add(full_id)
-                    results.append((artist, title, duration, "mobile", "", full_id))
-                    if count and len(results) >= count:
-                        break
-                except Exception:
-                    continue
+            if not results:
+                # Фолбэк: старый парсер audio_row
+                results = self._scroll_and_parse(count)
+                log_message(f"INFO wall audio_row: найдено {len(results)} треков")
+
             self._sig.results_ready.emit(results)
         except Exception as e:
             log_message(f"ERROR VK wall: {e}")
             self._sig.status.emit(f"Ошибка: {e}")
         finally:
             self._sig.search_done.emit()
+
+    @staticmethod
+    def _parse_wall_scripts(html: str, max_count) -> list:
+        """Извлекает аудио из JSON apiPrefetchCache в <script> на странице поста ВК."""
+        results, seen = [], set()
+        for s in re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
+            if '"type":"audio"' not in s:
+                continue
+            for m in re.finditer(
+                r'"type"\s*:\s*"audio"\s*,\s*"audio"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})', s
+            ):
+                try:
+                    a = json.loads(m.group(1))
+                    oid, aid = str(a.get('owner_id', '')), str(a.get('id', ''))
+                    full_id = f"{oid}_{aid}"
+                    if not oid or not aid or full_id in seen:
+                        continue
+                    seen.add(full_id)
+                    artist   = BeautifulSoup(str(a.get('artist', '') or ''), 'html.parser').get_text(strip=True)
+                    title    = BeautifulSoup(str(a.get('title',  '') or ''), 'html.parser').get_text(strip=True)
+                    duration = a.get('duration', 0) or 0
+                    dur_str  = f"{duration//60}:{duration%60:02d}" if duration else ""
+                    url      = a.get('url', '') or ''
+                    try:
+                        oi = int(oid)
+                        owner_disp = f"club{abs(oi)}" if oi < 0 else f"id{oi}"
+                    except ValueError:
+                        owner_disp = oid
+                    if not title:
+                        continue
+                    results.append((artist, title, dur_str, owner_disp, url, full_id))
+                    if max_count and len(results) >= max_count:
+                        return results
+                except Exception:
+                    continue
+        return results
 
     # ── Mail.ru ──────────────────────────────────────────────────────────────
 
@@ -1304,20 +1300,24 @@ class VKSearchWindow(QWidget):
             time.sleep(2)
 
             limit = count if count > 0 else None
-            last_h = self.driver.execute_script("return document.body.scrollHeight")
-            for _ in range(30):
-                parsed = self._parse_playlists_html(self.driver.page_source, limit)
-                self._sig.status.emit(f"Загружаю плейлисты... ({len(parsed)})")
-                if limit and len(parsed) >= limit:
-                    break
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1.5)
-                new_h = self.driver.execute_script("return document.body.scrollHeight")
-                if new_h == last_h:
-                    break
-                last_h = new_h
 
-            results = self._parse_playlists_html(self.driver.page_source, limit)
+            if '/catalog/' in url:
+                results = self._parse_catalog_playlists(limit)
+            else:
+                last_h = self.driver.execute_script("return document.body.scrollHeight")
+                for _ in range(30):
+                    parsed = self._parse_playlists_html(self.driver.page_source, limit)
+                    self._sig.status.emit(f"Загружаю плейлисты... ({len(parsed)})")
+                    if limit and len(parsed) >= limit:
+                        break
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(1.5)
+                    new_h = self.driver.execute_script("return document.body.scrollHeight")
+                    if new_h == last_h:
+                        break
+                    last_h = new_h
+                results = self._parse_playlists_html(self.driver.page_source, limit)
+
             log_message(f"INFO VK playlists: найдено {len(results)}")
             self._sig.playlist_results_ready.emit(results)
         except Exception as e:
@@ -1325,6 +1325,109 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit(f"Ошибка: {e}")
         finally:
             self._sig.search_done.emit()
+
+    def _parse_catalog_playlists(self, limit) -> list:
+        log_message(f"INFO catalog: начало, url={self.driver.current_url[:80]}")
+        try:
+            WebDriverWait(self.driver, 15).until(
+                lambda d: d.execute_script(
+                    'return document.querySelectorAll(\'[data-testid="music_playlist_item_block"]\').length > 0'
+                )
+            )
+            log_message("INFO catalog: WebDriverWait прошёл")
+        except Exception:
+            log_message(f"WARNING catalog: карточки не появились за 15 сек, url={self.driver.current_url[:80]}")
+            return []
+
+        self._sig.status.emit("Загружаю плейлисты из каталога...")
+        js = r"""
+return (function(){
+    function fk(el){
+        return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));
+    }
+    function findUp(fiber,depth){
+        var cur=fiber;
+        for(var d=0;d<depth;d++){
+            if(!cur) break;
+            var p=cur.memoizedProps;
+            if(p){
+                if(typeof p.href==='string'&&p.href.indexOf('/music/playlist/')!==-1) return p.href;
+                var cs=[p.playlist,p.item,p.data,p.audio,p.audioPlaylist,p.playlistData,p.model];
+                for(var i=0;i<cs.length;i++){
+                    var o=cs[i];
+                    if(o&&typeof o==='object'&&o.owner_id!=null&&o.id!=null)
+                        return '/music/playlist/'+o.owner_id+'_'+o.id;
+                }
+            }
+            cur=cur.return;
+        }
+        return '';
+    }
+    var items=document.querySelectorAll('[data-testid="music_playlist_item_block"]');
+    var res=[],hydrated=0;
+    items.forEach(function(item){
+        var te=item.querySelector('[data-testid="MusicPlaylistItem_Title"]');
+        var ae=item.querySelector('[data-testid="MusicPlaylistItem_AuthorLink"]');
+        var title=te?te.textContent.trim():'';
+        var author=ae?ae.textContent.trim():'';
+        var url='',key=fk(item);
+        if(key){hydrated++;try{url=findUp(item[key],80)||'';}catch(e){}}
+        if(title) res.push([title,author,'',url]);
+    });
+    return JSON.stringify({r:res,h:hydrated,t:items.length});
+})()
+"""
+        js = r"""
+return (function(){
+    function fk(el){return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));}
+    var item0=document.querySelector('[data-testid="music_playlist_item_block"]');
+    if(!item0) return null;
+    var key=fk(item0); if(!key) return null;
+    var plIds=null, cur=item0[key];
+    for(var d=0;d<15;d++){
+        if(!cur) break;
+        var p=cur.memoizedProps;
+        if(p&&p.model&&p.model.raw&&p.model.raw.data&&p.model.raw.data.playlists_ids){
+            plIds=p.model.raw.data.playlists_ids; break;
+        }
+        cur=cur.return;
+    }
+    if(!plIds) return null;
+    var items=document.querySelectorAll('[data-testid="music_playlist_item_block"]');
+    var res=[];
+    items.forEach(function(item,i){
+        var te=item.querySelector('[data-testid="MusicPlaylistItem_Title"]');
+        var ae=item.querySelector('[data-testid="MusicPlaylistItem_AuthorLink"]');
+        var title=te?te.textContent.trim():'';
+        var author=ae?ae.textContent.trim():'';
+        var url=plIds[i]?'/music/playlist/'+plIds[i]:'';
+        if(title) res.push([title,author,'',url]);
+    });
+    return JSON.stringify(res);
+})()
+"""
+        results = []
+        for attempt in range(6):
+            try:
+                raw = self.driver.execute_script(js)
+                if not raw:
+                    time.sleep(2)
+                    continue
+                items = json.loads(raw)
+                log_message(f"INFO catalog [{attempt}]: {len(items)} плейлистов")
+                results = []
+                for t, a, c, u in items:
+                    if u:
+                        u = 'https://vk.com' + u
+                    results.append((t, a, c, u))
+                if results and all(r[3] for r in results):
+                    break
+            except Exception as e:
+                log_message(f"WARNING catalog [{attempt}]: {e}")
+            time.sleep(2)
+        if limit:
+            results = results[:limit]
+        return results
 
     @staticmethod
     def _parse_playlists_html(html: str, max_count) -> list:
@@ -1569,34 +1672,43 @@ class VKSearchWindow(QWidget):
         row = t.rowAt(pos.y())
         if row < 0:
             return
-        t.selectRow(row)
+        if not t.selectedItems() or row not in {i.row() for i in t.selectedItems()}:
+            t.selectRow(row)
         menu = QMenu(self)
         menu.addAction("Показать треки",         self._download_playlist_selected)
-        menu.addAction("Скачать весь плейлист",  self._dl_playlist_ytdlp_selected)
+        menu.addAction("Скачать выбранные",      self._dl_playlist_ytdlp_selected)
         menu.addSeparator()
         menu.addAction("Описание",               self._show_playlist_description)
         menu.addAction("Копировать ссылку",      self._copy_playlist_link)
+        menu.addSeparator()
+        menu.addAction("Выбрать все",            t.selectAll)
         menu.exec(t.viewport().mapToGlobal(pos))
 
     def _dl_playlist_ytdlp_selected(self):
         tab = self._current_playlist_tab()
         if not tab:
             return
-        items = tab.table.selectedItems()
-        if not items:
-            return
-        item = tab.table.item(items[0].row(), 0)
-        if not item:
-            return
-        pl_url   = item.data(Qt.ItemDataRole.UserRole)
-        pl_title = item.text()
-        folder   = settings.get("download_folder", "")
+        folder = settings.get("download_folder", "")
         if not folder:
             self._sig.status.emit("Укажите папку загрузок в настройках")
             return
+        rows = sorted({i.row() for i in tab.table.selectedItems()})
+        if not rows:
+            return
+        playlists = []
+        for r in rows:
+            item = tab.table.item(r, 0)
+            if item:
+                playlists.append((item.data(Qt.ItemDataRole.UserRole), item.text()))
+        if not playlists:
+            return
         threading.Thread(
-            target=self._worker_dl_playlist_ytdlp, args=(pl_url, pl_title, folder), daemon=True
+            target=self._worker_dl_playlists_batch, args=(playlists, folder), daemon=True
         ).start()
+
+    def _worker_dl_playlists_batch(self, playlists: list, folder: str):
+        for pl_url, pl_title in playlists:
+            self._worker_dl_playlist_ytdlp(pl_url, pl_title, folder)
 
     def _worker_dl_playlist_ytdlp(self, pl_url: str, pl_title: str, folder: str):
         """Скачивает весь плейлист: парсит мобильную страницу, качает через CDP."""
@@ -2355,7 +2467,7 @@ class VKSearchWindow(QWidget):
             self._download_vk_videos_selected()
             return
         if isinstance(self.tabs.currentWidget(), _VKPlaylistTab):
-            self._download_playlist_selected()
+            self._dl_playlist_ytdlp_selected()
             return
         rows = self._selected_rows_data()
         if not rows:
@@ -2369,6 +2481,7 @@ class VKSearchWindow(QWidget):
         pl_url     = getattr(tab, 'playlist_url',        None) if tab else None
         mobile_url = getattr(tab, 'mobile_playlist_url', None) if tab else None
         pl_title   = getattr(tab, 'query',               '')   if tab else ''
+        vk_query   = getattr(tab, 'query',               '')   if tab else ''
         if (pl_url or mobile_url) and all(not d.get("url") for d in rows):
             threading.Thread(
                 target=self._dl_cdp_batch,
@@ -2376,7 +2489,7 @@ class VKSearchWindow(QWidget):
             ).start()
         else:
             threading.Thread(
-                target=self._dl_batch_worker, args=(rows, folder), daemon=True
+                target=self._dl_batch_worker, args=(rows, folder, vk_query), daemon=True
             ).start()
 
     def _dl_single_worker(self, d: dict, path: str):
@@ -2419,8 +2532,27 @@ class VKSearchWindow(QWidget):
                 "• Нужен yt-dlp и ffmpeg"
             )
 
-    def _dl_batch_worker(self, rows: list[dict], folder: str):
+    def _dl_batch_worker(self, rows: list[dict], folder: str, vk_query: str = ""):
         self._batch_mode = True
+        # Если треки без URL и браузер не на странице с audio_row — перегружаем поиск
+        if vk_query and self.driver and any(not d.get("url") for d in rows):
+            try:
+                has_rows = self.driver.execute_script(
+                    "return document.querySelectorAll('div.audio_row').length > 0"
+                )
+                if not has_rows:
+                    self._sig.status.emit("Обновляю список треков в браузере...")
+                    q = vk_query.strip()
+                    if q.startswith("http") or "vk.com" in q:
+                        nav_url = q if q.startswith("http") else "https://" + q
+                    else:
+                        nav_url = f"https://vk.com/audio?q={quote_plus(q)}&section=search"
+                    self.driver.get(nav_url)
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
+                    )
+            except Exception as e:
+                log_message(f"WARNING dl_batch: не удалось обновить список: {e}")
         total = len(rows)
         self._sig.show_progress.emit(True)
         ok_count = fail_count = 0
@@ -2473,7 +2605,6 @@ class VKSearchWindow(QWidget):
                 else:
                     referer = "https://vk.com/"
                 ok = self._dl_direct(d["url"], path, referer=referer)
-
             _utils.queue_titles.pop(key, None)
 
             if ok:
@@ -2585,6 +2716,7 @@ class VKSearchWindow(QWidget):
                     except Exception:
                         continue
             if not el:
+                log_message(f"WARNING _get_audio_url: audio_row не найден для {full_id}, page={self.driver.current_url[:60]}")
                 return None
 
             try:
@@ -2631,6 +2763,7 @@ class VKSearchWindow(QWidget):
                         fallback = url
                 except Exception:
                     continue
+            log_message(f"WARNING _get_audio_url: ap=None, m3u8={bool(m3u8)}, fallback={bool(fallback)}, page={self.driver.current_url[:60]}")
             if m3u8:
                 return m3u8
             if fallback and "/seg-" in fallback:

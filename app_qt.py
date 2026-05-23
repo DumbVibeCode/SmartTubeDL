@@ -24,12 +24,16 @@ from PyQt6.QtCore import (
     QPropertyAnimation, QEasingCurve, QPoint, QRect
 )
 
+import json
 import styles as _styles
 from styles import COLORS_MINIMAL as COLORS
 from config import settings, save_settings, load_settings, SETTINGS_FILE, format_invidious_duration
 from logger import log_message
 from queues import get_queue_count, ensure_queue_file_exists
 from download_history import load_download_history
+
+_CHANNEL_WINDOWS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "channel_windows_state.json")
 
 
 # ============================================================
@@ -359,6 +363,7 @@ class YouTubeDownloaderApp(QApplication):
 
         log_message("INFO Приложение запущено (PyQt6)")
         QTimer.singleShot(500, self._check_queue_on_startup)
+        QTimer.singleShot(800, self.restore_channel_windows)
 
     def _check_queue_on_startup(self):
         count = get_queue_count()
@@ -454,6 +459,29 @@ class YouTubeDownloaderApp(QApplication):
         win.show()
         win.raise_()
         win.activateWindow()
+
+    def restore_channel_windows(self):
+        """Восстанавливает окна каналов/плейлистов из сохранённого состояния."""
+        if not os.path.exists(_CHANNEL_WINDOWS_FILE):
+            return
+        try:
+            with open(_CHANNEL_WINDOWS_FILE, "r", encoding="utf-8") as f:
+                states = json.load(f)
+        except Exception:
+            return
+        from channel_window_qt import VideoListWindow
+        for state in states:
+            url  = state.get("url", "")
+            mode = state.get("mode", "channel")
+            if not url:
+                continue
+            try:
+                win = VideoListWindow(url, mode, state=state)
+                win.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+                self.video_list_windows.append(win)
+                win.show()
+            except Exception as e:
+                log_message(f"WARNING restore channel window: {e}")
 
     def show_vk_search_window(self):
         """Показывает окно поиска ВКонтакте"""
@@ -729,6 +757,20 @@ class TrayIcon(QSystemTrayIcon):
         if settings.get("save_settings_on_exit", False):
             save_settings(settings)
             log_message("INFO Настройки сохранены при выходе")
+
+        # Сохраняем состояние открытых окон каналов/плейлистов
+        states = []
+        for w in self.app.video_list_windows:
+            if w.isVisible():
+                try:
+                    states.append(w.get_state())
+                except Exception as e:
+                    log_message(f"WARNING save channel window state: {e}")
+        try:
+            with open(_CHANNEL_WINDOWS_FILE, "w", encoding="utf-8") as f:
+                json.dump(states, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log_message(f"WARNING save channel windows file: {e}")
 
         for w in self.app.video_list_windows:
             w.close()

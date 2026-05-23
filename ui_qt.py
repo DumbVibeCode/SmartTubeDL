@@ -27,6 +27,7 @@ from config import is_downloading
 import docker_manager
 
 
+
 class DurationTableWidgetItem(QTableWidgetItem):
     """Элемент таблицы для длительности с правильной сортировкой"""
 
