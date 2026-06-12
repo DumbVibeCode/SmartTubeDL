@@ -11,6 +11,7 @@ import time
 import threading
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import quote_plus
 
@@ -50,6 +51,11 @@ except Exception:
 
 VK_HISTORY_FILE = os.path.join(os.getcwd(), "vk_history.json")
 _VK_TABS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vk_search_tabs.json")
+
+# ── ВРЕМЕННО: Яндекс-браузер ─────────────────────────────────────────────────
+# TODO: вернуть Chrome — установить _USE_YANDEX = False
+_USE_YANDEX = False
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── Сигналы (thread-safe) ─────────────────────────────────────────────────────
@@ -297,6 +303,7 @@ class VKSearchWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.driver = None
+        self._yandex_proc = None  # ВРЕМЕННО: процесс Яндекс Браузера
         self._sig = _Sig()
         self._batch_mode = False
         self._sort_rev: dict[int, bool] = {}
@@ -402,10 +409,10 @@ class VKSearchWindow(QWidget):
         new_tab_btn.setFixedWidth(28)
         new_tab_btn.setToolTip("Новая вкладка")
         new_tab_btn.setProperty("secondary", True)
-        new_tab_btn.clicked.connect(lambda: self._new_tab("Новая вкладка"))
+        new_tab_btn.clicked.connect(lambda: self._new_tab("", "Новая вкладка"))
         self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
 
-        self._new_tab("Поиск")
+        self._new_tab("", "Поиск")
         root.addWidget(self.tabs, 1)
 
         # Статус + скорость + batch
@@ -436,6 +443,14 @@ class VKSearchWindow(QWidget):
         self._sig.browser_ready.connect(self._on_browser_ready)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
         self._sig.search_done.connect(lambda: self.search_btn.setEnabled(True))
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, idx: int):
+        tab = self.tabs.widget(idx)
+        if tab and hasattr(tab, 'query'):
+            self.query_input.blockSignals(True)
+            self.query_input.setText(tab.query)
+            self.query_input.blockSignals(False)
 
     def _on_show_progress(self, visible: bool):
         self.prog_bar.setVisible(visible)
@@ -568,14 +583,14 @@ class VKSearchWindow(QWidget):
         w = self.tabs.currentWidget()
         return w if isinstance(w, _VKPlaylistTab) else None
 
-    def _new_tab(self, query: str) -> _VKResultTab:
+    def _new_tab(self, query: str = "", label: str = "") -> _VKResultTab:
         tab = _VKResultTab(query)
         tab.filter_input.textChanged.connect(self._filter)
         tab.table.doubleClicked.connect(self._download_selected)
         tab.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tab.table.customContextMenuRequested.connect(self._show_ctx_menu)
         tab.table.horizontalHeader().sectionClicked.connect(self._sort_col)
-        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        title = label or ((query[:22] + "…") if len(query) > 22 else query) or "Поиск"
         idx = self.tabs.addTab(tab, title)
         self.tabs.setCurrentIndex(idx)
         return tab
@@ -616,7 +631,11 @@ class VKSearchWindow(QWidget):
         tab.playlist_url        = getattr(self, '_pending_playlist_url', None)
         self._pending_mobile_playlist_url = None
         self._pending_playlist_url        = None
-        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        tab_title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
+        tab_idx = self.tabs.indexOf(tab)
+        if tab_idx >= 0:
+            self.tabs.setTabText(tab_idx, tab_title)
+        tab.table.setRowCount(0)
         tab.filter_input.blockSignals(True)
         tab.filter_input.clear()
         tab.filter_input.blockSignals(False)
@@ -665,7 +684,9 @@ class VKSearchWindow(QWidget):
                 seen.add(r)
                 d = self._row_data(r)
                 if d:
+                    d["row_num"] = r + 1
                     result.append(d)
+        result.sort(key=lambda x: x["row_num"])
         return result
 
     def _filter(self, text: str):
@@ -895,31 +916,229 @@ class VKSearchWindow(QWidget):
 
     # ── Браузер / Логин ───────────────────────────────────────────────────────
 
+    @staticmethod
+    def _find_yandex_exe() -> str | None:
+        """ВРЕМЕННО: находит browser.exe Яндекс Браузера на этой машине."""
+        candidates = [
+            os.path.expandvars(r"%LOCALAPPDATA%\Yandex\YandexBrowser\Application\browser.exe"),
+            os.path.expandvars(r"%PROGRAMFILES%\Yandex\YandexBrowser\Application\browser.exe"),
+            os.path.expandvars(r"%PROGRAMFILES(X86)%\Yandex\YandexBrowser\Application\browser.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Yandex\Application\browser.exe"),
+        ]
+        for p in candidates:
+            if os.path.isfile(p):
+                log_message(f"INFO Яндекс: нашёл браузер: {p}")
+                return p
+
+        # Ищем в реестре
+        try:
+            import winreg
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                for sub in (
+                    r"SOFTWARE\Clients\StartMenuInternet\Yandex\shell\open\command",
+                    r"SOFTWARE\Clients\StartMenuInternet\YandexBrowser\shell\open\command",
+                ):
+                    try:
+                        with winreg.OpenKey(root, sub) as k:
+                            val = winreg.QueryValue(k, "")
+                            exe = val.strip().strip('"').split('"')[0]
+                            if os.path.isfile(exe):
+                                log_message(f"INFO Яндекс: нашёл браузер в реестре: {exe}")
+                                return exe
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+        # Ищем через where/which
+        try:
+            r = subprocess.run(
+                ["powershell", "-Command",
+                 "(Get-ItemProperty 'HKCU:\\Software\\Yandex\\YandexBrowser\\BLBeacon').version"],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            # Это даёт версию, не путь — но говорит что браузер есть; ищем глубже
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _find_yandex_service(yandex_app: str, yandex_exe: str):
+        """ВРЕМЕННО: ищет/скачивает chromedriver, совместимый с Яндекс Браузером."""
+        # 1. chromedriver.exe в версионных подпапках Яндекса
+        if os.path.isdir(yandex_app):
+            for _d in sorted(os.listdir(yandex_app), reverse=True):
+                _cd = os.path.join(yandex_app, _d, "chromedriver.exe")
+                if os.path.isfile(_cd):
+                    log_message(f"INFO Яндекс: нашёл chromedriver: {_cd}")
+                    return Service(_cd)
+
+        # 2. Читаем Chromium-версию из реестра (BLBeacon → version, напр. 146.0.7680.791)
+        chromium_ver = None
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Yandex\YandexBrowser\BLBeacon") as k:
+                val, _ = winreg.QueryValueEx(k, "version")
+                # Обрезаем Яндекс-суффикс: "146.0.7680.791" → "146.0.7680"
+                parts = str(val).split(".")
+                chromium_ver = ".".join(parts[:3]) if len(parts) >= 3 else str(val)
+                log_message(f"INFO Яндекс: Chromium из реестра = {chromium_ver}")
+        except Exception:
+            pass
+
+        # 3. Скачиваем chromedriver через webdriver_manager
+        try:
+            if chromium_ver:
+                path = ChromeDriverManager(driver_version=chromium_ver).install()
+            else:
+                try:
+                    from webdriver_manager.core.os_manager import ChromeType
+                except ImportError:
+                    from webdriver_manager.utils import ChromeType  # type: ignore
+                path = ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install()
+            log_message(f"INFO Яндекс: chromedriver скачан: {path}")
+            return Service(path)
+        except Exception as e:
+            log_message(f"WARNING Яндекс: webdriver_manager не смог скачать driver: {e}")
+
+        return None
+
+    @staticmethod
+    def _import_chrome_vk_cookies(driver) -> int:
+        """ВРЕМЕННО: копирует VK cookies из Chrome в текущую сессию Яндекса."""
+        import sqlite3, shutil, json, base64
+        chrome_cookies = os.path.expandvars(
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cookies"
+        )
+        local_state_file = os.path.expandvars(
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Local State"
+        )
+        if not os.path.isfile(chrome_cookies):
+            log_message("INFO Яндекс куки: файл Cookies Chrome не найден")
+            return 0
+
+        # Ключ шифрования из Local State (DPAPI)
+        key = None
+        try:
+            with open(local_state_file, 'r', encoding='utf-8') as f:
+                ls = json.load(f)
+            enc_key = base64.b64decode(ls['os_crypt']['encrypted_key'])[5:]
+            from win32crypt import CryptUnprotectData
+            key = CryptUnprotectData(enc_key, None, None, None, 0)[1]
+        except Exception as e:
+            log_message(f"WARNING Яндекс куки: не удалось получить ключ Chrome: {e}")
+            return 0
+
+        tmp = os.path.join(tempfile.gettempdir(), "_vk_chrome_cookies_tmp.db")
+        try:
+            shutil.copy2(chrome_cookies, tmp)
+        except Exception as e:
+            log_message(f"WARNING Яндекс куки: не удалось скопировать файл: {e}")
+            return 0
+
+        injected = 0
+        try:
+            from Crypto.Cipher import AES
+            conn = sqlite3.connect(tmp)
+            rows = conn.execute(
+                "SELECT host_key, name, path, encrypted_value, expires_utc, is_secure, is_httponly "
+                "FROM cookies WHERE host_key LIKE '%vk.com%'"
+            ).fetchall()
+            conn.close()
+
+            for host_key, name, path, enc_val, expires_utc, secure, httponly in rows:
+                try:
+                    if enc_val[:3] == b'v10':
+                        nonce, ctxt, tag = enc_val[3:15], enc_val[15:-16], enc_val[-16:]
+                        value = AES.new(key, AES.MODE_GCM, nonce).decrypt_and_verify(ctxt, tag).decode()
+                    else:
+                        from win32crypt import CryptUnprotectData
+                        value = CryptUnprotectData(enc_val, None, None, None, 0)[1].decode()
+                    cookie = {
+                        'name': name, 'value': value,
+                        'domain': host_key.lstrip('.'), 'path': path,
+                        'secure': bool(secure), 'httpOnly': bool(httponly),
+                    }
+                    if expires_utc > 0:
+                        cookie['expiry'] = int((expires_utc - 11644473600000000) / 1000000)
+                    driver.add_cookie(cookie)
+                    injected += 1
+                except Exception:
+                    continue
+        except ImportError:
+            log_message("WARNING Яндекс куки: нужен pycryptodome: pip install pycryptodome")
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+
+        log_message(f"INFO Яндекс куки: скопировано {injected} куки из Chrome")
+        return injected
+
     def _browser_worker(self):
         try:
             log_message("INFO VK: запуск браузера")
-            opts = webdriver.ChromeOptions()
 
-            # Сохраняем профиль Chrome между запусками (куки, сессия ВК)
-            profile_dir = os.path.join(os.getcwd(), ".vk_chrome_profile")
-            os.makedirs(profile_dir, exist_ok=True)
-            opts.add_argument(f"--user-data-dir={profile_dir}")
+            # ВРЕМЕННО: Яндекс-браузер ───────────────────────────────────────
+            if _USE_YANDEX:
+                yandex_exe = self._find_yandex_exe()
+                if not yandex_exe:
+                    raise RuntimeError(
+                        "Яндекс Браузер не найден на этом компьютере.\n"
+                        "Убедитесь, что он установлен."
+                    )
+                profile_dir = os.path.join(os.getcwd(), ".vk_yandex_profile")
+                os.makedirs(profile_dir, exist_ok=True)
 
-            opts.add_argument("--start-maximized")
-            opts.add_argument("--disable-blink-features=AutomationControlled")
-            opts.add_argument(
-                "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            )
-            opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-            try:
-                svc = Service(ChromeDriverManager().install())
-                self.driver = webdriver.Chrome(service=svc, options=opts)
-            except Exception:
-                self.driver = webdriver.Chrome(options=opts)
+                # Запускаем браузер сами — только с debug-портом, без chromedriver-флагов
+                debug_port = 9222
+                self._yandex_proc = subprocess.Popen([
+                    yandex_exe,
+                    f"--remote-debugging-port={debug_port}",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run", "--start-maximized",
+                ])
+                time.sleep(4)  # ждём запуска DevTools
+
+                # Подключаемся к уже запущенному браузеру (версии chromedriver не важны)
+                opts = webdriver.ChromeOptions()
+                opts.add_experimental_option("debuggerAddress", f"127.0.0.1:{debug_port}")
+                opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+                try:
+                    svc = Service(ChromeDriverManager().install())
+                    self.driver = webdriver.Chrome(service=svc, options=opts)
+                except Exception:
+                    self.driver = webdriver.Chrome(options=opts)
+            # ─────────────────────────────────────────────────────────────────
+            else:
+                opts = webdriver.ChromeOptions()
+                profile_dir = os.path.join(os.getcwd(), ".vk_chrome_profile")
+                os.makedirs(profile_dir, exist_ok=True)
+                opts.add_argument(f"--user-data-dir={profile_dir}")
+                opts.add_argument("--start-maximized")
+                opts.add_argument("--disable-blink-features=AutomationControlled")
+                opts.add_argument(
+                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                )
+                opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+                try:
+                    svc = Service(ChromeDriverManager().install())
+                    self.driver = webdriver.Chrome(service=svc, options=opts)
+                except Exception:
+                    self.driver = webdriver.Chrome(options=opts)
 
             self.driver.get("https://vk.com")
             log_message("INFO VK: браузер открыт, жду логина...")
+            # ВРЕМЕННО: подкладываем куки из Chrome, чтобы не логиниться заново
+            if _USE_YANDEX:
+                n = self._import_chrome_vk_cookies(self.driver)
+                if n > 0:
+                    self.driver.get("https://vk.com")  # перезагружаем с куками
             # Разблокируем кнопку "Проверить вход" как только браузер открылся
             QMetaObject.invokeMethod(
                 self.recheck_btn, "setEnabled",
@@ -990,6 +1209,15 @@ class VKSearchWindow(QWidget):
         self._pending_vk_query = query
         self.search_btn.setEnabled(False)
         self._sig.status.emit("Поиск...")
+
+        # Сразу очищаем текущую вкладку
+        tab = self._current_tab()
+        if tab:
+            tab.table.setRowCount(0)
+            tab.results = []
+            tab.filter_input.blockSignals(True)
+            tab.filter_input.clear()
+            tab.filter_input.blockSignals(False)
 
         # ── Mail.ru (не требует браузера) ────────────────────────────────────
         if re.match(r'^https?://my\.mail\.ru/music/', query, re.I):
@@ -1088,49 +1316,59 @@ class VKSearchWindow(QWidget):
 
     # ── Воркеры поиска ───────────────────────────────────────────────────────
 
+    def _rows_present(self):
+        """True, если на странице есть треки (старый audio_row или новый каталог)."""
+        try:
+            return self.driver.execute_script(
+                "return document.querySelectorAll("
+                "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
+            )
+        except Exception:
+            return False
+
+    def _worker_search_navigate(self, query: str):
+        """Открывает страницу поиска и переходит в каталог «Показать все»."""
+        q = quote_plus(query)
+        self.driver.get(f"https://vk.com/audio?q={q}&section=search")
+        try:
+            WebDriverWait(self.driver, 10).until(lambda d: self._rows_present())
+        except Exception:
+            pass
+
+        # Ищем href ссылки «Показать все» и переходим по нему напрямую.
+        # VK теперь ведёт на /music/catalog/... вместо ?section=audio.
+        try:
+            show_all_url = self.driver.execute_script("""
+                var texts = ['показать все', 'показать всё', 'все треки', 'show all'];
+
+                // 1. Ищем <a> с нужным текстом (href может быть /music/catalog/...)
+                var anchors = Array.from(document.querySelectorAll('a[href]'));
+                for (var i = 0; i < anchors.length; i++) {
+                    var a = anchors[i];
+                    var txt = a.textContent.trim().toLowerCase();
+                    for (var k = 0; k < texts.length; k++) {
+                        if (txt === texts[k] || txt.startsWith(texts[k])) {
+                            return a.href;
+                        }
+                    }
+                }
+
+                // 2. Любая ссылка на music/catalog (VK кладёт туда «Показать все»)
+                var catLinks = Array.from(document.querySelectorAll('a[href*="music/catalog"]'));
+                if (catLinks.length > 0) return catLinks[0].href;
+
+                return null;
+            """)
+            if show_all_url:
+                self._sig.status.emit("Открываю все треки...")
+                self.driver.get(show_all_url)
+                WebDriverWait(self.driver, 10).until(lambda d: self._rows_present())
+        except Exception:
+            pass
+
     def _worker_search(self, query: str, count: int):
         try:
-            url = f"https://vk.com/audio?q={quote_plus(query)}&section=search"
-            self.driver.get(url)
-            try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
-                )
-            except Exception:
-                pass
-
-            # Кликаем «Показать все» только если она стоит ДО первого audio_row
-            # (это кнопка заголовка секции треков). Кнопка плейлистов идёт ПОСЛЕ
-            # audio_row-ов, поэтому compareDocumentPosition её отсеет.
-            try:
-                show_all = self.driver.execute_script("""
-                    var firstRow = document.querySelector('.audio_row');
-                    if (!firstRow) return null;
-                    var links = Array.from(document.querySelectorAll('a'));
-                    for (var i = 0; i < links.length; i++) {
-                        var a = links[i];
-                        if (a.textContent.trim() !== 'Показать все') continue;
-                        // DOCUMENT_POSITION_FOLLOWING (4) — firstRow стоит ПОСЛЕ a
-                        if (a.compareDocumentPosition(firstRow) & 4) return a;
-                    }
-                    return null;
-                """)
-                if show_all:
-                    self._sig.status.emit("Открываю все треки...")
-                    prev_url = self.driver.current_url
-                    self.driver.execute_script("arguments[0].click();", show_all)
-                    try:
-                        WebDriverWait(self.driver, 10).until(
-                            lambda d: d.current_url != prev_url
-                        )
-                    except Exception:
-                        pass
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
-                    )
-            except Exception:
-                pass
-
+            self._worker_search_navigate(query)
             results = self._scroll_and_parse(count)
             self._sig.results_ready.emit(results)
         except Exception as e:
@@ -1160,9 +1398,7 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit("Открываю аудиозаписи...")
             self.driver.get(f"https://vk.com/audios{numeric_id}")
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
-                )
+                WebDriverWait(self.driver, 10).until(lambda d: self._rows_present())
             except Exception:
                 self._sig.status.emit("Аудио недоступны или скрыты")
                 return
@@ -1181,9 +1417,7 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit("Открываю аудиозаписи...")
             self.driver.get(f"https://vk.com/audios{owner_id}")
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
-                )
+                WebDriverWait(self.driver, 10).until(lambda d: self._rows_present())
             except Exception:
                 self._sig.status.emit("Аудио недоступны или скрыты")
                 return
@@ -1202,15 +1436,28 @@ class VKSearchWindow(QWidget):
             self.driver.get(desk_url)
             time.sleep(3)
 
-            results = self._parse_wall_scripts(self.driver.page_source, count)
-            log_message(f"INFO wall scripts: найдено {len(results)} треков")
+            html = self.driver.page_source
 
-            if not results:
-                # Фолбэк: старый парсер audio_row
-                results = self._scroll_and_parse(count)
-                log_message(f"INFO wall audio_row: найдено {len(results)} треков")
+            # Аудио
+            audio_results = self._parse_wall_scripts(html, count)
+            log_message(f"INFO wall scripts: найдено {len(audio_results)} треков")
+            if not audio_results:
+                audio_results = self._scroll_and_parse(count)
+                log_message(f"INFO wall audio_row: найдено {len(audio_results)} треков")
 
-            self._sig.results_ready.emit(results)
+            # Видео
+            video_results = self._parse_wall_video_scripts(html, count if count > 0 else None)
+            log_message(f"INFO wall video scripts: найдено {len(video_results)} видео")
+            if not video_results:
+                video_results = self._parse_video_html(html, count if count > 0 else None)
+                log_message(f"INFO wall video html: найдено {len(video_results)} видео")
+
+            if audio_results:
+                self._sig.results_ready.emit(audio_results)
+            if video_results:
+                self._sig.video_results_ready.emit(video_results)
+            if not audio_results and not video_results:
+                self._sig.status.emit("В посте не найдено аудио или видео")
         except Exception as e:
             log_message(f"ERROR VK wall: {e}")
             self._sig.status.emit(f"Ошибка: {e}")
@@ -1247,6 +1494,51 @@ class VKSearchWindow(QWidget):
                     if not title:
                         continue
                     results.append((artist, title, dur_str, owner_disp, url, full_id))
+                    if max_count and len(results) >= max_count:
+                        return results
+                except Exception:
+                    continue
+        return results
+
+    @staticmethod
+    def _parse_wall_video_scripts(html: str, max_count) -> list:
+        """Извлекает видео из JSON apiPrefetchCache в <script> на странице поста ВК."""
+        results, seen = [], set()
+        for s in re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL):
+            if '"type":"video"' not in s and '"type": "video"' not in s:
+                continue
+            for m in re.finditer(r'"type"\s*:\s*"video"\s*,\s*"video"\s*:\s*\{', s):
+                start = m.end() - 1  # позиция открывающей {
+                depth, end = 0, start
+                for j in range(start, min(start + 100_000, len(s))):
+                    if s[j] == '{':
+                        depth += 1
+                    elif s[j] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end = j + 1
+                            break
+                if end <= start:
+                    continue
+                try:
+                    v = json.loads(s[start:end])
+                    oid = str(v.get('owner_id', ''))
+                    vid = str(v.get('id', ''))
+                    full_id = f"{oid}_{vid}"
+                    if not oid or not vid or full_id in seen:
+                        continue
+                    seen.add(full_id)
+                    title    = BeautifulSoup(str(v.get('title', '') or ''), 'html.parser').get_text(strip=True) or 'Без названия'
+                    duration = v.get('duration', 0) or 0
+                    dur_str  = f"{duration//60}:{duration%60:02d}" if duration else ""
+                    video_url = f"https://vk.com/video{oid}_{vid}"
+                    images   = v.get('image', []) or v.get('photo', [])
+                    thumb_url = ''
+                    if images and isinstance(images, list):
+                        last = images[-1]
+                        if isinstance(last, dict):
+                            thumb_url = last.get('url', '')
+                    results.append((title[:120], dur_str, "", thumb_url, video_url))
                     if max_count and len(results) >= max_count:
                         return results
                 except Exception:
@@ -1998,7 +2290,9 @@ return (function(){
         tab.query = query
         tab.results = results
         short = (query[:22] + "…") if len(query) > 22 else (query or "Видео")
-        self.tabs.setTabText(self.tabs.currentIndex(), f"🎬 {short}")
+        tab_idx = self.tabs.indexOf(tab)
+        if tab_idx >= 0:
+            self.tabs.setTabText(tab_idx, f"🎬 {short}")
 
         tab.table.setRowCount(0)
         for title, dur, views, thumb, vurl in results:
@@ -2361,18 +2655,73 @@ return (function(){
         else:
             self._sig.status.emit(f"Скачано {ok_count}, ошибок: {fail_count}")
 
+    def _extract_catalog_tracks(self, max_count) -> list:
+        """Извлекает треки из нового React-каталога ВК через JS (data-testid)."""
+        try:
+            raw = self.driver.execute_script("""
+                var rows = document.querySelectorAll('[data-testid="MusicTrackRow"]');
+                return Array.from(rows).map(function(row){
+                    var t = row.querySelector('[data-testid="MusicTrackRow_Title"]');
+                    var a = row.querySelector('[data-testid="MusicTrackRow_Authors"]');
+                    var d = row.querySelector('[data-testid="MusicTrackRow_Duration"]');
+                    return {
+                        href:   t ? (t.getAttribute('href') || '') : '',
+                        title:  t ? t.textContent.trim() : '',
+                        artist: a ? a.textContent.trim() : '',
+                        dur:    d ? d.textContent.trim() : ''
+                    };
+                });
+            """) or []
+        except Exception as e:
+            log_message(f"WARNING catalog JS extraction: {e}")
+            return []
+
+        results, seen = [], set()
+        for item in raw:
+            href = item.get("href", "")
+            # /audio239175566_456240028_1984d66a48402a9eac → owner=239175566 id=456240028
+            m = re.search(r'/audio(-?\d+)_(\d+)', href)
+            if not m:
+                continue
+            owner_id, audio_id = m.group(1), m.group(2)
+            full_id = f"{owner_id}_{audio_id}"
+            if full_id in seen:
+                continue
+            seen.add(full_id)
+            title  = (item.get("title", "") or "").strip()
+            artist = (item.get("artist", "") or "").strip()
+            if not title:
+                continue
+            dur = (item.get("dur", "") or "").strip()
+            try:
+                oi = int(owner_id)
+                owner_disp = f"club{abs(oi)}" if oi < 0 else f"id{oi}"
+            except ValueError:
+                owner_disp = owner_id
+            results.append((artist[:80], title[:120], dur, owner_disp, "", full_id))
+            if max_count and len(results) >= max_count:
+                break
+        return results
+
     def _scroll_and_parse(self, count: int) -> list:
         limit = count if count > 0 else None
-        results = self._parse_html(self.driver.page_source, limit)
+        # Новый React-каталог
+        results = self._extract_catalog_tracks(limit)
+        # Старый формат audio_row (фолбэк)
+        if not results:
+            results = self._parse_html(self.driver.page_source, limit)
         if limit and len(results) >= limit:
             return results[:limit]
 
         last_h = self.driver.execute_script("return document.body.scrollHeight")
-        for i in range(20):
+        for i in range(500):
             self._sig.status.emit(f"Загружаю треки... ({len(results)}/{limit or '∞'})")
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(1.5)
-            results = self._parse_html(self.driver.page_source, limit)
+            new_results = self._extract_catalog_tracks(limit)
+            if not new_results:
+                new_results = self._parse_html(self.driver.page_source, limit)
+            results = new_results if new_results else results
             if limit and len(results) >= limit:
                 break
             new_h = self.driver.execute_script("return document.body.scrollHeight")
@@ -2482,6 +2831,8 @@ return (function(){
         mobile_url = getattr(tab, 'mobile_playlist_url', None) if tab else None
         pl_title   = getattr(tab, 'query',               '')   if tab else ''
         vk_query   = getattr(tab, 'query',               '')   if tab else ''
+        t = self._t()
+        total_rows = t.rowCount() if t else 0
         if (pl_url or mobile_url) and all(not d.get("url") for d in rows):
             threading.Thread(
                 target=self._dl_cdp_batch,
@@ -2489,7 +2840,7 @@ return (function(){
             ).start()
         else:
             threading.Thread(
-                target=self._dl_batch_worker, args=(rows, folder, vk_query), daemon=True
+                target=self._dl_batch_worker, args=(rows, folder, vk_query, total_rows), daemon=True
             ).start()
 
     def _dl_single_worker(self, d: dict, path: str):
@@ -2514,7 +2865,10 @@ return (function(){
                 referer = "https://www.neizvestniy-geniy.ru/"
             else:
                 referer = "https://vk.com/"
-            ok = self._dl_direct(d["url"], path, referer=referer)
+            if ".m3u8" in d["url"]:
+                ok = self._dl_m3u8(d["url"], path)
+            else:
+                ok = self._dl_direct(d["url"], path, referer=referer)
         _utils.current_vk_key = ""
         _utils.queue_titles.pop(key, None)
         self._sig.show_progress.emit(False)
@@ -2532,117 +2886,156 @@ return (function(){
                 "• Нужен yt-dlp и ffmpeg"
             )
 
-    def _dl_batch_worker(self, rows: list[dict], folder: str, vk_query: str = ""):
+    def _dl_batch_worker(self, rows: list[dict], folder: str, vk_query: str = "", total_rows: int = 0):
         self._batch_mode = True
-        # Если треки без URL и браузер не на странице с audio_row — перегружаем поиск
+        # Если треки без URL и браузер не на странице со списком треков — перегружаем поиск
         if vk_query and self.driver and any(not d.get("url") for d in rows):
             try:
                 has_rows = self.driver.execute_script(
-                    "return document.querySelectorAll('div.audio_row').length > 0"
+                    "return document.querySelectorAll("
+                    "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
                 )
                 if not has_rows:
                     self._sig.status.emit("Обновляю список треков в браузере...")
                     q = vk_query.strip()
                     if q.startswith("http") or "vk.com" in q:
                         nav_url = q if q.startswith("http") else "https://" + q
+                        self.driver.get(nav_url)
                     else:
-                        nav_url = f"https://vk.com/audio?q={quote_plus(q)}&section=search"
-                    self.driver.get(nav_url)
+                        # Текстовый запрос: повторяем навигацию как при поиске
+                        self._worker_search_navigate(q)
                     WebDriverWait(self.driver, 15).until(
-                        EC.presence_of_element_located((By.CLASS_NAME, "audio_row"))
+                        lambda d: d.execute_script(
+                            "return document.querySelectorAll("
+                            "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
+                        )
                     )
             except Exception as e:
                 log_message(f"WARNING dl_batch: не удалось обновить список: {e}")
+
         total = len(rows)
         self._sig.show_progress.emit(True)
-        ok_count = fail_count = 0
-        start_t = time.time()
-        failed = []
+        is_wall_post = bool(self._parse_wall_url(vk_query))
+        num_width = len(str(total_rows if total_rows > 0 else total))
 
-        # Заполняем VK-очередь
-        _utils.vk_queue = [
-            {"key": f"vk:{d['full_id']}", "label": f"{d['artist']} - {d['title']}"}
-            for d in rows
-        ]
-        for item in _utils.vk_queue:
-            _utils.queue_titles[item["key"]] = f"[ВК] {item['label']}"
-
+        # ── Фаза 1: собираем ссылки ───────────────────────────────────────────
+        self._sig.status.emit(f"Собираю ссылки на треки (0/{total})...")
+        jobs = []
         for i, d in enumerate(rows, 1):
-            base = _safe_name(f"{d['artist']} - {d['title']}") or f"track_{i}"
+            num = d.get("row_num", i)
+            track_name = f"{d['artist']} - {d['title']}" if d['artist'] else d['title']
+            if is_wall_post:
+                base = _safe_name(f"{str(num).zfill(num_width)}. {track_name}") or f"track_{str(num).zfill(num_width)}"
+            else:
+                base = _safe_name(track_name) or f"track_{i}"
             path = os.path.join(folder, base + ".mp3")
-            cnt = 1
-            orig = path
+            cnt, orig = 1, path
             while os.path.exists(path):
                 path = f"{orig[:-4]} ({cnt}).mp3"
                 cnt += 1
 
-            key = f"vk:{d['full_id']}"
-            _utils.current_vk_key = key
-            _utils.vk_queue = [
-                {"key": f"vk:{r['full_id']}", "label": f"{r['artist']} - {r['title']}"}
-                for r in rows[i:]  # оставшиеся (ещё не начатые)
-            ]
-
-            elapsed = time.time() - start_t
-            eta = _fmt_sec((elapsed / i) * (total - i)) if i > 1 else "..."
-            progress = i / total * 100
-            self._sig.batch.emit(f"[{i}/{total}] ~{eta}")
-            self._sig.progress.emit(progress)
-            self._sig.status.emit(f"{base[:50]}...")
-            self._tray_status("Загрузка...", int(progress))
-
+            url = d.get("url", "")
             is_mailru = d["full_id"].startswith("mailru:")
             is_ng     = d["full_id"].startswith("ng:")
             is_direct = is_mailru or is_ng
-            ok = False
-            if not is_direct and self.driver:
-                ok = self._dl_via_browser(d["full_id"], path)
-            if not ok and d["url"].startswith("http"):
-                if is_mailru:
-                    referer = "https://my.mail.ru/"
-                elif is_ng:
-                    referer = "https://www.neizvestniy-geniy.ru/"
-                else:
-                    referer = "https://vk.com/"
-                ok = self._dl_direct(d["url"], path, referer=referer)
-            _utils.queue_titles.pop(key, None)
 
-            if ok:
-                ok_count += 1
-                _add_vk_history(d["artist"], d["title"], path)
-            else:
-                fail_count += 1
-                failed.append(d)
-            time.sleep(0.3)
+            if not url and not is_direct and self.driver:
+                self._sig.status.emit(f"Получаю ссылку {i}/{total}...")
+                self._sig.progress.emit(i / total * 30)
+                url = self._get_audio_url(d["full_id"]) or ""
+
+            jobs.append({
+                "d": d, "url": url, "path": path,
+                "is_mailru": is_mailru, "is_ng": is_ng,
+            })
+
+        # Заполняем VK-очередь
+        _utils.vk_queue = [
+            {"key": f"vk:{j['d']['full_id']}", "label": f"{j['d']['artist']} - {j['d']['title']}"}
+            for j in jobs
+        ]
+        for item in _utils.vk_queue:
+            _utils.queue_titles[item["key"]] = f"[ВК] {item['label']}"
+
+        # ── Фаза 2: скачиваем в 4 потока ─────────────────────────────────────
+        self._sig.status.emit(f"Скачиваю {total} треков...")
+        ok_count = fail_count = 0
+        failed_jobs = []
+        lock = threading.Lock()
+        completed = 0
+        start_t = time.time()
+
+        def _do_download(job):
+            d, url, path = job["d"], job["url"], job["path"]
+            ok = False
+            if url.startswith("http"):
+                if ".m3u8" in url:
+                    ok = self._dl_m3u8(url, path)
+                elif job["is_mailru"]:
+                    ok = self._dl_direct(url, path, referer="https://my.mail.ru/")
+                elif job["is_ng"]:
+                    ok = self._dl_direct(url, path, referer="https://www.neizvestniy-geniy.ru/")
+                else:
+                    ok = self._dl_direct(url, path, referer="https://vk.com/")
+            _utils.queue_titles.pop(f"vk:{d['full_id']}", None)
+            return ok
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futures = {ex.submit(_do_download, job): job for job in jobs}
+            for fut in as_completed(futures):
+                job = futures[fut]
+                d = job["d"]
+                try:
+                    ok = fut.result()
+                except Exception as e:
+                    log_message(f"ERROR dl_batch future: {e}")
+                    ok = False
+                with lock:
+                    completed += 1
+                    elapsed = time.time() - start_t
+                    eta = _fmt_sec((elapsed / completed) * (total - completed)) if completed > 1 else "..."
+                    self._sig.batch.emit(f"[{completed}/{total}] ~{eta}")
+                    self._sig.progress.emit(30 + completed / total * 70)
+                    self._tray_status("Загрузка...", int(30 + completed / total * 70))
+                    if ok:
+                        ok_count += 1
+                        _add_vk_history(d["artist"], d["title"], job["path"])
+                    else:
+                        fail_count += 1
+                        failed_jobs.append(job)
 
         _utils.current_vk_key = ""
         _utils.vk_queue = []
 
-        # Повторные попытки
+        # Повторные попытки (последовательно)
         for attempt in range(2):
-            if not failed:
+            if not failed_jobs:
                 break
             retry_left = []
-            for d in failed:
-                base = _safe_name(f"{d['artist']} - {d['title']}") or "track"
-                path = os.path.join(folder, base + ".mp3")
+            for job in failed_jobs:
+                d = job["d"]
                 ok = False
                 if self.driver:
-                    ok = self._dl_via_browser(d["full_id"], path)
-                if not ok and d["url"].startswith("http"):
-                    ok = self._dl_direct(d["url"], path)
+                    ok = self._dl_via_browser(d["full_id"], job["path"])
+                if not ok and job["url"].startswith("http"):
+                    if ".m3u8" in job["url"]:
+                        ok = self._dl_m3u8(job["url"], job["path"])
+                    else:
+                        ok = self._dl_direct(job["url"], job["path"])
                 if ok:
-                    ok_count += 1; fail_count -= 1
-                    _add_vk_history(d["artist"], d["title"], path)
+                    ok_count += 1
+                    fail_count -= 1
+                    _add_vk_history(d["artist"], d["title"], job["path"])
                 else:
-                    retry_left.append(d)
-            failed = retry_left
+                    retry_left.append(job)
+            failed_jobs = retry_left
             time.sleep(1)
 
-        if failed:
+        if failed_jobs:
             try:
+                failed_data = [j["d"] for j in failed_jobs]
                 with open(os.path.join(folder, "failed_tracks.json"), "w", encoding="utf-8") as f:
-                    json.dump(failed, f, ensure_ascii=False, indent=2)
+                    json.dump(failed_data, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
 
@@ -2703,72 +3096,141 @@ return (function(){
         try:
             self.driver.execute_cdp_cmd("Network.enable", {})
             self.driver.execute_cdp_cmd("Network.clearBrowserCache", {})
-
-            sel = f'div.audio_row[data-full-id="{full_id}"]'
+            # Сбрасываем накопленные performance-логи, чтобы видеть только свежие запросы
             try:
-                el = self.driver.find_element(By.CSS_SELECTOR, sel)
-            except Exception:
-                el = None
-                for row in self.driver.find_elements(By.CSS_SELECTOR, "div.audio_row"):
-                    try:
-                        if full_id in (row.get_attribute("data-audio") or ""):
-                            el = row; break
-                    except Exception:
-                        continue
-            if not el:
-                log_message(f"WARNING _get_audio_url: audio_row не найден для {full_id}, page={self.driver.current_url[:60]}")
-                return None
-
-            try:
-                play = el.find_element(By.CSS_SELECTOR, ".audio_play_wrap, .audio_row__play_btn, .audio_row__cover")
-                self.driver.execute_script("arguments[0].click();", play)
-            except Exception:
-                self.driver.execute_script("arguments[0].click();", el)
-
-            audio_url = None
-            for _ in range(7):
-                time.sleep(0.3)
-                audio_url = self.driver.execute_script("""
-                    try { if(window.ap&&window.ap._impl){var i=window.ap._impl;
-                        if(i._currentAudio&&i._currentAudio.url)return i._currentAudio.url;
-                        if(i.currentAudio&&i.currentAudio.url)return i.currentAudio.url;}} catch(e){}
-                    try { var a=document.querySelector('audio');
-                        if(a&&a.src&&a.src.length>10)return a.src;} catch(e){}
-                    return null;
-                """)
-                if audio_url:
-                    break
-
-            try:
-                self.driver.execute_script("""
-                    try{if(window.ap&&window.ap.pause)window.ap.pause();}catch(e){}
-                    try{var a=document.querySelector('audio');if(a)a.pause();}catch(e){}
-                """)
+                self.driver.get_log("performance")
             except Exception:
                 pass
 
-            if audio_url:
-                return audio_url
+            # Новый React-каталог: ищем строку по href ссылки /audio{full_id}
+            el = self.driver.execute_script("""
+                var fid = arguments[0];
+                var rows = document.querySelectorAll('[data-testid="MusicTrackRow"]');
+                for (var i = 0; i < rows.length; i++) {
+                    var t = rows[i].querySelector('[data-testid="MusicTrackRow_Title"]');
+                    if (t && (t.getAttribute('href') || '').indexOf('/audio' + fid) === 0) {
+                        return rows[i];
+                    }
+                }
+                return null;
+            """, full_id)
 
-            # Fallback: performance log
-            logs = self.driver.get_log("performance")
-            m3u8 = fallback = None
-            for entry in reversed(logs):
+            if el is not None:
+                # Кнопка воспроизведения карточки (VKUI Tappable)
+                play = self.driver.execute_script("""
+                    var row = arguments[0];
+                    return row.querySelector('.vkitAudioRow__tappable--JQxgn')
+                        || row.querySelector('[aria-label*="рослуш"]')
+                        || row.querySelector('[data-testid="MusicTrackRow_PlaybackControls"]')
+                        || row.querySelector('[role="button"]');
+                """, el)
+                target = play or el
                 try:
-                    msg = json.loads(entry["message"])
-                    url = msg.get("message", {}).get("params", {}).get("request", {}).get("url", "")
-                    if "index.m3u8" in url:
-                        m3u8 = url; break
-                    if "vkuseraudio" in url and not fallback:
-                        fallback = url
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", target)
+                    time.sleep(0.3)
                 except Exception:
-                    continue
-            log_message(f"WARNING _get_audio_url: ap=None, m3u8={bool(m3u8)}, fallback={bool(fallback)}, page={self.driver.current_url[:60]}")
+                    pass
+                # У VKUI-Tappable стоит pointer-events:none, поэтому обычный клик
+                # «проваливается». Диспатчим полную последовательность pointer/mouse
+                # событий — она минует CSS pointer-events и запускает onClick React.
+                try:
+                    self.driver.execute_script("""
+                        var el = arguments[0];
+                        var r = el.getBoundingClientRect();
+                        var cx = r.left + r.width/2, cy = r.top + r.height/2;
+                        var opt = {bubbles:true, cancelable:true, view:window,
+                                   clientX:cx, clientY:cy, button:0, buttons:1};
+                        ['pointerover','pointerenter','pointermove','pointerdown',
+                         'mousedown','pointerup','mouseup','click'].forEach(function(t){
+                            var E = t.indexOf('pointer')===0 ? PointerEvent : MouseEvent;
+                            try { el.dispatchEvent(new E(t, opt)); } catch(e){}
+                        });
+                    """, target)
+                except Exception as _de:
+                    log_message(f"WARNING dispatch click failed: {_de}")
+            else:
+                # Старый формат audio_row
+                sel = f'div.audio_row[data-full-id="{full_id}"]'
+                try:
+                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
+                except Exception:
+                    el = None
+                    for row in self.driver.find_elements(By.CSS_SELECTOR, "div.audio_row"):
+                        try:
+                            if full_id in (row.get_attribute("data-audio") or ""):
+                                el = row; break
+                        except Exception:
+                            continue
+                if not el:
+                    log_message(f"WARNING _get_audio_url: трек не найден для {full_id}, page={self.driver.current_url[:60]}")
+                    return None
+                try:
+                    play = el.find_element(By.CSS_SELECTOR, ".audio_play_wrap, .audio_row__play_btn, .audio_row__cover")
+                    self.driver.execute_script("arguments[0].click();", play)
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", el)
+
+            # Захватываем реальный сетевой запрос аудио. Новый плеер ВК использует
+            # MSE, поэтому audio.src = blob: и для скачивания бесполезен — берём
+            # .m3u8 / сегменты из performance-логов.
+            m3u8 = fallback = direct = None
+            total_reqs = 0
+            sample = None
+            for _ in range(20):
+                time.sleep(0.3)
+                try:
+                    logs = self.driver.get_log("performance")
+                except Exception:
+                    logs = []
+                for entry in logs:
+                    try:
+                        msg = json.loads(entry["message"])
+                        params = msg.get("message", {}).get("params", {})
+                        url = (params.get("request", {}).get("url", "")
+                               or params.get("response", {}).get("url", ""))
+                    except Exception:
+                        continue
+                    if not url:
+                        continue
+                    total_reqs += 1
+                    if (".m3u8" in url or "/seg-" in url or "vkuseraudio" in url
+                            or "vkuservideo" in url) and sample is None:
+                        sample = url[:120]
+                    if ".m3u8" in url:
+                        m3u8 = url
+                    elif "/seg-" in url and not fallback:
+                        fallback = url
+                    elif (("vkuseraudio" in url or "userapi" in url)
+                          and (".mp3" in url or "/audio/" in url) and not direct):
+                        direct = url
+                if m3u8:
+                    break
+                # Прямой mp3-файл (старые треки) через audio.src, но не blob:
+                if not direct:
+                    src = self.driver.execute_script("""
+                        try { var a=document.querySelector('audio');
+                            if(a&&a.src&&a.src.indexOf('blob:')!==0&&a.src.length>10)
+                                return a.src;} catch(e){}
+                        return null;
+                    """)
+                    if src:
+                        direct = src
+
+            try:
+                self.driver.execute_script(
+                    "try{var a=document.querySelector('audio');if(a)a.pause();}catch(e){}")
+            except Exception:
+                pass
+
+            log_message(
+                f"INFO _get_audio_url: m3u8={bool(m3u8)}, seg={bool(fallback)}, "
+                f"direct={bool(direct)}, reqs={total_reqs}, sample={sample}")
             if m3u8:
                 return m3u8
             if fallback and "/seg-" in fallback:
                 return fallback.rsplit("/seg-", 1)[0] + "/index.m3u8"
-            return fallback
+            return direct
         except Exception as e:
             log_message(f"ERROR VK get_audio_url: {e}")
             return None
@@ -3028,3 +3490,10 @@ return (function(){
             except Exception:
                 pass
             self.driver = None
+        # ВРЕМЕННО: завершаем процесс Яндекса если запускали сами
+        if self._yandex_proc:
+            try:
+                self._yandex_proc.terminate()
+            except Exception:
+                pass
+            self._yandex_proc = None
