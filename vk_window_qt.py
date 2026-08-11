@@ -1079,6 +1079,39 @@ class VKSearchWindow(QWidget):
         log_message(f"INFO Яндекс куки: скопировано {injected} куки из Chrome")
         return injected
 
+    @staticmethod
+    def _clean_chrome_crash_markers(profile_dir):
+        """Убирает следы аварийного завершения Chrome (зависание/краш),
+        из-за которых новый запуск падает с
+        'Chrome failed to start: crashed / DevToolsActivePort file doesn't exist'."""
+        try:
+            # Файлы-блокировки singleton + остаточный DevToolsActivePort
+            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket",
+                         "DevToolsActivePort", "lockfile"):
+                p = os.path.join(profile_dir, name)
+                try:
+                    if os.path.lexists(p):
+                        os.remove(p)
+                except Exception:
+                    pass
+            # Сбрасываем пометку "грязного" выхода в Preferences,
+            # чтобы Chrome не пытался восстановить сессию и не падал
+            prefs_path = os.path.join(profile_dir, "Default", "Preferences")
+            if os.path.exists(prefs_path):
+                try:
+                    with open(prefs_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    prof = data.get("profile", {})
+                    prof["exited_cleanly"] = True
+                    prof["exit_type"] = "Normal"
+                    data["profile"] = prof
+                    with open(prefs_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f)
+                except Exception:
+                    pass
+        except Exception as e:
+            log_message(f"WARNING VK: очистка профиля: {e}")
+
     def _browser_worker(self):
         try:
             log_message("INFO VK: запуск браузера")
@@ -1115,22 +1148,43 @@ class VKSearchWindow(QWidget):
                     self.driver = webdriver.Chrome(options=opts)
             # ─────────────────────────────────────────────────────────────────
             else:
-                opts = webdriver.ChromeOptions()
                 profile_dir = os.path.join(os.getcwd(), ".vk_chrome_profile")
                 os.makedirs(profile_dir, exist_ok=True)
-                opts.add_argument(f"--user-data-dir={profile_dir}")
-                opts.add_argument("--start-maximized")
-                opts.add_argument("--disable-blink-features=AutomationControlled")
-                opts.add_argument(
-                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                )
-                opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+
+                def _make_opts():
+                    o = webdriver.ChromeOptions()
+                    o.add_argument(f"--user-data-dir={profile_dir}")
+                    o.add_argument("--start-maximized")
+                    o.add_argument("--disable-blink-features=AutomationControlled")
+                    # Подавляем диалог восстановления после аварийного выхода
+                    o.add_argument("--disable-session-crashed-bubble")
+                    o.add_argument("--restore-last-session=false")
+                    o.add_argument("--no-first-run")
+                    o.add_argument("--no-default-browser-check")
+                    o.add_argument(
+                        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                    )
+                    o.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+                    return o
+
+                def _launch():
+                    try:
+                        svc = Service(ChromeDriverManager().install())
+                        return webdriver.Chrome(service=svc, options=_make_opts())
+                    except Exception:
+                        return webdriver.Chrome(options=_make_opts())
+
+                # Чистим следы прошлого аварийного завершения перед стартом
+                self._clean_chrome_crash_markers(profile_dir)
                 try:
-                    svc = Service(ChromeDriverManager().install())
-                    self.driver = webdriver.Chrome(service=svc, options=opts)
-                except Exception:
-                    self.driver = webdriver.Chrome(options=opts)
+                    self.driver = _launch()
+                except Exception as e:
+                    # Типичный краш после зависания компа: чистим профиль и пробуем ещё раз
+                    log_message(f"WARNING VK: первый запуск не удался ({e}); чищу профиль и повторяю")
+                    self._clean_chrome_crash_markers(profile_dir)
+                    time.sleep(1)
+                    self.driver = _launch()
 
             self.driver.get("https://vk.com")
             log_message("INFO VK: браузер открыт, жду логина...")
@@ -1241,6 +1295,22 @@ class VKSearchWindow(QWidget):
             return
 
         # Определяем тип запроса
+
+        # Плейлист, открытый из поста/стены или прямой ссылкой на аудио:
+        #   ...&z=audio_playlist-17232727_71312367_93a9b96bd2c605381f
+        #   ...?act=audio_playlist-17232727_71312367
+        m_zpl = re.search(
+            r'(?:z|act)=audio_playlist(-?\d+)_(\d+)(?:_(\w+))?', query, re.I
+        )
+        if m_zpl:
+            owner_id, pl_id, key = m_zpl.group(1), m_zpl.group(2), m_zpl.group(3) or ''
+            pl_url = f"https://vk.com/music/playlist/{owner_id}_{pl_id}"
+            if key:
+                pl_url += f"_{key}"
+            threading.Thread(
+                target=self._worker_open_playlist, args=(pl_url, "Плейлист"), daemon=True
+            ).start()
+            return
 
         # Плейлисты ВК: страницы со списком плейлистов (section=recoms, playlists и т.п.)
         _q = query.strip()
@@ -1593,21 +1663,13 @@ class VKSearchWindow(QWidget):
 
             limit = count if count > 0 else None
 
-            if '/catalog/' in url:
-                results = self._parse_catalog_playlists(limit)
-            else:
-                last_h = self.driver.execute_script("return document.body.scrollHeight")
-                for _ in range(30):
-                    parsed = self._parse_playlists_html(self.driver.page_source, limit)
-                    self._sig.status.emit(f"Загружаю плейлисты... ({len(parsed)})")
-                    if limit and len(parsed) >= limit:
-                        break
-                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(1.5)
-                    new_h = self.driver.execute_script("return document.body.scrollHeight")
-                    if new_h == last_h:
-                        break
-                    last_h = new_h
+            # Новый React-каталог музыки ВК: и /catalog/, и обычные страницы
+            # плейлистов рендерятся одинаково (блоки music_playlist_item_block,
+            # ссылки лежат только в React-fiber). Извлекаем единообразно.
+            results = self._parse_react_playlists(limit)
+
+            # Фолбэк на старую desktop-вёрстку (audio_pl_item2), если React-блоков нет
+            if not results:
                 results = self._parse_playlists_html(self.driver.page_source, limit)
 
             log_message(f"INFO VK playlists: найдено {len(results)}")
@@ -1618,73 +1680,73 @@ class VKSearchWindow(QWidget):
         finally:
             self._sig.search_done.emit()
 
-    def _parse_catalog_playlists(self, limit) -> list:
-        log_message(f"INFO catalog: начало, url={self.driver.current_url[:80]}")
+    _PL_SEL = '[data-testid="music_playlist_item_block"]'
+
+    def _parse_react_playlists(self, limit) -> list:
+        """Извлекает плейлисты из нового React-каталога ВК (с прокруткой)."""
+        log_message(f"INFO playlists: начало, url={self.driver.current_url[:80]}")
+        count_js = ('return document.querySelectorAll(\''
+                    + self._PL_SEL + '\').length')
         try:
             WebDriverWait(self.driver, 15).until(
-                lambda d: d.execute_script(
-                    'return document.querySelectorAll(\'[data-testid="music_playlist_item_block"]\').length > 0'
-                )
+                lambda d: d.execute_script(count_js + ' > 0')
             )
-            log_message("INFO catalog: WebDriverWait прошёл")
+            log_message("INFO playlists: React-блоки появились")
         except Exception:
-            log_message(f"WARNING catalog: карточки не появились за 15 сек, url={self.driver.current_url[:80]}")
+            log_message(f"WARNING playlists: блоки не появились за 15 сек, url={self.driver.current_url[:80]}")
             return []
 
-        self._sig.status.emit("Загружаю плейлисты из каталога...")
+        # Подгружаем все плейлисты прокруткой (ленивая загрузка)
+        prev_n, stable = -1, 0
+        for _ in range(40):
+            n = self.driver.execute_script(count_js)
+            self._sig.status.emit(f"Загружаю плейлисты... ({n})")
+            if limit and n >= limit:
+                break
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.2)
+            if n == prev_n:
+                stable += 1
+                if stable >= 2:
+                    break
+            else:
+                stable = 0
+            prev_n = n
+
+        return self._extract_react_playlists(limit)
+
+    def _extract_react_playlists(self, limit) -> list:
+        """Считывает title/author/url из React-fiber каждой карточки."""
         js = r"""
 return (function(){
-    function fk(el){
-        return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));
+    function fk(el){return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));}
+    function cnt(o){
+        var c=o.count!=null?o.count:(o.total_count!=null?o.total_count:(o.totalCount!=null?o.totalCount:null));
+        return (c!=null&&!isNaN(c))?(''+c):'';
     }
-    function findUp(fiber,depth){
+    function up(fiber){
         var cur=fiber;
-        for(var d=0;d<depth;d++){
-            if(!cur) break;
+        for(var d=0;d<40&&cur;d++){
             var p=cur.memoizedProps;
             if(p){
-                if(typeof p.href==='string'&&p.href.indexOf('/music/playlist/')!==-1) return p.href;
+                if(typeof p.href==='string'&&p.href.indexOf('/music/playlist/')!==-1) return {url:p.href,count:''};
                 var cs=[p.playlist,p.item,p.data,p.audio,p.audioPlaylist,p.playlistData,p.model];
                 for(var i=0;i<cs.length;i++){
                     var o=cs[i];
                     if(o&&typeof o==='object'&&o.owner_id!=null&&o.id!=null)
-                        return '/music/playlist/'+o.owner_id+'_'+o.id;
+                        return {url:'/music/playlist/'+o.owner_id+'_'+o.id+(o.access_key?'_'+o.access_key:''),count:cnt(o)};
                 }
             }
             cur=cur.return;
         }
-        return '';
+        return {url:'',count:''};
     }
-    var items=document.querySelectorAll('[data-testid="music_playlist_item_block"]');
-    var res=[],hydrated=0;
-    items.forEach(function(item){
-        var te=item.querySelector('[data-testid="MusicPlaylistItem_Title"]');
-        var ae=item.querySelector('[data-testid="MusicPlaylistItem_AuthorLink"]');
-        var title=te?te.textContent.trim():'';
-        var author=ae?ae.textContent.trim():'';
-        var url='',key=fk(item);
-        if(key){hydrated++;try{url=findUp(item[key],80)||'';}catch(e){}}
-        if(title) res.push([title,author,'',url]);
-    });
-    return JSON.stringify({r:res,h:hydrated,t:items.length});
-})()
-"""
-        js = r"""
-return (function(){
-    function fk(el){return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));}
-    var item0=document.querySelector('[data-testid="music_playlist_item_block"]');
-    if(!item0) return null;
-    var key=fk(item0); if(!key) return null;
-    var plIds=null, cur=item0[key];
-    for(var d=0;d<15;d++){
-        if(!cur) break;
-        var p=cur.memoizedProps;
-        if(p&&p.model&&p.model.raw&&p.model.raw.data&&p.model.raw.data.playlists_ids){
-            plIds=p.model.raw.data.playlists_ids; break;
-        }
-        cur=cur.return;
-    }
-    if(!plIds) return null;
+    // Глобальный список playlists_ids — фолбэк по индексу
+    var plIds=null, item0=document.querySelector('[data-testid="music_playlist_item_block"]');
+    if(item0){var k0=fk(item0); if(k0){var c=item0[k0];
+        for(var d=0;d<20&&c;d++){var p=c.memoizedProps;
+            if(p&&p.model&&p.model.raw&&p.model.raw.data&&p.model.raw.data.playlists_ids){plIds=p.model.raw.data.playlists_ids;break;}
+            c=c.return;}}}
     var items=document.querySelectorAll('[data-testid="music_playlist_item_block"]');
     var res=[];
     items.forEach(function(item,i){
@@ -1692,8 +1754,10 @@ return (function(){
         var ae=item.querySelector('[data-testid="MusicPlaylistItem_AuthorLink"]');
         var title=te?te.textContent.trim():'';
         var author=ae?ae.textContent.trim():'';
-        var url=plIds[i]?'/music/playlist/'+plIds[i]:'';
-        if(title) res.push([title,author,'',url]);
+        var url='',count='',k=fk(item);
+        if(k){try{var r=up(item[k]);url=r.url||'';count=r.count||'';}catch(e){}}
+        if(!url&&plIds&&plIds[i]) url='/music/playlist/'+plIds[i];
+        if(title) res.push([title,author,count,url]);
     });
     return JSON.stringify(res);
 })()
@@ -1706,16 +1770,17 @@ return (function(){
                     time.sleep(2)
                     continue
                 items = json.loads(raw)
-                log_message(f"INFO catalog [{attempt}]: {len(items)} плейлистов")
+                log_message(f"INFO playlists [{attempt}]: {len(items)} карточек")
                 results = []
                 for t, a, c, u in items:
-                    if u:
+                    if u and not u.startswith("http"):
                         u = 'https://vk.com' + u
                     results.append((t, a, c, u))
+                # ждём гидратации ссылок, но не зацикливаемся, если их нет вовсе
                 if results and all(r[3] for r in results):
                     break
             except Exception as e:
-                log_message(f"WARNING catalog [{attempt}]: {e}")
+                log_message(f"WARNING playlists [{attempt}]: {e}")
             time.sleep(2)
         if limit:
             results = results[:limit]
