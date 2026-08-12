@@ -1213,8 +1213,8 @@ class VKSearchWindow(QWidget):
             # Если на странице логина/регистрации — точно не залогинены
             if any(x in url for x in ("login", "join", "blank")):
                 return False
-            # Ещё не на vk.com
-            if "vk.com" not in url:
+            # Ещё не на vk.com / vk.ru
+            if "vk.com" not in url and "vk.ru" not in url:
                 return False
             # Есть форма входа — не залогинены
             if self.driver.find_elements(
@@ -1314,9 +1314,9 @@ class VKSearchWindow(QWidget):
 
         # Плейлисты ВК: страницы со списком плейлистов (section=recoms, playlists и т.п.)
         _q = query.strip()
-        if 'vk.com' in _q.lower() and (
+        if ('vk.com' in _q.lower() or 'vk.ru' in _q.lower()) and (
             re.search(r'section=(?:recoms|playlists|playlist|owner_playlists)', _q, re.I)
-            or re.match(r'^(?:https?://)?(?:www\.)?vk\.com/music(?:/playlists?|/catalog/[A-Za-z0-9_-]+)?(?:\?|$)', _q, re.I)
+            or re.match(r'^(?:https?://)?(?:www\.)?vk\.(?:com|ru)/music(?:/playlists?|/catalog/[A-Za-z0-9_-]+)?(?:\?|$)', _q, re.I)
         ):
             vurl = _q if _q.startswith('http') else 'https://' + _q
             threading.Thread(
@@ -1326,7 +1326,7 @@ class VKSearchWindow(QWidget):
 
         # Видео: vk.com/video/@id... или vkvideo.ru/@...
         m_video = re.match(
-            r'^(?:https?://)?(?:www\.)?(?:vk\.com/video|vkvideo\.ru)([/?@].*)?$',
+            r'^(?:https?://)?(?:www\.)?(?:vk\.(?:com|ru)/video|vkvideo\.ru)([/?@].*)?$',
             query.strip(), re.I
         )
         if m_video:
@@ -1340,7 +1340,7 @@ class VKSearchWindow(QWidget):
 
         # Прямая ссылка на аудиозаписи: vk.com/audios-129016356
         m_audios = re.match(
-            r'^(?:https?://)?(?:www\.)?vk\.com/audios(-?\d+)(?:\?.*)?$',
+            r'^(?:https?://)?(?:www\.)?vk\.(?:com|ru)/audios(-?\d+)(?:\?.*)?$',
             query.strip(), re.I
         )
         if m_audios:
@@ -1368,13 +1368,13 @@ class VKSearchWindow(QWidget):
 
     @staticmethod
     def _parse_wall_url(text: str):
-        m = re.match(r'^(?:https?://)?(?:www\.)?vk\.com/wall(-?\d+)_(\d+)(?:\?.*)?$',
+        m = re.match(r'^(?:https?://)?(?:www\.)?vk\.(?:com|ru)/wall(-?\d+)_(\d+)(?:\?.*)?$',
                      text.strip(), re.I)
         return (m.group(1), m.group(2)) if m else None
 
     @staticmethod
     def _parse_profile_url(text: str):
-        m = re.match(r'^(?:https?://)?(?:www\.)?vk\.com/([a-zA-Z0-9._]+)(?:\?.*)?$',
+        m = re.match(r'^(?:https?://)?(?:www\.)?vk\.(?:com|ru)/([a-zA-Z0-9._]+)(?:\?.*)?$',
                      text.strip())
         if m:
             pid = m.group(1)
