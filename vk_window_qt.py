@@ -52,6 +52,9 @@ except Exception:
 VK_HISTORY_FILE = os.path.join(os.getcwd(), "vk_history.json")
 _VK_TABS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vk_search_tabs.json")
 
+# Маркер строки-разделителя в таблице результатов (artist-поле кортежа)
+_SEP_MARK = "__SEP__"
+
 # ── ВРЕМЕННО: Яндекс-браузер ─────────────────────────────────────────────────
 # TODO: вернуть Chrome — установить _USE_YANDEX = False
 _USE_YANDEX = False
@@ -641,27 +644,48 @@ class VKSearchWindow(QWidget):
         tab.filter_input.blockSignals(False)
 
         for row_data in results:
-            if len(row_data) < 6:
-                continue
-            artist, title, duration, owner, url, full_id = row_data[:6]
-            r = tab.table.rowCount()
-            tab.table.insertRow(r)
+            self._add_audio_row(tab.table, row_data)
 
-            artist_item = QTableWidgetItem(artist)
-            artist_item.setData(Qt.ItemDataRole.UserRole,     url)
-            artist_item.setData(Qt.ItemDataRole.UserRole + 1, full_id)
-            tab.table.setItem(r, 0, artist_item)
-            tab.table.setItem(r, 1, QTableWidgetItem(title))
-            tab.table.setItem(r, 2, QTableWidgetItem(duration))
-            tab.table.setItem(r, 3, QTableWidgetItem(owner))
-
-        total = tab.table.rowCount()
+        total = sum(
+            1 for r in range(tab.table.rowCount())
+            if tab.table.item(r, 0)
+            and tab.table.item(r, 0).data(Qt.ItemDataRole.UserRole + 1)
+        )
         self._sig.status.emit(f"Найдено треков: {total}" if total else "Ничего не найдено")
+
+    def _add_audio_row(self, table, row_data):
+        """Вставляет строку трека или строку-разделитель ('__SEP__')."""
+        if len(row_data) < 6:
+            return
+        artist, title, duration, owner, url, full_id = row_data[:6]
+        r = table.rowCount()
+        table.insertRow(r)
+
+        if artist == _SEP_MARK:
+            sep = QTableWidgetItem(title or "Треки из комментариев")
+            # Только отображается, не выбирается/не редактируется
+            sep.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            f = sep.font(); f.setBold(True); sep.setFont(f)
+            sep.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(r, 0, sep)
+            table.setSpan(r, 0, 1, table.columnCount())
+            return
+
+        artist_item = QTableWidgetItem(artist)
+        artist_item.setData(Qt.ItemDataRole.UserRole,     url)
+        artist_item.setData(Qt.ItemDataRole.UserRole + 1, full_id)
+        table.setItem(r, 0, artist_item)
+        table.setItem(r, 1, QTableWidgetItem(title))
+        table.setItem(r, 2, QTableWidgetItem(duration))
+        table.setItem(r, 3, QTableWidgetItem(owner))
 
     def _row_data(self, row: int):
         t = self._t()
         item = t.item(row, 0) if t else None
         if not item:
+            return None
+        # Строка-разделитель («Треки из комментариев») — не трек
+        if not (item.data(Qt.ItemDataRole.UserRole + 1) or ""):
             return None
         return {
             "artist":   item.text(),
@@ -1518,19 +1542,63 @@ class VKSearchWindow(QWidget):
             time.sleep(3)
 
             html = self.driver.page_source
+            cap = count if count > 0 else None
 
-            # Аудио
-            audio_results = self._parse_wall_scripts(html, count)
-            log_message(f"INFO wall scripts: найдено {len(audio_results)} треков")
-            if not audio_results:
-                audio_results = self._scroll_and_parse(count)
-                log_message(f"INFO wall audio_row: найдено {len(audio_results)} треков")
+            # Аудио из самого поста (apiPrefetchCache в <script>)
+            post_audio = self._parse_wall_scripts(html, None)
+            log_message(f"INFO wall scripts: найдено {len(post_audio)} треков в посте")
 
-            # Видео
-            video_results = self._parse_wall_video_scripts(html, count if count > 0 else None)
+            # Раскрываем ВСЕ комментарии и ветки ответов, добираем аудио из них.
+            self._sig.status.emit("Загружаю комментарии...")
+            self._expand_wall_comments()
+            # Основной источник — React-fiber отрисованных плееров; фолбэк — старый audio_row.
+            dom_audio = self._extract_dom_audio()
+            log_message(f"INFO wall dom fiber: {len(dom_audio)} аудио в DOM")
+            dom_audio += self._parse_html(self.driver.page_source, None)
+
+            # Комментарии = всё из DOM, чего нет в самом посте (по full_id)
+            post_ids = {r[5] for r in post_audio}
+            comment_audio, seen = [], set(post_ids)
+            for r in dom_audio:
+                fid = r[5]
+                if fid in seen:
+                    continue
+                seen.add(fid)
+                comment_audio.append(r)
+            log_message(f"INFO wall comments: найдено {len(comment_audio)} треков в комментариях")
+
+            # Диагностика: если в комментах пусто — сохраняем DOM для анализа разметки
+            if not comment_audio:
+                try:
+                    with open("debug_wall_comments.html", "w", encoding="utf-8") as _f:
+                        _f.write(self.driver.page_source)
+                    log_message("INFO wall: DOM сохранён в debug_wall_comments.html")
+                except Exception:
+                    pass
+
+            # Фолбэк: если совсем пусто — старая логика прокрутки
+            if not post_audio and not comment_audio:
+                post_audio = self._scroll_and_parse(count)
+                log_message(f"INFO wall audio_row: найдено {len(post_audio)} треков")
+
+            # Собираем итог: треки поста, затем разделитель и треки из комментариев.
+            # Комментарии по умолчанию показываем ВСЕ (не режем по count).
+            audio_results = list(post_audio)
+            if comment_audio:
+                audio_results.append(
+                    (_SEP_MARK, "Треки из комментариев", "", "", "", "")
+                )
+                audio_results.extend(comment_audio)
+            log_message(
+                f"INFO wall audio total: {len(post_audio)} пост + "
+                f"{len(comment_audio)} комментарии"
+            )
+
+            # Видео (только из самого поста)
+            video_results = self._parse_wall_video_scripts(html, cap)
             log_message(f"INFO wall video scripts: найдено {len(video_results)} видео")
             if not video_results:
-                video_results = self._parse_video_html(html, count if count > 0 else None)
+                video_results = self._parse_video_html(html, cap)
                 log_message(f"INFO wall video html: найдено {len(video_results)} видео")
 
             if audio_results:
@@ -1544,6 +1612,60 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit(f"Ошибка: {e}")
         finally:
             self._sig.search_done.emit()
+
+    def _expand_wall_comments(self, max_rounds: int = 40):
+        """Раскрывает все комментарии и ветки ответов под постом,
+        чтобы в DOM появились аудио из комментариев."""
+        js = r"""
+return (function(){
+    var clicked=0;
+    var sels=['.replies_next','.reply_show_next','.wl_replies_next',
+              '._replies_next_link','.replies_next_wrap','.show_more_replies',
+              '[class*="repliesNext"]','[class*="showNextComments"]',
+              '[class*="ShowMoreComments"]'];
+    sels.forEach(function(sel){
+        document.querySelectorAll(sel).forEach(function(el){
+            if(el.offsetParent){ try{el.click(); clicked++;}catch(e){} }
+        });
+    });
+    if(clicked===0){
+        var all=document.querySelectorAll('a,button,span,div');
+        for(var i=0;i<all.length;i++){
+            var el=all[i];
+            if(!el.offsetParent||el.children.length>2) continue;
+            var t=(el.textContent||'').trim().toLowerCase();
+            if(!t||t.length>60) continue;
+            if(t.indexOf('показать след')>=0||t.indexOf('показать пред')>=0||
+               (t.indexOf('показать')>=0&&t.indexOf('коммент')>=0)||
+               (t.indexOf('показать')>=0&&t.indexOf('ответ')>=0)){
+                try{el.click(); clicked++;}catch(e){}
+            }
+        }
+    }
+    return clicked;
+})()
+"""
+        idle = 0
+        for _ in range(max_rounds):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.0)
+            try:
+                clicked = self.driver.execute_script(js) or 0
+            except Exception:
+                clicked = 0
+            try:
+                n = self.driver.execute_script(
+                    "return document.querySelectorAll('div.audio_row').length")
+            except Exception:
+                n = 0
+            self._sig.status.emit(f"Загружаю комментарии... (аудио: {n})")
+            if clicked == 0:
+                idle += 1
+                if idle >= 3:
+                    break
+            else:
+                idle = 0
+            time.sleep(0.8)
 
     @staticmethod
     def _parse_wall_scripts(html: str, max_count) -> list:
@@ -2854,6 +2976,84 @@ return (function(){
                 continue
         return results
 
+    def _extract_dom_audio(self) -> list:
+        """Считывает аудио из React-fiber всех отрисованных аудио-элементов
+        (пост + комментарии). Возвращает [(artist,title,dur,owner,url,full_id)]."""
+        js = r"""
+return (function(){
+    function fk(el){return Object.keys(el).find(k=>k.startsWith('__reactFiber')||k.startsWith('__reactInternalInstance'));}
+    // Аудио-объект ВК: обязательно owner_id+id и характерные поля artist+duration
+    function isAudio(o){
+        return o&&typeof o==='object'&&!Array.isArray(o)
+               &&o.owner_id!=null&&o.id!=null
+               &&('artist' in o)&&('duration' in o);
+    }
+    var budget=20000;
+    function scan(o,depth){
+        if(budget-- <=0||!o||typeof o!=='object'||depth>3) return null;
+        if(isAudio(o)) return o;
+        if(Array.isArray(o)){
+            for(var i=0;i<o.length&&i<50;i++){var r=scan(o[i],depth+1); if(r) return r;}
+            return null;
+        }
+        for(var key in o){
+            if(key[0]==='_'||key[0]==='$') continue;
+            var v; try{v=o[key];}catch(e){continue;}
+            if(v&&typeof v==='object'){var r=scan(v,depth+1); if(r) return r;}
+        }
+        return null;
+    }
+    var res=[],seen={};
+    var sel='[data-testid="secondaryattachment"],[data-testid="comment_attach_audio"],'
+           +'[data-testid*="udio"],[class*="udio"],[class*="Audio"]';
+    var nodes=document.querySelectorAll(sel);
+    for(var n=0;n<nodes.length;n++){
+        var el=nodes[n],k=fk(el); if(!k) continue;
+        var cur=el[k],found=null;
+        for(var d=0;d<25&&cur&&!found;d++){
+            if(cur.memoizedProps) found=scan(cur.memoizedProps,0);
+            cur=cur.return;
+        }
+        if(found){
+            var fid=found.owner_id+'_'+found.id;
+            if(!seen[fid]){seen[fid]=1;
+                var art=found.artist;
+                if(!art&&found.main_artists&&found.main_artists.length)
+                    art=found.main_artists.map(function(a){return a.name;}).join(', ');
+                res.push([art||'',found.title||'',found.duration||0,
+                          ''+found.owner_id,''+found.id,found.url||'']);
+            }
+        }
+    }
+    return JSON.stringify(res);
+})()
+"""
+        try:
+            raw = self.driver.execute_script(js)
+            items = json.loads(raw) if raw else []
+        except Exception as e:
+            log_message(f"WARNING dom audio: {e}")
+            return []
+        results, seen = [], set()
+        for art, title, dur, owner_id, aid, url in items:
+            full_id = f"{owner_id}_{aid}"
+            if not title or full_id in seen:
+                continue
+            seen.add(full_id)
+            try:
+                sec = int(dur)
+            except (TypeError, ValueError):
+                sec = 0
+            dur_str = f"{sec//60}:{sec%60:02d}" if sec else ""
+            try:
+                oi = int(owner_id)
+                owner_disp = f"club{abs(oi)}" if oi < 0 else f"id{oi}"
+            except ValueError:
+                owner_disp = str(owner_id)
+            results.append((str(art)[:80], str(title)[:120], dur_str,
+                            owner_disp, url or "", full_id))
+        return results
+
     # ── Утилиты ──────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -3466,17 +3666,7 @@ return (function(){
                 tab.mobile_playlist_url = entry.get("mobile_playlist_url")
                 tab.playlist_url        = entry.get("playlist_url")
                 for row_data in results:
-                    if len(row_data) < 6:
-                        continue
-                    artist, title, duration, owner, url, full_id = row_data[:6]
-                    r = tab.table.rowCount(); tab.table.insertRow(r)
-                    ai = QTableWidgetItem(artist)
-                    ai.setData(Qt.ItemDataRole.UserRole,     url)
-                    ai.setData(Qt.ItemDataRole.UserRole + 1, full_id)
-                    tab.table.setItem(r, 0, ai)
-                    tab.table.setItem(r, 1, QTableWidgetItem(title))
-                    tab.table.setItem(r, 2, QTableWidgetItem(duration))
-                    tab.table.setItem(r, 3, QTableWidgetItem(owner))
+                    self._add_audio_row(tab.table, row_data)
                 self._restore_row(tab.table, entry.get("current_row", -1))
 
             elif t == "video":
