@@ -759,6 +759,17 @@ class VKSearchWindow(QWidget):
                     it.setData(Qt.ItemDataRole.UserRole + 1, d["ur1"])
                 t.setItem(r, c, it)
 
+        # После пересортировки заново применяем активный фильтр:
+        # setRowHidden привязан к номеру строки, а содержимое переехало,
+        # поэтому без этого скрытыми остаются не те строки.
+        fi = self._f()
+        if fi is not None:
+            if fi.text():
+                self._filter(fi.text())
+            else:
+                for r in range(t.rowCount()):
+                    t.setRowHidden(r, False)
+
     # ── Контекстное меню видео ───────────────────────────────────────────────
 
     def _show_video_ctx_menu(self, pos):
