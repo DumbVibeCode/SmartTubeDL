@@ -55,6 +55,37 @@ _VK_TABS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vk_s
 # Маркер строки-разделителя в таблице результатов (artist-поле кортежа)
 _SEP_MARK = "__SEP__"
 
+# JS для извлечения описания плейлиста: DOM-заголовок → React-fiber → og:description.
+# Классы вкитовой вёрстки хешируются и меняются, поэтому берём описание ещё и из
+# fiber-объекта плейлиста (owner_id+id+строковое поле description).
+_PLAYLIST_DESC_JS = r"""
+return (function(){
+    // 1) JSON-LD (SSR, стабильно, без хешей и без кнопки «Показать ещё»)
+    var scripts=document.querySelectorAll('script[type="application/ld+json"]');
+    for(var i=0;i<scripts.length;i++){
+        try{
+            var data=JSON.parse(scripts[i].textContent||'null');
+            var arr=Array.isArray(data)?data:[data];
+            for(var j=0;j<arr.length;j++){
+                var o=arr[j];
+                if(o&&(o['@type']==='MusicPlaylist'||o['@type']==='MusicAlbum')&&o.description)
+                    return (''+o.description).trim();
+            }
+        }catch(e){}
+    }
+    // 2) DOM-элемент описания страницы плейлиста (новые testid + старые классы)
+    var el=document.querySelector('[data-testid="MusicPlaylistPage_Description"] [data-testid="showmoretext-in"]')
+         ||document.querySelector('[data-testid="MusicPlaylistPage_Description"]')
+         ||document.querySelector('[class*="AudioListHeader__description"]')
+         ||document.querySelector('[class*="audio_pl__description"]');
+    if(el){var t=(el.innerText||el.textContent||'').trim(); if(t) return t;}
+    // 3) Фолбэк: og:description / meta description
+    var m=document.querySelector('meta[property="og:description"]')
+         ||document.querySelector('meta[name="description"]');
+    return m?(m.content||'').trim():'';
+})()
+"""
+
 # ── ВРЕМЕННО: Яндекс-браузер ─────────────────────────────────────────────────
 # TODO: вернуть Chrome — установить _USE_YANDEX = False
 _USE_YANDEX = False
@@ -2345,14 +2376,7 @@ return (function(){
                 self.driver.set_page_load_timeout(30)
             for _ in range(30):
                 time.sleep(0.2)
-                desc = self.driver.execute_script("""
-                    var el = document.querySelector('[class*="vkitAudioListHeader__description"]')
-                          || document.querySelector('[class*="audio_pl__description"]');
-                    if (el) { var t = (el.innerText||el.textContent||'').trim(); if(t) return t; }
-                    var m = document.querySelector('meta[property="og:description"]')
-                         || document.querySelector('meta[name="description"]');
-                    return m ? (m.content||'').trim() : '';
-                """) or ""
+                desc = self.driver.execute_script(_PLAYLIST_DESC_JS) or ""
                 if desc:
                     return desc
         except Exception as e:
@@ -2375,19 +2399,10 @@ return (function(){
             desc = ""
             for _ in range(30):   # ещё до 6 сек если описание не сразу
                 time.sleep(0.2)
-                desc = self.driver.execute_script("""
-                    var el = document.querySelector('[class*="vkitAudioListHeader__description"]')
-                          || document.querySelector('[class*="audio_pl__description"]');
-                    if (el) {
-                        var t = (el.innerText || el.textContent || '').trim();
-                        if (t) return t;
-                    }
-                    var m = document.querySelector('meta[property="og:description"]')
-                         || document.querySelector('meta[name="description"]');
-                    return m ? (m.content || '').trim() : '';
-                """) or ""
+                desc = self.driver.execute_script(_PLAYLIST_DESC_JS) or ""
                 if desc:
                     break
+            log_message(f"INFO playlist desc: {len(desc)} символов")
             self._sig.video_description_ready.emit(title, desc.strip() or "Описание не найдено")
         except Exception as e:
             self._sig.video_description_ready.emit("Ошибка", str(e))
