@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "download_format": "mp4",
     "video_quality": "1080p",
     "conversion_enabled": True,
+    "download_with_description": False,
     "save_settings_on_exit": False,
     "youtube_api_key": "",
     "invidious_url": "http://localhost:3000",

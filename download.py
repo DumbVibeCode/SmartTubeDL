@@ -52,6 +52,34 @@ class _UserStop(Exception):
     pass
 
 
+def _unique_basename(folder: str, base: str) -> str:
+    """Возвращает имя без расширения, для которого в папке нет ни одного файла
+    '<имя>.*'. Если base занят — добавляет ' (2)', ' (3)' и т.д., чтобы видео
+    с одинаковыми названиями не затирали друг друга."""
+    try:
+        existing = {os.path.splitext(f)[0] for f in os.listdir(folder)}
+    except OSError:
+        return base
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base} ({i})" in existing:
+        i += 1
+    return f"{base} ({i})"
+
+
+def _append_description(folder: str, file_name: str, description: str):
+    """Дописывает в desc.txt в папке загрузки имя файла и его описание."""
+    try:
+        path = os.path.join(folder, "desc.txt")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"### {file_name}\n")
+            f.write((description or "").strip() + "\n\n")
+        log_message(f"INFO Описание добавлено в {path}")
+    except Exception as e:
+        log_message(f"WARNING desc.txt: {e}")
+
+
 def download_video(url, from_queue=False):
     global is_downloading, global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
 
@@ -148,7 +176,9 @@ def download_video(url, from_queue=False):
         else:
             video_ext = info.get("ext", "mp4")
 
-        file_name = f"{safe_title}.{video_ext}"
+        # Уникальное имя, чтобы видео с одинаковыми названиями не затирали друг друга
+        unique_base = _unique_basename(save_path, safe_title)
+        file_name = f"{unique_base}.{video_ext}"
         file_path = os.path.join(save_path, file_name)
 
         log_message(f"INFO Планируется загрузка файла: {file_path}")
@@ -179,8 +209,10 @@ def download_video(url, from_queue=False):
     }
     selected_quality = quality_map.get(settings["video_quality"], "best")
 
+    # В outtmpl литеральный '%' надо экранировать как '%%'
+    _outtmpl_base = unique_base.replace('%', '%%')
     ydl_opts = {
-        'outtmpl': os.path.join(save_path, '%(title)s.%(ext)s'),
+        'outtmpl': os.path.join(save_path, f'{_outtmpl_base}.%(ext)s'),
         'restrict_filenames': False,
         'windowsfilenames': False,
         'noplaylist': True,
@@ -235,8 +267,10 @@ def download_video(url, from_queue=False):
 
         log_message(f"SUCCESS Файл загружен: {downloaded_file}")
 
+        final_file = downloaded_file
         if settings["conversion_enabled"]:
             fmt = settings["download_format"]
+            converted_file = None
             if fmt == "mp3" and downloaded_file.endswith((".m4a", ".webm", ".mp4", ".mkv", ".opus")):
                 log_message("INFO Конвертация в MP3...")
                 converted_file = convert_to_mp3(downloaded_file, update_download_status)
@@ -247,8 +281,15 @@ def download_video(url, from_queue=False):
                 converted_file = convert_to_mp4(downloaded_file, update_download_status)
                 if converted_file:
                     log_message(f"SUCCESS Конвертация завершена: {converted_file}")
+            if converted_file:
+                final_file = converted_file
         else:
             log_message("SUCCESS Файл сохранен в исходном формате")
+
+        # Опция «Скачивать с описаниями»: пишем имя файла и описание в desc.txt
+        if settings.get("download_with_description", False):
+            _append_description(save_path, os.path.basename(final_file),
+                                info.get("description", ""))
 
         if from_queue:
             remove_from_queue(url)

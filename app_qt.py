@@ -697,6 +697,12 @@ class TrayIcon(QSystemTrayIcon):
         action_convert.triggered.connect(self._toggle_conversion)
         self.action_convert = action_convert
 
+        action_desc = menu.addAction("Скачивать с описаниями")
+        action_desc.setCheckable(True)
+        action_desc.setChecked(settings.get("download_with_description", False))
+        action_desc.triggered.connect(self._toggle_description)
+        self.action_desc = action_desc
+
         menu.addSeparator()
 
         # === Статус ===
@@ -748,6 +754,12 @@ class TrayIcon(QSystemTrayIcon):
         save_settings(settings)
         self.action_convert.setChecked(settings["conversion_enabled"])
         log_message(f"INFO Конвертация: {'вкл' if settings['conversion_enabled'] else 'выкл'}")
+
+    def _toggle_description(self):
+        settings["download_with_description"] = not settings.get("download_with_description", False)
+        save_settings(settings)
+        self.action_desc.setChecked(settings["download_with_description"])
+        log_message(f"INFO Скачивать с описаниями: {'вкл' if settings['download_with_description'] else 'выкл'}")
 
     def _on_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
