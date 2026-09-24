@@ -36,6 +36,15 @@ _CHANNEL_WINDOWS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "channel_windows_state.json")
 
 
+def _atomic_write_json(path, data):
+    """Пишет JSON атомарно: сначала во временный файл рядом, затем os.replace.
+    Так падение во время записи не оставляет обрезанный/битый файл."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
 # ============================================================
 # Thread-safe мост для download.py
 #
@@ -365,6 +374,12 @@ class YouTubeDownloaderApp(QApplication):
         QTimer.singleShot(500, self._check_queue_on_startup)
         QTimer.singleShot(800, self.restore_channel_windows)
 
+        # Автосохранение открытых окон и вкладок раз в 5 минут, чтобы при
+        # аварийном завершении не восстанавливалось старое состояние.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._save_all_state)
+        self._autosave_timer.start(5 * 60 * 1000)
+
     def _check_queue_on_startup(self):
         count = get_queue_count()
         if count == 0:
@@ -482,6 +497,40 @@ class YouTubeDownloaderApp(QApplication):
                 win.show()
             except Exception as e:
                 log_message(f"WARNING restore channel window: {e}")
+
+    def _save_channel_windows(self):
+        """Сохраняет состояние всех видимых окон каналов/плейлистов."""
+        states = []
+        for w in self.video_list_windows:
+            if w.isVisible():
+                try:
+                    states.append(w.get_state())
+                except Exception as e:
+                    log_message(f"WARNING save channel window state: {e}")
+        try:
+            _atomic_write_json(_CHANNEL_WINDOWS_FILE, states)
+        except Exception as e:
+            log_message(f"WARNING save channel windows file: {e}")
+
+    def _save_all_state(self):
+        """Сохраняет открытые окна и их вкладки. Вызывается по таймеру
+        (автосейв раз в 5 мин) и при выходе, чтобы после аварийного
+        завершения не восстанавливалось устаревшее состояние."""
+        self._save_channel_windows()
+        # Вкладки окна поиска YouTube
+        sw = self.search_window
+        if sw is not None:
+            try:
+                sw._save_tabs()
+            except Exception as e:
+                log_message(f"WARNING autosave search tabs: {e}")
+        # Вкладки окна поиска VK
+        vw = self.vk_window
+        if vw is not None:
+            try:
+                vw._save_vk_tabs()
+            except Exception as e:
+                log_message(f"WARNING autosave vk tabs: {e}")
 
     def show_vk_search_window(self):
         """Показывает окно поиска ВКонтакте"""
@@ -770,19 +819,8 @@ class TrayIcon(QSystemTrayIcon):
             save_settings(settings)
             log_message("INFO Настройки сохранены при выходе")
 
-        # Сохраняем состояние открытых окон каналов/плейлистов
-        states = []
-        for w in self.app.video_list_windows:
-            if w.isVisible():
-                try:
-                    states.append(w.get_state())
-                except Exception as e:
-                    log_message(f"WARNING save channel window state: {e}")
-        try:
-            with open(_CHANNEL_WINDOWS_FILE, "w", encoding="utf-8") as f:
-                json.dump(states, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            log_message(f"WARNING save channel windows file: {e}")
+        # Сохраняем состояние открытых окон каналов/плейлистов и вкладок
+        self.app._save_all_state()
 
         for w in self.app.video_list_windows:
             w.close()
