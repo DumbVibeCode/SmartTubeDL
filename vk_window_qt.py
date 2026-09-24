@@ -1146,6 +1146,34 @@ class VKSearchWindow(QWidget):
         return injected
 
     @staticmethod
+    def _kill_profile_chrome(profile_dir):
+        """Убивает зависшие процессы браузера, которые держат наш профиль
+        (осиротевшие после краша/убийства приложения). Пока такой процесс жив,
+        новый запуск падает с 'Chrome failed to start: crashed /
+        DevToolsActivePort file doesn't exist', потому что профиль занят.
+        Бьём только по нашему профилю — личный браузер пользователя не трогаем."""
+        if sys.platform != "win32":
+            return
+        marker = os.path.basename(profile_dir.rstrip("\\/"))
+        if not marker:
+            return
+        ps = (
+            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' or "
+            "Name='browser.exe'\" | Where-Object { $_.CommandLine -like "
+            "'*" + marker + "*' } | ForEach-Object { Stop-Process -Id "
+            "$_.ProcessId -Force -ErrorAction SilentlyContinue }"
+        )
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            log_message(f"INFO VK: закрыты зависшие процессы браузера профиля {marker}")
+        except Exception as e:
+            log_message(f"WARNING VK: не удалось закрыть зависшие процессы браузера: {e}")
+
+    @staticmethod
     def _clean_chrome_crash_markers(profile_dir):
         """Убирает следы аварийного завершения Chrome (зависание/краш),
         из-за которых новый запуск падает с
@@ -1192,6 +1220,9 @@ class VKSearchWindow(QWidget):
                     )
                 profile_dir = os.path.join(os.getcwd(), ".vk_yandex_profile")
                 os.makedirs(profile_dir, exist_ok=True)
+
+                # Убиваем зависшие процессы браузера, держащие наш профиль
+                self._kill_profile_chrome(profile_dir)
 
                 # Запускаем браузер сами — только с debug-портом, без chromedriver-флагов
                 debug_port = 9222
@@ -1241,7 +1272,9 @@ class VKSearchWindow(QWidget):
                     except Exception:
                         return webdriver.Chrome(options=_make_opts())
 
-                # Чистим следы прошлого аварийного завершения перед стартом
+                # Сначала убиваем зависшие Chrome нашего профиля (иначе он занят),
+                # затем чистим следы прошлого аварийного завершения
+                self._kill_profile_chrome(profile_dir)
                 self._clean_chrome_crash_markers(profile_dir)
                 try:
                     self.driver = _launch()
