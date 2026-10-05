@@ -34,6 +34,33 @@ def _auth_opts() -> dict:
     return {'cookiesfrombrowser': ('firefox',), 'js_runtimes': {'node': {}}}
 
 
+def _patch_odnoklassniki_parse_json():
+    """OK (ok.ru) иногда отдаёт flashvars.metadata уже как dict, а экстрактор
+    yt-dlp безусловно вызывает _parse_json(metadata) и падает с
+    'the JSON object must be str, bytes or bytearray, not dict'.
+    Делаем _parse_json этого экстрактора терпимым к готовому dict/list.
+    Патч идемпотентный и затрагивает только Одноклассники."""
+    try:
+        from yt_dlp.extractor.odnoklassniki import OdnoklassnikiIE
+    except Exception as e:
+        log_message(f"WARNING OK-патч не применён: {e}")
+        return
+    if getattr(OdnoklassnikiIE, "_ytd_ok_json_patched", False):
+        return
+    _orig_parse_json = OdnoklassnikiIE._parse_json
+
+    def _parse_json_safe(self, json_string, *args, **kwargs):
+        if isinstance(json_string, (dict, list)):
+            return json_string
+        return _orig_parse_json(self, json_string, *args, **kwargs)
+
+    OdnoklassnikiIE._parse_json = _parse_json_safe
+    OdnoklassnikiIE._ytd_ok_json_patched = True
+
+
+_patch_odnoklassniki_parse_json()
+
+
 class _YtdlpLogger:
     def debug(self, msg):
         if msg.startswith('[debug]'):
