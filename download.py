@@ -34,6 +34,53 @@ def _auth_opts() -> dict:
     return {'cookiesfrombrowser': ('firefox',), 'js_runtimes': {'node': {}}}
 
 
+# «Sign in to confirm you're not a bot» — бот-проверка YouTube (обычно на
+# флагнутых/VPN-IP). Лечится живыми куками аккаунта и/или сменой player_client.
+_BOT_ERRORS = ("not a bot", "confirm you're not a bot", "confirm you are not a bot",
+               "sign in to confirm")
+
+def _is_bot_error(e) -> bool:
+    return any(s in str(e).lower() for s in _BOT_ERRORS)
+
+
+_YT_HOSTS = ("youtube.com", "youtu.be", "youtube-nocookie.com")
+
+def _is_youtube(u: str) -> bool:
+    return any(h in (u or "").lower() for h in _YT_HOSTS)
+
+
+def _yt_cookie_opts() -> dict:
+    """Живые куки залогиненного Firefox — главный способ пройти бот-проверку."""
+    return {'cookiesfrombrowser': ('firefox',)}
+
+
+def _yt_retry_opts() -> dict:
+    """Опции повтора при бот-проверке: куки Firefox + перебор клиентов, где
+    tv/web_safari обычно обходят проверку, которую валит обычный web-клиент."""
+    return {
+        'cookiesfrombrowser': ('firefox',),
+        'extractor_args': {'youtube': {'player_client': ['tv', 'web_safari', 'default']}},
+    }
+
+
+# VK рубит небраузерные TLS-соединения (SSL: UNEXPECTED_EOF_WHILE_READING при
+# загрузке JSON метаданных), поэтому к VK ходим с TLS-имперсонацией Chrome.
+# Требует curl_cffi; если его нет — импорт не падает, просто без имперсонации.
+try:
+    from yt_dlp.networking.impersonate import ImpersonateTarget
+    _IMPERSONATE_CHROME = ImpersonateTarget.from_str('chrome')
+except Exception:
+    _IMPERSONATE_CHROME = None
+
+_VK_HOSTS = ("vk.com", "vk.ru", "vkvideo.ru", "vkvideo.com", "m.vk.com", "userapi.com")
+
+def _is_vk(u: str) -> bool:
+    return any(h in (u or "").lower() for h in _VK_HOSTS)
+
+def _vk_opts() -> dict:
+    return {'impersonate': _IMPERSONATE_CHROME} if _IMPERSONATE_CHROME else {}
+
+
 def _patch_odnoklassniki_parse_json():
     """OK (ok.ru) иногда отдаёт flashvars.metadata уже как dict, а экстрактор
     yt-dlp безусловно вызывает _parse_json(metadata) и падает с
@@ -156,6 +203,8 @@ def download_video(url, from_queue=False):
     save_path = settings["download_folder"]
     cookies_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt'))
     _has_cookies = os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 100
+    _is_yt = _is_youtube(url)
+    _is_vk_url = _is_vk(url)
 
     if "&list=" in url:
         log_message(f"INFO URL содержит параметр плейлиста: {url}. Загружаем только видео.")
@@ -165,8 +214,14 @@ def download_video(url, from_queue=False):
             "quiet": True, "noplaylist": True,
             "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"},
         }
-        if _has_cookies:
+        # Для YouTube сразу подкладываем живые куки Firefox — так бот-проверка
+        # обычно не срабатывает. Для остальных сайтов — локальный cookies.txt.
+        if _is_yt:
+            opts.update(_yt_cookie_opts())
+        elif _has_cookies:
             opts['cookies'] = cookies_path
+        if _is_vk_url:
+            opts.update(_vk_opts())
         opts.update(extra_opts)
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
@@ -175,7 +230,11 @@ def download_video(url, from_queue=False):
         try:
             info = _extract_info({})
         except yt_dlp.utils.DownloadError as e:
-            if _is_age_error(e):
+            if _is_yt and _is_bot_error(e):
+                log_message("INFO YouTube: бот-проверка — повтор с куками Firefox и сменой клиента (tv/web_safari)")
+                update_download_status("Обход проверки...", 0)
+                info = _extract_info(_yt_retry_opts())
+            elif _is_age_error(e):
                 log_message("INFO Видео требует авторизации — повтор с куками Firefox")
                 update_download_status("Авторизация...", 0)
                 info = _extract_info(_auth_opts())
@@ -247,8 +306,12 @@ def download_video(url, from_queue=False):
         'js_runtimes': {'node': {}},
         'remote_components': {'ejs': 'github'},
     }
-    if _has_cookies:
+    if _is_yt:
+        ydl_opts['cookiesfrombrowser'] = ('firefox',)
+    elif _has_cookies:
         ydl_opts['cookies'] = cookies_path
+    if _is_vk_url:
+        ydl_opts.update(_vk_opts())
 
     if settings["download_format"] == "mp3":
         # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
@@ -273,7 +336,11 @@ def download_video(url, from_queue=False):
         try:
             info, downloaded_file = _do_download({})
         except yt_dlp.utils.DownloadError as e:
-            if _is_age_error(e):
+            if _is_yt and _is_bot_error(e):
+                log_message("INFO YouTube: бот-проверка при загрузке — повтор с куками Firefox и сменой клиента (tv/web_safari)")
+                update_download_status("Обход проверки...", 0)
+                info, downloaded_file = _do_download(_yt_retry_opts())
+            elif _is_age_error(e):
                 log_message("INFO Загрузка требует авторизации — повтор с куками Firefox")
                 update_download_status("Авторизация...", 0)
                 info, downloaded_file = _do_download(_auth_opts())
