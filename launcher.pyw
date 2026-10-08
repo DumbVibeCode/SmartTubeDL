@@ -244,10 +244,12 @@ class Launcher:
 
     # ------- действия
     def _notify(self, title, text):
-        try:
-            self.tray.showMessage(title, text, self._icon(), 3000)
-        except Exception:
-            pass
+        # Уведомления отключены. Чтобы вернуть — раскомментировать тело:
+        # try:
+        #     self.tray.showMessage(title, text, self._icon(), 3000)
+        # except Exception:
+        #     pass
+        pass
 
     def _do_start(self):
         if _start_app():
