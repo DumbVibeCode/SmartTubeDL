@@ -81,6 +81,40 @@ def _vk_opts() -> dict:
     return {'impersonate': _IMPERSONATE_CHROME} if _IMPERSONATE_CHROME else {}
 
 
+# VK отдаёт эти сообщения для видео, требующих входа. yt-dlp такие видео
+# скачать не может (VK не принимает сессию вне браузера) — переключаемся на
+# браузерный захват через залогиненный Selenium-браузер окна ВК.
+_VK_LOGIN_ERRORS = ("signed-in users", "signed in users", "registered users",
+                    "only available")
+
+def _is_vk_login_error(e) -> bool:
+    return any(s in str(e).lower() for s in _VK_LOGIN_ERRORS)
+
+def _try_vk_browser_download(url: str, save_path: str) -> bool:
+    """Фолбэк для закрытых VK-видео: качаем через залогиненный браузер окна ВК.
+    Нужен открытый и залогиненный VK-браузер. Возвращает True при успехе."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        vw = getattr(app, "vk_window", None) if app else None
+        if not vw or not getattr(vw, "driver", None):
+            log_message("INFO VK: закрытое видео — откройте окно ВК и войдите, затем повторите")
+            return False
+        want_mp3 = settings.get("download_format") == "mp3"
+        update_download_status("Качаю через браузер VK...", 0)
+        out = vw.download_video_via_browser(url, save_path, update_download_status, want_mp3)
+        if out:
+            log_message(f"SUCCESS VK видео скачано через браузер: {out}")
+            add_to_history(url=url, title=os.path.basename(out),
+                           format_type=settings.get("download_format", "mp4"), duration=0)
+            return True
+        log_message("WARNING VK: браузерный захват видео не удался")
+        return False
+    except Exception as e:
+        log_message(f"ERROR VK browser fallback: {e}")
+        return False
+
+
 def _patch_odnoklassniki_parse_json():
     """OK (ok.ru) иногда отдаёт flashvars.metadata уже как dict, а экстрактор
     yt-dlp безусловно вызывает _parse_json(metadata) и падает с
@@ -270,6 +304,15 @@ def download_video(url, from_queue=False):
         log_message(f"INFO Планируется загрузка файла: {file_path}")
 
     except yt_dlp.utils.DownloadError as e:
+        # Закрытое VK-видео (нужен вход) — пробуем скачать через браузер окна ВК
+        if _is_vk_url and _is_vk_login_error(e):
+            log_message(f"INFO VK: видео требует входа, пробую браузерный захват: {url}")
+            if _try_vk_browser_download(url, save_path):
+                threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео ВК скачано через браузер"), daemon=True).start()
+                if from_queue:
+                    remove_from_queue(url)
+                on_download_complete()
+                return
         log_message(f"ERROR Видео недоступно: {url}. Ошибка: {e}")
         threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Видео недоступно: {str(e)}"), daemon=True).start()
         if from_queue:
