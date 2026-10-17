@@ -1523,29 +1523,49 @@ class VKSearchWindow(QWidget):
         try:
             show_all_url = self.driver.execute_script("""
                 var texts = ['показать все', 'показать всё', 'все треки', 'show all'];
-
-                // 1. Ищем <a> с нужным текстом (href может быть /music/catalog/...)
-                var anchors = Array.from(document.querySelectorAll('a[href]'));
-                for (var i = 0; i < anchors.length; i++) {
-                    var a = anchors[i];
-                    var txt = a.textContent.trim().toLowerCase();
+                function isShowAll(a){
+                    var t = (a.textContent || '').trim().toLowerCase();
                     for (var k = 0; k < texts.length; k++) {
-                        if (txt === texts[k] || txt.startsWith(texts[k])) {
-                            return a.href;
-                        }
+                        if (t === texts[k] || t.startsWith(texts[k])) return true;
                     }
+                    return false;
                 }
 
-                // 2. Любая ссылка на music/catalog (VK кладёт туда «Показать все»)
-                var catLinks = Array.from(document.querySelectorAll('a[href*="music/catalog"]'));
-                if (catLinks.length > 0) return catLinks[0].href;
+                // Берём «Показать все» ТОЛЬКО из секции треков. Поднимаемся от
+                // первого трека вверх и останавливаемся, как только в блоке
+                // появляются плейлисты — иначе зацепим «Показать все» плейлистов.
+                var trackRow = document.querySelector('[data-testid="MusicTrackRow"], div.audio_row');
+                if (!trackRow) return null;
 
-                return null;
+                var node = trackRow.parentElement;
+                for (var up = 0; up < 10 && node; up++) {
+                    // вышли за пределы секции треков (появились плейлисты) — стоп
+                    if (node.querySelector('[data-testid="music_playlist_item_block"]')) break;
+                    var links = node.querySelectorAll('a[href]');
+                    for (var i = 0; i < links.length; i++) {
+                        if (isShowAll(links[i])) return links[i].href;
+                    }
+                    node = node.parentElement;
+                }
+                return null;   // у треков нет «Показать все» — остаёмся на странице поиска
             """)
+            log_message(f"INFO VK search: show_all_url = {show_all_url!r}")
             if show_all_url:
                 self._sig.status.emit("Открываю все треки...")
                 self.driver.get(show_all_url)
-                WebDriverWait(self.driver, 10).until(lambda d: self._rows_present())
+                try:
+                    WebDriverWait(self.driver, 8).until(lambda d: self._rows_present())
+                except Exception:
+                    pass
+                # Защита: если «Показать все» увёл не на треки (напр. в каталог
+                # плейлистов), возвращаемся к странице поиска и берём её треки.
+                if not self._rows_present():
+                    log_message("INFO VK search: на странице нет треков (вероятно плейлисты) — возврат к поиску")
+                    self.driver.get(f"https://vk.com/audio?q={q}&section=search")
+                    try:
+                        WebDriverWait(self.driver, 8).until(lambda d: self._rows_present())
+                    except Exception:
+                        pass
         except Exception:
             pass
 
