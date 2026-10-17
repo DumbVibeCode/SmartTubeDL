@@ -11,29 +11,41 @@ from config import format_duration, format_invidious_duration, api_key_var
 from logger import log_message
 
 def fetch_description_with_ytdlp(video_url, cookies_file="cookies.txt"):
-    """Асинхронно загружает описание видео через yt-dlp с поддержкой куки"""
+    """Загружает описание видео через yt-dlp. Для YouTube берёт живые куки
+    Firefox (как при скачивании) — иначе бот-проверка не даёт получить описание."""
     ydl_opts = {
         'quiet': True,
         'skip_download': True,
-        'format': 'best',
+        'noplaylist': True,
+        'js_runtimes': {'node': {}},
     }
-    
-    if os.path.exists(cookies_file):
+
+    low = (video_url or "").lower()
+    if "youtube.com" in low or "youtu.be" in low:
+        ydl_opts['cookiesfrombrowser'] = ('firefox',)
+    elif os.path.exists(cookies_file):
         ydl_opts['cookiefile'] = cookies_file
-        # log_message(f"DEBUG: Используется файл куки для описания: {cookies_file}")
-    
-    def sync_fetch(url):
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            description = info.get('description', '')
+
+    def sync_fetch(opts):
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            description = info.get('description', '') or ""
             return decode_html_entities(description) if description else ""
 
     try:
-        description = sync_fetch (video_url)
-        return description
-    
+        return sync_fetch(ydl_opts)
     except Exception as e:
-        log_message(f"ERROR: Ошибка при асинхронной загрузке описания через yt-dlp для {video_url}: {e}")
+        # Повтор без куки Firefox (профиль мог быть занят/недоступен)
+        if 'cookiesfrombrowser' in ydl_opts:
+            opts2 = dict(ydl_opts)
+            opts2.pop('cookiesfrombrowser', None)
+            if os.path.exists(cookies_file):
+                opts2['cookiefile'] = cookies_file
+            try:
+                return sync_fetch(opts2)
+            except Exception:
+                pass
+        log_message(f"ERROR: Ошибка загрузки описания через yt-dlp для {video_url}: {e}")
         return ""
 
 
@@ -107,7 +119,7 @@ def fetch_description_with_bs(video_url):
         
         if response.status_code != 200:
             log_message(f"Ошибка при запросе страницы видео: {response.status_code}")
-            return "Описание недоступно (ошибка загрузки страницы)"
+            return ""   # пусто → вызывающий не кеширует и попробует снова
         
         # Парсим HTML-страницу
         soup = BeautifulSoup(response.text, "html.parser")
@@ -141,8 +153,8 @@ def fetch_description_with_bs(video_url):
                 return description
         
         # Если описание не найдено
-        return "Описание недоступно (не найдено на странице)"
-    
+        return ""
+
     except Exception as e:
         log_message(f"Ошибка при парсинге описания: {e}")
-        return "Описание недоступно (ошибка парсинга)"
+        return ""

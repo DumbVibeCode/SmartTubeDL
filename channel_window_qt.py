@@ -545,14 +545,21 @@ class VideoListWindow(QWidget):
         self.status_label.setText("Загрузка описания...")
 
         def fetch():
+            desc = ""
             try:
-                from fetch import fetch_description_with_bs
-                desc = fetch_description_with_bs(url) if url else ""
+                from fetch import fetch_description_with_ytdlp, fetch_description_with_bs
+                if url:
+                    desc = fetch_description_with_ytdlp(url) or fetch_description_with_bs(url)
             except Exception as e:
                 log_message(f"ERROR Ошибка загрузки описания: {e}")
                 desc = ""
-            self._descriptions[video_id] = desc or "Описание отсутствует"
-            self.sig_show_description.emit(title, self._descriptions[video_id], url)
+            if desc:
+                # Кешируем только успешные — иначе при повторном открытии пробуем снова
+                self._descriptions[video_id] = desc
+                shown = desc
+            else:
+                shown = "Описание недоступно (не удалось загрузить, попробуйте ещё раз)"
+            self.sig_show_description.emit(title, shown, url)
 
         threading.Thread(target=fetch, daemon=True).start()
 

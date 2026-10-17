@@ -23,6 +23,11 @@ def connect_to_database(config_path=None):
 def insert_description(video_id, description):
     """Добавляет описание видео в базу данных"""
     global _conn
+    # Не кешируем пустые описания и строки-заглушки об ошибке — иначе их потом
+    # не перезагрузить (кеш «залипает»)
+    if not description or description.startswith("Описание недоступно") \
+            or description == "Описание отсутствует":
+        return
     try:
         if not _conn:
             raise ValueError("Нет активного подключения к базе данных")
