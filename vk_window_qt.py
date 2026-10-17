@@ -28,6 +28,18 @@ from PyQt6.QtGui import QFont
 from logger import log_message
 from config import settings
 
+
+def _save_state_soon():
+    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None and hasattr(app, "request_state_save"):
+            app.request_state_save()
+    except Exception:
+        pass
+
+
 # ── Зависимости ──────────────────────────────────────────────────────────────
 
 SELENIUM_OK = True
@@ -653,6 +665,7 @@ class VKSearchWindow(QWidget):
 
     def _close_tab(self, index: int):
         self.tabs.removeTab(index)
+        _save_state_soon()
 
     # ── Таблица ───────────────────────────────────────────────────────────────
 
@@ -683,6 +696,7 @@ class VKSearchWindow(QWidget):
             and tab.table.item(r, 0).data(Qt.ItemDataRole.UserRole + 1)
         )
         self._sig.status.emit(f"Найдено треков: {total}" if total else "Ничего не найдено")
+        _save_state_soon()
 
     def _add_audio_row(self, table, row_data):
         """Вставляет строку трека или строку-разделитель ('__SEP__')."""
@@ -2025,6 +2039,7 @@ return (function(){
         tab.results = results
         short = (query[:22] + "…") if len(query) > 22 else (query or "Плейлисты")
         self.tabs.setTabText(self.tabs.currentIndex(), f"📋 {short}")
+        _save_state_soon()
 
         tab.table.setRowCount(0)
         for title, author, count_str, pl_url in results:
@@ -2567,6 +2582,7 @@ return (function(){
         self._sig.status.emit(f"Найдено видео: {total}" if total else "Видео не найдено")
         if not total:
             log_message(f"WARNING VK video: таблица пуста. Проверьте HTML-структуру страницы.")
+        _save_state_soon()
 
     def _load_video_thumb(self, url: str, lbl):
         try:

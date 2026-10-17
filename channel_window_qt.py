@@ -21,6 +21,16 @@ from logger import log_message
 from queues import add_to_queue, process_queue
 
 
+def _save_state_soon():
+    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
+    try:
+        app = QApplication.instance()
+        if app is not None and hasattr(app, "request_state_save"):
+            app.request_state_save()
+    except Exception:
+        pass
+
+
 YDL_OPTS_BASE = {
     'quiet': True,
     'color': 'never',
@@ -301,6 +311,7 @@ class VideoListWindow(QWidget):
         self.load_panel.setVisible(False)
         self.status_label.setText(status)
         log_message(f"INFO Список загружен: {status}")
+        _save_state_soon()   # список наполнился — сохраняем актуальное состояние
 
     def _on_error(self, msg: str):
         log_message(f"ERROR {msg}")
@@ -577,3 +588,4 @@ class VideoListWindow(QWidget):
         kind = "канала" if self.mode == "channel" else "плейлиста"
         log_message(f"INFO Окно {kind} закрыто")
         event.accept()
+        _save_state_soon()   # окно закрыто — обновляем сохранённый список окон

@@ -8,6 +8,17 @@ import threading
 import webbrowser
 
 _TABS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_tabs.json')
+
+
+def _save_state_soon():
+    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None and hasattr(app, "request_state_save"):
+            app.request_state_save()
+    except Exception:
+        pass
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,
@@ -788,6 +799,7 @@ class SearchWindow(QMainWindow):
     def _close_tab(self, index: int):
         """Закрывает вкладку."""
         self.tabs.removeTab(index)
+        _save_state_soon()
 
     def _fill_tab(self, tab: _ResultTab, results: list):
         """Заполняет таблицу вкладки списком результатов."""
@@ -812,6 +824,7 @@ class SearchWindow(QMainWindow):
             tab.table.setItem(row, 2, DurationTableWidgetItem(duration))
         tab.table.setIconSize(QSize(0, 0))
         tab.table.verticalHeader().setDefaultSectionSize(24)
+        _save_state_soon()
 
     # ─────────────────────────────────────────────────────────────────────────
 

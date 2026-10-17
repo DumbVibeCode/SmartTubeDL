@@ -374,11 +374,31 @@ class YouTubeDownloaderApp(QApplication):
         QTimer.singleShot(500, self._check_queue_on_startup)
         QTimer.singleShot(800, self.restore_channel_windows)
 
-        # Автосохранение открытых окон и вкладок раз в 5 минут, чтобы при
-        # аварийном завершении не восстанавливалось старое состояние.
+        # Периодическое автосохранение окон/вкладок (резервное) — раз в минуту.
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._save_all_state)
-        self._autosave_timer.start(5 * 60 * 1000)
+        self._autosave_timer.start(60 * 1000)
+
+        # Сохранение по событиям с дебаунсом ~1.5 с: любое изменение (открытие/
+        # закрытие окна, добавление/заполнение/закрытие вкладки) планирует запись,
+        # чтобы после вылета не восстанавливалось устаревшее состояние.
+        self._save_debounce = QTimer(self)
+        self._save_debounce.setSingleShot(True)
+        self._save_debounce.setInterval(1500)
+        self._save_debounce.timeout.connect(self._save_all_state)
+
+    def request_state_save(self):
+        """Планирует сохранение состояния с дебаунсом. Безопасно вызывать часто
+        и из разных мест — записи схлопываются в одну через ~1.5 с."""
+        try:
+            # start() перезапускает одноразовый таймер — это и есть дебаунс
+            QMetaObject.invokeMethod(self._save_debounce, "start",
+                                     Qt.ConnectionType.QueuedConnection)
+        except Exception:
+            try:
+                self._save_debounce.start()
+            except Exception:
+                pass
 
     def _check_queue_on_startup(self):
         count = get_queue_count()
@@ -474,6 +494,7 @@ class YouTubeDownloaderApp(QApplication):
         win.show()
         win.raise_()
         win.activateWindow()
+        self.request_state_save()
 
     def restore_channel_windows(self):
         """Восстанавливает окна каналов/плейлистов из сохранённого состояния."""
