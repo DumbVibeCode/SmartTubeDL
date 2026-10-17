@@ -1449,10 +1449,14 @@ class SearchWindow(QMainWindow):
         for i in range(self.tabs.count()):
             tab = self.tabs.widget(i)
             if isinstance(tab, _ResultTab) and tab.results:
+                hh = tab.table.horizontalHeader()
                 data.append({
                     'query':   tab.query,
                     'results': tab.results,
                     'active':  i == cur,
+                    'sort_col':    hh.sortIndicatorSection(),
+                    'sort_order':  hh.sortIndicatorOrder().value,
+                    'current_row': tab.table.currentRow(),
                 })
         try:
             with open(_TABS_FILE, 'w', encoding='utf-8') as f:
@@ -1478,6 +1482,15 @@ class SearchWindow(QMainWindow):
             for td in data:
                 tab = self._new_tab(td.get('query', ''))
                 self._fill_tab(tab, td.get('results', []))
+                # Порядок сортировки (до выделения — сортировка двигает строки)
+                sc = td.get('sort_col', -1)
+                if sc is not None and sc >= 0:
+                    tab.table.sortItems(sc, Qt.SortOrder(td.get('sort_order', 0)))
+                # Выделенная строка
+                cr = td.get('current_row', -1)
+                if cr is not None and 0 <= cr < tab.table.rowCount():
+                    tab.table.selectRow(cr)
+                    tab.table.setCurrentCell(cr, 0)
                 if td.get('active'):
                     active_idx = self.tabs.indexOf(tab)
             self.tabs.setCurrentIndex(active_idx)

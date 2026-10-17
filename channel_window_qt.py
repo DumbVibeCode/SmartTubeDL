@@ -232,6 +232,7 @@ class VideoListWindow(QWidget):
                 "date":     self.table.item(r, 2).text() if self.table.item(r, 2) else "",
                 "url":      self._video_urls.get(video_id, ""),
             })
+        hh = self.table.horizontalHeader()
         return {
             "url":      self.url,
             "mode":     self.mode,
@@ -239,6 +240,9 @@ class VideoListWindow(QWidget):
             "subtitle": self.subtitle_label.text(),
             "rows":     rows,
             "vscroll":  self.table.verticalScrollBar().value(),
+            "sort_col":   hh.sortIndicatorSection(),
+            "sort_order": hh.sortIndicatorOrder().value,
+            "current_row": self.table.currentRow(),
         }
 
     def _restore_from_state(self, state: dict):
@@ -259,6 +263,18 @@ class VideoListWindow(QWidget):
 
         total = self.table.rowCount()
         self.status_label.setText(f"Видео: {total} (восстановлено)")
+
+        # Восстанавливаем порядок сортировки (до выделения — сортировка двигает строки)
+        sort_col = state.get("sort_col", -1)
+        if sort_col is not None and sort_col >= 0:
+            order = Qt.SortOrder(state.get("sort_order", 0))
+            self.table.sortItems(sort_col, order)
+
+        # Восстанавливаем выделенную строку
+        cur = state.get("current_row", -1)
+        if cur is not None and 0 <= cur < self.table.rowCount():
+            self.table.selectRow(cur)
+            self.table.setCurrentCell(cur, 0)
 
         vscroll = state.get("vscroll", 0)
         if vscroll > 0:

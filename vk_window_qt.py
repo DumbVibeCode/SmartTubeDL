@@ -4138,6 +4138,11 @@ return (function(){
                                "current_row": tab.table.currentRow()})
             else:
                 continue
+            # Сортировка — только если она реально активна на таблице
+            hh = tab.table.horizontalHeader()
+            if hh.isSortIndicatorShown():
+                entry["sort_col"] = hh.sortIndicatorSection()
+                entry["sort_order"] = hh.sortIndicatorOrder().value
             data.append(entry)
         try:
             with open(_VK_TABS_FILE, "w", encoding="utf-8") as f:
@@ -4175,7 +4180,7 @@ return (function(){
                 tab.playlist_url        = entry.get("playlist_url")
                 for row_data in results:
                     self._add_audio_row(tab.table, row_data)
-                self._restore_row(tab.table, entry.get("current_row", -1))
+                self._restore_row(tab.table, entry.get("current_row", -1), entry)
 
             elif t == "video":
                 tab = self._new_video_tab(query)
@@ -4196,7 +4201,7 @@ return (function(){
                     tab.table.setItem(r, 1, ti)
                     tab.table.setItem(r, 2, QTableWidgetItem(dur))
                     tab.table.setItem(r, 3, QTableWidgetItem(views))
-                self._restore_row(tab.table, entry.get("current_row", -1))
+                self._restore_row(tab.table, entry.get("current_row", -1), entry)
 
             elif t == "playlist":
                 tab = self._new_playlist_tab(query)
@@ -4209,7 +4214,7 @@ return (function(){
                     tab.table.setItem(r, 0, ti)
                     tab.table.setItem(r, 1, QTableWidgetItem(author))
                     tab.table.setItem(r, 2, QTableWidgetItem(count_str))
-                self._restore_row(tab.table, entry.get("current_row", -1))
+                self._restore_row(tab.table, entry.get("current_row", -1), entry)
 
             if entry.get("active"):
                 active_idx = self.tabs.count() - 1
@@ -4241,7 +4246,12 @@ return (function(){
                     break
 
     @staticmethod
-    def _restore_row(table, row: int):
+    def _restore_row(table, row: int, entry=None):
+        # Сначала сортировка (двигает строки), потом выделение строки
+        if entry is not None:
+            sc = entry.get("sort_col", -1)
+            if sc is not None and sc >= 0:
+                table.sortItems(sc, Qt.SortOrder(entry.get("sort_order", 0)))
         if row >= 0 and row < table.rowCount():
             table.setCurrentCell(row, 0)
             table.scrollTo(
