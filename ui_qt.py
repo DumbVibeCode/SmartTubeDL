@@ -147,12 +147,9 @@ class SearchWorker(QThread):
             placeholder = desc in ('', 'Описание отсутствует', 'Описание недоступно (не загружалось)')
             if placeholder or len(desc) < 50:
                 try:
-                    if self.use_ytdlp:
-                        from fetch import fetch_description_with_ytdlp
-                        desc = fetch_description_with_ytdlp(url)
-                    else:
-                        from fetch import fetch_description_with_bs
-                        desc = fetch_description_with_bs(url)
+                    # Сначала быстрый BS (~1 с), yt-dlp (~6 с) — только как фолбэк
+                    from fetch import fetch_description_with_bs, fetch_description_with_ytdlp
+                    desc = fetch_description_with_bs(url) or fetch_description_with_ytdlp(url)
                 except Exception as e:
                     log_message(f"[ERROR] Ошибка загрузки описания для {url}: {e}")
                     desc = ''

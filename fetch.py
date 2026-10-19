@@ -113,9 +113,12 @@ def fetch_description_with_bs(video_url):
     try:
         # Отправляем GET-запрос к странице видео
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "CONSENT=YES+1",   # минуем страницу согласия (иначе не-200)
         }
-        response = requests.get(video_url, headers=headers, timeout=10)
+        sep = "&" if "?" in video_url else "?"
+        response = requests.get(video_url + sep + "hl=en&gl=US", headers=headers, timeout=10)
         
         if response.status_code != 200:
             log_message(f"Ошибка при запросе страницы видео: {response.status_code}")

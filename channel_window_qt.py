@@ -565,7 +565,8 @@ class VideoListWindow(QWidget):
             try:
                 from fetch import fetch_description_with_ytdlp, fetch_description_with_bs
                 if url:
-                    desc = fetch_description_with_ytdlp(url) or fetch_description_with_bs(url)
+                    # Сначала быстрый BS (~1 с), yt-dlp (~6 с) — только если BS не смог
+                    desc = fetch_description_with_bs(url) or fetch_description_with_ytdlp(url)
             except Exception as e:
                 log_message(f"ERROR Ошибка загрузки описания: {e}")
                 desc = ""
