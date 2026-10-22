@@ -1425,6 +1425,18 @@ class VKSearchWindow(QWidget):
             ).start()
             return
 
+        # Прямая ссылка на конкретный плейлист:
+        #   vk.com|vk.ru/music/playlist/<owner>_<id>[_<access_key>]
+        if re.match(
+            r'^(?:https?://)?(?:www\.)?vk\.(?:com|ru)/music/playlist/-?\d+_\d+',
+            query, re.I
+        ):
+            pl_url = query if query.startswith('http') else 'https://' + query
+            threading.Thread(
+                target=self._worker_open_playlist, args=(pl_url, "Плейлист"), daemon=True
+            ).start()
+            return
+
         # Плейлисты ВК: страницы со списком плейлистов (section=recoms, playlists и т.п.)
         _q = query.strip()
         if ('vk.com' in _q.lower() or 'vk.ru' in _q.lower()) and (
@@ -2797,30 +2809,71 @@ return (function(){
 
         # ── Фаза 2: параллельное скачивание ──────────────────────────────────
         self._sig.status.emit("Скачиваю треки...")
-        ok_count = fail_count = 0
+        ok_count = 0
+        failed_jobs = []
         done_count = [0]
         lock = threading.Lock()
 
         def _download(job):
             _, d, url, path = job
-            ok = bool(url) and self._dl_m3u8(url, path)
+            if not url:
+                log_message(f"WARNING cdp_batch: нет ссылки — {d['artist']} - {d['title']}")
+                ok = False
+            else:
+                ok = self._dl_m3u8(url, path)
             with lock:
                 done_count[0] += 1
                 pct = 50 + done_count[0] / total * 50
                 self._sig.progress.emit(pct)
                 self._sig.status.emit(f"Скачано {done_count[0]}/{total}")
-            return d, ok, path
+            return job, ok
 
         max_workers = min(4, total)
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {ex.submit(_download, job): job for job in jobs}
             for fut in as_completed(futures):
-                d, ok, path = fut.result()
+                job, ok = fut.result()
+                d = job[1]
                 if ok:
                     ok_count += 1
-                    _add_vk_history(d["artist"], d["title"], path)
+                    _add_vk_history(d["artist"], d["title"], job[3])
                 else:
-                    fail_count += 1
+                    failed_jobs.append(job)
+
+        # ── Повтор нескачанных: другой CDN-узел (psv1…6) + пауза ──────────────
+        still_failed = []
+        if failed_jobs:
+            log_message(f"INFO CDP повтор {len(failed_jobs)} треков (смена узла)...")
+        for job in failed_jobs:
+            _, d, url, path = job
+            if not url:
+                still_failed.append(job)
+                continue
+            # кандидаты узлов: тот же токен, другой psvN (залёгший узел обходим)
+            cands = [url]
+            m = re.search(r'://psv(\d+)\.', url)
+            if m:
+                for n in ("1", "2", "3", "4", "5", "6"):
+                    if n != m.group(1):
+                        cands.append(re.sub(r'://psv\d+\.', f'://psv{n}.', url, count=1))
+            self._sig.status.emit(f"Повтор: {d['artist']} - {d['title']}...")
+            ok = False
+            for cu in cands[:5]:
+                time.sleep(2)
+                if self._dl_m3u8(cu, path):
+                    ok = True
+                    break
+            if ok:
+                ok_count += 1
+                _add_vk_history(d["artist"], d["title"], path)
+                log_message(f"INFO CDP повтор удался: {d['artist']} - {d['title']}")
+            else:
+                still_failed.append(job)
+
+        fail_count = len(still_failed)
+        if still_failed:
+            log_message("WARNING CDP не скачались (" + str(fail_count) + "): "
+                        + "; ".join(f"{j[1]['artist']} - {j[1]['title']}" for j in still_failed))
 
         self._batch_mode = False
         self._sig.show_progress.emit(False)
@@ -3607,8 +3660,12 @@ return (function(){
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
                 )
+                tail = []
                 for line in proc.stdout:
                     line = line.strip()
+                    if line:
+                        tail.append(line)
+                        tail[:] = tail[-8:]
                     if "[download]" in line and "%" in line:
                         try:
                             pct = float(line.split("%")[0].split()[-1])
@@ -3617,11 +3674,14 @@ return (function(){
                         except Exception:
                             pass
                 proc.wait()
+                if proc.returncode != 0:
+                    log_message(f"ERROR VK m3u8 rc={proc.returncode} | {os.path.basename(path)} "
+                                f"| url={url[:90]} | {' | '.join(tail[-4:])}")
                 return proc.returncode == 0
             except FileNotFoundError:
                 return self._dl_m3u8_manual(url, path)
             except Exception as e:
-                log_message(f"ERROR VK m3u8: {e}")
+                log_message(f"ERROR VK m3u8: {e} | url={url[:90]}")
                 return False
         else:
             return self._dl_direct(url, path)
