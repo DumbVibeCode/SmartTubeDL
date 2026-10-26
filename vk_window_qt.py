@@ -121,6 +121,7 @@ class _Sig(QObject):
     browser_ready       = pyqtSignal(bool)    # True = залогинен
     error               = pyqtSignal(str)
     search_done         = pyqtSignal()        # разблокировать кнопку
+    errors_ready        = pyqtSignal(list)    # [(имя, причина)] нескачанных треков
 
 
 # ── История ───────────────────────────────────────────────────────────────────
@@ -431,6 +432,16 @@ class VKSearchWindow(QWidget):
         self.dl_btn.clicked.connect(self._download_selected)
         row.addWidget(self.dl_btn)
 
+        # Кнопка показа ошибок последней загрузки (скрыта, пока нет ошибок)
+        self.btn_errors = QPushButton("⚠ Посмотреть ошибки")
+        self.btn_errors.clicked.connect(self._show_errors_dialog)
+        self.btn_errors.setVisible(False)
+        self._last_errors = []       # [(имя, причина)] для окна
+        self._retry_ctx = None       # контекст для повторного скачивания
+        self._error_tab = None       # вкладка, на которой были ошибки
+        self._dl_tab = None          # вкладка, с которой запущена загрузка
+        row.addWidget(self.btn_errors)
+
         hist_btn = QPushButton("История")
         hist_btn.setProperty("secondary", True)
         hist_btn.clicked.connect(self._show_history)
@@ -489,6 +500,7 @@ class VKSearchWindow(QWidget):
         self._sig.browser_ready.connect(self._on_browser_ready)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
         self._sig.search_done.connect(lambda: self.search_btn.setEnabled(True))
+        self._sig.errors_ready.connect(self._on_errors_ready)
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
     def _on_tab_changed(self, idx: int):
@@ -497,6 +509,7 @@ class VKSearchWindow(QWidget):
             self.query_input.blockSignals(True)
             self.query_input.setText(tab.query)
             self.query_input.blockSignals(False)
+        self._update_errors_btn()   # кнопка ошибок — только на «своей» вкладке
 
     def _on_show_progress(self, visible: bool):
         self.prog_bar.setVisible(visible)
@@ -2662,6 +2675,66 @@ return (function(){
                 threading.Thread(target=download_video, args=(url,), daemon=True).start()
         self._sig.status.emit(f"Добавлено в очередь: {len(urls)} видео")
 
+    def _cdp_capture_url(self, d: dict, id_to_el: dict, mobile_items, i: int):
+        """Проигрывает трек на мобильной странице и захватывает СВЕЖИЙ audio URL
+        (для перезахвата при ретрае — новая ссылка может лечь на рабочий узел)."""
+        audio_url = None
+        full_id = d.get("full_id", "")
+        try:
+            prev_src = self.driver.execute_script(
+                "var a=document.querySelector('audio'); return a?a.src:'';") or ''
+            self.driver.get_log("performance")
+            item_el = id_to_el.get(full_id)
+            if item_el is None and i - 1 < len(mobile_items):
+                item_el = mobile_items[i - 1]
+            target = None
+            if item_el is not None:
+                try:
+                    self.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", item_el)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+                play_btns = item_el.find_elements(
+                    By.CSS_SELECTOR, ".ai_play, [class*='play'], button")
+                target = play_btns[0] if play_btns else item_el
+                self.driver.execute_script("arguments[0].click();", target)
+            # Ждём ссылку дольше (до ~15 с) и, если не появилась за ~7 с, кликаем ещё раз
+            for it in range(100):
+                time.sleep(0.15)
+                if it == 50 and target is not None and not audio_url:
+                    try:
+                        self.driver.execute_script("arguments[0].click();", target)
+                    except Exception:
+                        pass
+                src = self.driver.execute_script(
+                    "var a=document.querySelector('audio');"
+                    "return (a&&a.src&&a.src.startsWith('http'))?a.src:null;")
+                if src and src != prev_src:
+                    audio_url = src
+                    break
+                for entry in self.driver.get_log("performance"):
+                    try:
+                        u = json.loads(entry["message"]).get("message", {}) \
+                                .get("params", {}).get("request", {}).get("url", "")
+                        if "index.m3u8" in u:
+                            audio_url = u
+                            break
+                        if "vkuseraudio" in u and not audio_url:
+                            audio_url = u
+                    except Exception:
+                        continue
+                if audio_url:
+                    break
+            try:
+                self.driver.execute_script(
+                    "var a=document.querySelector('audio');if(a)a.pause();")
+            except Exception:
+                pass
+        except Exception as e:
+            log_message(f"WARNING cdp recapture: {e}")
+        return audio_url
+
     def _dl_cdp_batch(self, rows: list[dict], folder: str,
                       pl_url: str | None, mobile_url: str | None, pl_title: str = ""):
         """Скачивание треков плейлиста.
@@ -2840,27 +2913,26 @@ return (function(){
                 else:
                     failed_jobs.append(job)
 
-        # ── Повтор нескачанных: другой CDN-узел (psv1…6) + пауза ──────────────
+        # ── Повтор нескачанных: ПЕРЕЗАХВАТ свежей ссылки (переигрываем трек) ──
+        # 504 от CDN часто привязан к конкретному узлу/токену; свежая ссылка
+        # после переигрывания может лечь на рабочий узел.
+        # Но если не скачалось НИЧЕГО — CDN недоступен, ретрай бессмыслен и долог.
         still_failed = []
-        if failed_jobs:
-            log_message(f"INFO CDP повтор {len(failed_jobs)} треков (смена узла)...")
+        if failed_jobs and ok_count == 0:
+            log_message("WARNING CDP: не скачалось ничего — вероятно CDN недоступен, "
+                        "повтор пропущен")
+            still_failed = list(failed_jobs)
+            failed_jobs = []
+        elif failed_jobs:
+            log_message(f"INFO CDP повтор {len(failed_jobs)} треков (перезахват)...")
         for job in failed_jobs:
-            _, d, url, path = job
-            if not url:
-                still_failed.append(job)
-                continue
-            # кандидаты узлов: тот же токен, другой psvN (залёгший узел обходим)
-            cands = [url]
-            m = re.search(r'://psv(\d+)\.', url)
-            if m:
-                for n in ("1", "2", "3", "4", "5", "6"):
-                    if n != m.group(1):
-                        cands.append(re.sub(r'://psv\d+\.', f'://psv{n}.', url, count=1))
+            idx, d, url, path = job
             self._sig.status.emit(f"Повтор: {d['artist']} - {d['title']}...")
             ok = False
-            for cu in cands[:5]:
+            for attempt in range(2):
                 time.sleep(2)
-                if self._dl_m3u8(cu, path):
+                fresh = self._cdp_capture_url(d, id_to_el, mobile_items, idx) or url
+                if fresh and self._dl_m3u8(fresh, path):
                     ok = True
                     break
             if ok:
@@ -2892,6 +2964,23 @@ return (function(){
             self._sig.status.emit(", ".join(parts))
             if n_unavail:
                 log_message("INFO CDP недоступные треки: " + "; ".join(unavailable))
+
+        # Ошибки для кнопки «Посмотреть ошибки» + контекст повтора нескачанных
+        errors = []
+        for _, d, url, _ in still_failed:
+            name = f"{d['artist']} - {d['title']}" if d.get('artist') else d.get('title', '')
+            if url:
+                reason = "Сервер VK не отдал файл (обычно 504 — перегрузка/атака на VK). Попробуйте позже."
+            else:
+                reason = ("Поток не получен — VK не запустил трек (вероятно перегрузка). "
+                          "В браузере трек может играться; попробуйте позже.")
+            errors.append((name, reason))
+        if errors:
+            self._retry_ctx = {
+                "rows": [j[1] for j in still_failed],
+                "folder": folder, "pl_url": pl_url, "mobile_url": mobile_url,
+            }
+            self._sig.errors_ready.emit(errors)
 
     def _dl_mobile_batch_from_url(self, rows: list[dict], folder: str, mobile_url: str):
         """Переходит на мобильную страницу плейлиста и скачивает треки."""
@@ -3225,6 +3314,11 @@ return (function(){
         ).start()
 
     def _download_selected(self):
+        # Сбрасываем ошибки предыдущей загрузки и запоминаем вкладку текущей
+        self._last_errors = []
+        self._error_tab = None
+        self._dl_tab = self.tabs.currentWidget()
+        self.btn_errors.setVisible(False)
         if isinstance(self.tabs.currentWidget(), _VKVideoTab):
             self._download_vk_videos_selected()
             return
@@ -3255,6 +3349,73 @@ return (function(){
             threading.Thread(
                 target=self._dl_batch_worker, args=(rows, folder, vk_query, total_rows), daemon=True
             ).start()
+
+    def _on_errors_ready(self, errors: list):
+        """Запоминает ошибки и привязывает их к вкладке, с которой шла загрузка."""
+        self._last_errors = errors or []
+        self._error_tab = self._dl_tab
+        self.btn_errors.setText(f"⚠ Посмотреть ошибки ({len(self._last_errors)})")
+        self._update_errors_btn()
+
+    def _update_errors_btn(self):
+        """Кнопка ошибок видна только на вкладке, где эти ошибки возникли."""
+        visible = bool(self._last_errors) and self._error_tab is not None \
+            and self.tabs.currentWidget() is self._error_tab
+        self.btn_errors.setVisible(visible)
+
+    def _show_errors_dialog(self):
+        """Окно с понятным объяснением ошибок и повтором нескачанных треков."""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Не скачанные треки")
+        dlg.setMinimumSize(560, 380)
+        lay = QVBoxLayout(dlg)
+
+        head = QLabel(
+            f"Не удалось скачать: {len(self._last_errors)} трек(ов).\n"
+            "Почти всегда это временная проблема на стороне серверов VK "
+            "(ошибка 504 — перегрузка/атака), а не приложения. Обычно помогает "
+            "повтор чуть позже."
+        )
+        head.setWordWrap(True)
+        lay.addWidget(head)
+
+        txt = QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText("\n".join(f"• {name}\n    {reason}" for name, reason in self._last_errors))
+        lay.addWidget(txt, 1)
+
+        btns = QHBoxLayout()
+        retry_btn = QPushButton("↻ Повторить скачивание нескачанных")
+        can_retry = bool(self._retry_ctx and self._retry_ctx.get("rows"))
+        retry_btn.setEnabled(can_retry)
+        def _do_retry():
+            dlg.accept()
+            self._retry_failed()
+        retry_btn.clicked.connect(_do_retry)
+        btns.addWidget(retry_btn)
+        close_btn = QPushButton("Закрыть")
+        close_btn.setProperty("secondary", True)
+        close_btn.clicked.connect(dlg.reject)
+        btns.addWidget(close_btn)
+        lay.addLayout(btns)
+        dlg.exec()
+
+    def _retry_failed(self):
+        """Повторно скачивает нескачанные треки из последней загрузки."""
+        ctx = self._retry_ctx
+        if not ctx or not ctx.get("rows"):
+            self._sig.status.emit("Нет треков для повтора")
+            return
+        self._dl_tab = self._error_tab   # повтор привязываем к той же вкладке
+        self.btn_errors.setVisible(False)
+        self._sig.status.emit(f"Повтор скачивания {len(ctx['rows'])} треков...")
+        # folder уже конечная (с именем плейлиста) → pl_title="" чтобы не вкладывать
+        threading.Thread(
+            target=self._dl_cdp_batch,
+            args=(ctx["rows"], ctx["folder"], ctx["pl_url"], ctx["mobile_url"], ""),
+            daemon=True
+        ).start()
 
     def _dl_single_worker(self, d: dict, path: str):
         label = f"{d['artist']} - {d['title']}"

@@ -1,19 +1,23 @@
 import os
 import time
+import threading
 import tkinter as tk
 
 LOG_FILE = os.path.join(os.getcwd(), "log.txt")
 _log_box_ref = None
+_write_lock = threading.Lock()  # сериализует запись: при параллельных воркерах
+                                # строки иначе накладываются и портят файл (битый UTF-8)
 
 def log_message(message):
     """Логирует сообщение в файл и отображает в интерфейсе"""
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     full_message = f"{timestamp} - {message}"
 
-    # Запись в файл
+    # Запись в файл (под локом — потокобезопасно)
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as log:
-            log.write(full_message + "\n")
+        with _write_lock:
+            with open(LOG_FILE, "a", encoding="utf-8") as log:
+                log.write(full_message + "\n")
     except Exception as e:
         print(f"DEBUG Ошибка записи в лог: {e}")
 

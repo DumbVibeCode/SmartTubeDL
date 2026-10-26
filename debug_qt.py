@@ -210,7 +210,8 @@ class DebugWindow(QWidget):
             return
 
         try:
-            with open(LOG_FILE, "r", encoding="utf-8") as f:
+            # errors="replace": не падаем, если в логе попался битый байт
+            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
 
             # Берём только последние 1000 строк для производительности
