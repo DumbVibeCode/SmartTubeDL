@@ -577,6 +577,42 @@ class YouTubeDownloaderApp(QApplication):
             from download import download_video
             threading.Thread(target=download_video, args=(url,), daemon=True).start()
 
+    def show_bulk_download_dialog(self):
+        """Диалог массовой загрузки: много ссылок сразу (качаются по очереди)"""
+        import re
+        text, ok = QInputDialog.getMultiLineText(
+            None,
+            "Массовая загрузка",
+            "Вставьте ссылки (по одной в строке или через пробел):",
+            "",
+        )
+        if not (ok and text and text.strip()):
+            return
+        urls, seen = [], set()
+        for part in re.split(r"\s+", text.strip()):
+            u = part.strip()
+            if u and u.lower().startswith(("http://", "https://")) and u not in seen:
+                seen.add(u)
+                urls.append(u)
+        if not urls:
+            QMessageBox.warning(None, "Массовая загрузка",
+                                "Не найдено ни одной ссылки (нужны http:// или https://).")
+            return
+        from queues import add_to_queue, process_queue
+        import download
+        import threading
+        for u in urls:
+            add_to_queue(u)
+        log_message(f"INFO Массовая загрузка: в очередь добавлено {len(urls)} ссылок")
+        QMessageBox.information(
+            None, "Массовая загрузка",
+            f"Добавлено в очередь: {len(urls)} ссылок.\nЗагрузка идёт по очереди."
+        )
+        # Запускаем обработку, только если сейчас ничего не качается —
+        # иначе текущая загрузка сама подхватит очередь по завершении.
+        if not getattr(download, "is_downloading", False):
+            threading.Thread(target=process_queue, daemon=True).start()
+
     def show_settings_dialog(self):
         """Диалог выбора папки для загрузки"""
         folder = QFileDialog.getExistingDirectory(
@@ -704,6 +740,9 @@ class TrayIcon(QSystemTrayIcon):
 
         action_direct = menu.addAction("Скачать по ссылке")
         action_direct.triggered.connect(self.app.show_direct_download_dialog)
+
+        action_bulk = menu.addAction("Скачать по ссылкам (пачкой)")
+        action_bulk.triggered.connect(self.app.show_bulk_download_dialog)
 
         action_debug = menu.addAction("Режим отладки")
         action_debug.triggered.connect(self.app.show_debug_window)
