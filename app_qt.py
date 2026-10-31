@@ -370,6 +370,9 @@ class YouTubeDownloaderApp(QApplication):
         # Окно поиска ВКонтакте
         self.vk_window = None
 
+        # Окно Одноклассников
+        self.ok_window = None
+
         log_message("INFO Приложение запущено (PyQt6)")
         QTimer.singleShot(500, self._check_queue_on_startup)
         QTimer.singleShot(800, self.restore_channel_windows)
@@ -563,6 +566,16 @@ class YouTubeDownloaderApp(QApplication):
         self.vk_window.raise_()
         self.vk_window.activateWindow()
 
+    def show_ok_search_window(self):
+        """Показывает окно Одноклассников"""
+        if self.ok_window is None:
+            from ok_window_qt import OKSearchWindow
+            self.ok_window = OKSearchWindow()
+            self.ok_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        self.ok_window.show()
+        self.ok_window.raise_()
+        self.ok_window.activateWindow()
+
     def show_direct_download_dialog(self):
         """Диалог для скачивания по произвольной ссылке"""
         url, ok = QInputDialog.getText(
@@ -738,6 +751,9 @@ class TrayIcon(QSystemTrayIcon):
         action_vk = menu.addAction("Поиск ВКонтакте")
         action_vk.triggered.connect(self.app.show_vk_search_window)
 
+        action_ok = menu.addAction("Одноклассники")
+        action_ok.triggered.connect(self.app.show_ok_search_window)
+
         action_direct = menu.addAction("Скачать по ссылке")
         action_direct.triggered.connect(self.app.show_direct_download_dialog)
 
@@ -901,6 +917,13 @@ class TrayIcon(QSystemTrayIcon):
         if self.app.vk_window is not None:
             try:
                 self.app.vk_window.quit_browser()
+            except Exception:
+                pass
+
+        # Закрываем браузер OK (Selenium) если он был открыт
+        if self.app.ok_window is not None:
+            try:
+                self.app.ok_window.quit_browser()
             except Exception:
                 pass
 
