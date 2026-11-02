@@ -18,8 +18,8 @@ import subprocess
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableWidget, QHeaderView, QAbstractItemView, QProgressBar,
-    QMessageBox, QTabWidget
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+    QProgressBar, QMessageBox, QMenu
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont
@@ -49,7 +49,55 @@ class _Sig(QObject):
     progress      = pyqtSignal(float)   # 0-100
     show_progress = pyqtSignal(bool)
     browser_ready = pyqtSignal(bool)    # True = залогинен
+    results_ready = pyqtSignal(list)    # [{href, title}] видео со страницы
+    search_done   = pyqtSignal()        # разблокировать кнопку
     error         = pyqtSignal(str)
+
+
+# JS: собрать все ссылки на видео на странице и выбрать для каждой осмысленный
+# заголовок. На одно видео бывает несколько якорей (кнопка-оверлей «Смотреть»
+# и обёртка заголовка) — группируем по id и берём самый длинный текст.
+_COLLECT_VIDEOS_JS = r"""
+    // Наименьший контейнер карточки: поднимаемся, пока в нём ссылки только
+    // на это видео; из его текста достаём длительность (M:SS / H:MM:SS).
+    function cardDuration(a, id){
+        var card = a, node = a.parentElement, depth = 0;
+        while (node && depth < 8){
+            var ids = {}, links = node.querySelectorAll('a[href*="/video/"]');
+            for (var i=0;i<links.length;i++){
+                var mm = links[i].href.match(/\/video\/(\d+)/);
+                if (mm) ids[mm[1]] = 1;
+            }
+            if (Object.keys(ids).length > 1) break;
+            card = node; node = node.parentElement; depth++;
+        }
+        var dm = (card.textContent || '').match(/(?:^|\s)(\d{1,2}:\d{2}(?::\d{2})?)(?:\s|$)/);
+        return dm ? dm[1] : '';
+    }
+    var map = {};
+    var as = document.querySelectorAll('a[href*="/video/"]');
+    var BAD = {'Смотреть':1,'':1};
+    for (var i=0;i<as.length;i++){
+        var a = as[i];
+        var m = a.href.match(/\/video\/(\d+)/);
+        if (!m) continue;
+        var id = m[1];
+        if (!map[id]) map[id] = {href:'https://ok.ru/video/'+id, cands:[], dur:''};
+        var texts = [a.getAttribute('aria-label'), a.getAttribute('title'), a.innerText];
+        for (var k=0;k<texts.length;k++){
+            var t = (texts[k]||'').trim();
+            if (t && !BAD[t]) map[id].cands.push(t.slice(0,200));
+        }
+        if (!map[id].dur){ var dd = cardDuration(a, id); if (dd) map[id].dur = dd; }
+    }
+    var out = [];
+    for (var id in map){
+        var c = map[id].cands, best='';
+        for (var j=0;j<c.length;j++) if (c[j].length>best.length) best=c[j];
+        out.push({href: map[id].href, title: best, duration: map[id].dur});
+    }
+    return out;
+"""
 
 
 class OKSearchWindow(QWidget):
@@ -133,23 +181,19 @@ class OKSearchWindow(QWidget):
         self.prog_bar.setVisible(False)
         root.addWidget(self.prog_bar)
 
-        # Область результатов (заглушка этапа 1)
-        self.tabs = QTabWidget()
-        placeholder = QWidget()
-        pl = QVBoxLayout(placeholder)
-        pl.addStretch()
-        info = QLabel(
-            "Этап 1: авторизация в Одноклассниках.\n\n"
-            "Войдите в свой аккаунт в открывшемся окне браузера.\n"
-            "Когда статус станет «Залогинен», можно добавлять поиск музыки\n"
-            "и загрузку видео со страницы пользователя."
-        )
-        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        info.setStyleSheet("color: #888;")
-        pl.addWidget(info)
-        pl.addStretch()
-        self.tabs.addTab(placeholder, "Начало")
-        root.addWidget(self.tabs, 1)
+        # Таблица результатов (видео со страницы)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Название", "Длит.", "Ссылка"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_ctx_menu)
+        self.table.doubleClicked.connect(self._download_selected)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        root.addWidget(self.table, 1)
 
         # Статус
         bot = QHBoxLayout()
@@ -163,6 +207,8 @@ class OKSearchWindow(QWidget):
         self._sig.show_progress.connect(self._on_show_progress)
         self._sig.progress.connect(lambda v: self.prog_bar.setValue(int(v)))
         self._sig.browser_ready.connect(self._on_browser_ready)
+        self._sig.results_ready.connect(self._populate_table)
+        self._sig.search_done.connect(lambda: self.search_btn.setEnabled(True))
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
 
     def _on_show_progress(self, visible: bool):
@@ -173,6 +219,7 @@ class OKSearchWindow(QWidget):
     def _on_browser_ready(self, ok: bool):
         self.open_browser_btn.setEnabled(True)
         self.recheck_btn.setEnabled(True)
+        self.search_btn.setEnabled(True)
         if ok:
             self.browser_lbl.setText("● Залогинен в OK")
             self.browser_lbl.setStyleSheet("color: #4caf50; font-weight: bold;")
@@ -180,18 +227,140 @@ class OKSearchWindow(QWidget):
             self.browser_lbl.setText("● Войдите в OK в браузере")
             self.browser_lbl.setStyleSheet("color: #e74c3c; font-weight: bold;")
 
-    # ── Поиск / загрузка (заглушки этапа 1) ──────────────────────────────────
+    # ── Видео со страницы пользователя/группы ────────────────────────────────
+
+    @staticmethod
+    def _normalize_video_page(text: str) -> str | None:
+        """Приводит ввод к URL страницы видео OK. Возвращает None, если это не
+        ссылка OK (поиск по названию пока относится к музыке — другой этап)."""
+        import re
+        t = (text or "").strip()
+        if not t:
+            return None
+        if not re.search(r'(?:^https?://)?(?:www\.|m\.)?ok\.ru/|odnoklassniki\.ru/', t, re.I):
+            return None
+        if not t.lower().startswith("http"):
+            t = "https://" + t.lstrip("/")
+        # Одиночное видео — оставляем как есть
+        if re.search(r'/video/\d+', t):
+            return t
+        # Страница пользователя/группы → её раздел видео
+        t = t.split("?")[0].rstrip("/")
+        if not t.endswith("/video"):
+            t = t + "/video"
+        return t
 
     def _on_search(self):
-        QMessageBox.information(
-            self, "В разработке",
-            "Поиск по музыке и разбор страницы пользователя добавляются "
-            "следующим этапом.\n\nСейчас нужно войти в аккаунт OK в браузере — "
-            "по этому логину дальше будем доставать музыку и видео."
-        )
+        if not self.driver:
+            QMessageBox.warning(self, "Браузер не готов", "Браузер ещё не запущен.")
+            return
+        raw = self.query_input.text().strip()
+        page = self._normalize_video_page(raw)
+        if page is None:
+            QMessageBox.information(
+                self, "Нужна ссылка OK",
+                "Вставьте ссылку на профиль или группу OK (например "
+                "ok.ru/group51217248157720) либо на конкретное видео "
+                "ok.ru/video/....\n\nПоиск музыки по названию появится отдельным этапом."
+            )
+            return
+        # Одиночное видео — сразу в таблицу без разбора страницы
+        import re
+        if re.search(r'/video/\d+', page):
+            self._populate_table([{"href": page, "title": raw, "duration": ""}])
+            self._sig.status.emit("Готово: 1 видео")
+            return
+        self.search_btn.setEnabled(False)
+        self._sig.status.emit("Открываю страницу видео...")
+        self._sig.show_progress.emit(True)
+        threading.Thread(target=self._worker_videos, args=(page,), daemon=True).start()
+
+    def _worker_videos(self, page_url: str):
+        try:
+            self.driver.get(page_url)
+            time.sleep(4)
+            # Скроллим, пока подгружаются карточки (останавливаемся на плато)
+            prev = -1
+            for _ in range(20):
+                try:
+                    found = self.driver.execute_script(
+                        "return document.querySelectorAll('a[href*=\"/video/\"]').length;"
+                    )
+                except Exception:
+                    found = 0
+                self._sig.status.emit(f"Загрузка списка... найдено ссылок: {found}")
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(1.5)
+                if found == prev:
+                    break
+                prev = found
+            vids = self.driver.execute_script(_COLLECT_VIDEOS_JS) or []
+            # Чистим заголовки и сортируем по названию
+            for v in vids:
+                v["title"] = (v.get("title") or "").strip() or v["href"].rsplit("/", 1)[-1]
+            vids.sort(key=lambda v: v["title"].lower())
+            log_message(f"INFO OK: собрано видео: {len(vids)} со страницы {page_url}")
+            self._sig.results_ready.emit(vids)
+            self._sig.status.emit(f"Готово: {len(vids)} видео")
+        except Exception as e:
+            log_message(f"ERROR OK видео-страница: {e}")
+            self._sig.error.emit(f"Не удалось получить список видео:\n{e}")
+        finally:
+            self._sig.show_progress.emit(False)
+            self._sig.search_done.emit()
+
+    def _populate_table(self, results: list):
+        self.table.setRowCount(0)
+        for v in results:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(v.get("title", "")))
+            self.table.setItem(r, 1, QTableWidgetItem(v.get("duration", "")))
+            self.table.setItem(r, 2, QTableWidgetItem(v.get("href", "")))
+        self.dl_btn.setEnabled(self.table.rowCount() > 0)
+
+    def _selected_urls(self) -> list:
+        urls, seen = [], set()
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if not rows:
+            rows = range(self.table.rowCount())   # ничего не выбрано → все
+        for r in rows:
+            it = self.table.item(r, 2)
+            u = it.text().strip() if it else ""
+            if u and u not in seen:
+                seen.add(u)
+                urls.append(u)
+        return urls
 
     def _download_selected(self):
-        self._on_search()
+        urls = self._selected_urls()
+        if not urls:
+            QMessageBox.information(self, "Нет видео", "Список пуст — сначала найдите видео.")
+            return
+        from queues import add_to_queue, process_queue
+        import download
+        for u in urls:
+            add_to_queue(u)
+        log_message(f"INFO OK: в очередь добавлено видео: {len(urls)}")
+        self._sig.status.emit(f"В очередь добавлено: {len(urls)} — качаю по очереди")
+        if not getattr(download, "is_downloading", False):
+            threading.Thread(target=process_queue, daemon=True).start()
+
+    def _show_ctx_menu(self, pos):
+        if self.table.rowCount() == 0:
+            return
+        menu = QMenu(self)
+        act_dl = menu.addAction("⬇ Скачать выбранные")
+        act_copy = menu.addAction("Копировать ссылку")
+        act = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if act == act_dl:
+            self._download_selected()
+        elif act == act_copy:
+            urls = self._selected_urls()
+            if urls:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.clipboard().setText("\n".join(urls))
+                self._sig.status.emit(f"Скопировано ссылок: {len(urls)}")
 
     # ── Браузер (Selenium) ────────────────────────────────────────────────────
 
