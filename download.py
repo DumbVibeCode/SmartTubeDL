@@ -176,16 +176,17 @@ def _unique_basename(folder: str, base: str) -> str:
     return f"{base} ({i})"
 
 
-def _append_description(folder: str, file_name: str, description: str):
-    """Дописывает в desc.txt в папке загрузки имя файла и его описание."""
+def _save_description(folder: str, file_name: str, description: str):
+    """Сохраняет описание в отдельный .txt рядом с видео, с тем же именем.
+    Для «My Video.mp4» создаётся «My Video.txt»."""
     try:
-        path = os.path.join(folder, "desc.txt")
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"### {file_name}\n")
-            f.write((description or "").strip() + "\n\n")
-        log_message(f"INFO Описание добавлено в {path}")
+        base = os.path.splitext(file_name)[0]
+        path = os.path.join(folder, base + ".txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write((description or "").strip() + "\n")
+        log_message(f"INFO Описание сохранено в {path}")
     except Exception as e:
-        log_message(f"WARNING desc.txt: {e}")
+        log_message(f"WARNING описание .txt: {e}")
 
 
 def download_video(url, from_queue=False):
@@ -423,10 +424,10 @@ def download_video(url, from_queue=False):
         else:
             log_message("SUCCESS Файл сохранен в исходном формате")
 
-        # Опция «Скачивать с описаниями»: пишем имя файла и описание в desc.txt
+        # Опция «Скачивать с описаниями»: описание в отдельный .txt с именем видео
         if settings.get("download_with_description", False):
-            _append_description(save_path, os.path.basename(final_file),
-                                info.get("description", ""))
+            _save_description(save_path, os.path.basename(final_file),
+                              info.get("description", ""))
 
         if from_queue:
             remove_from_queue(url)
