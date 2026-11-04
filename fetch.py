@@ -152,6 +152,50 @@ def fetch_description_innertube(video_url):
         return ""
 
 
+def fetch_description_youtube_api(video_url, api_key=None):
+    """Описание через официальный YouTube Data API (~0.8 c, надёжно).
+    Ключ берётся из настроек, если не передан. Для видео, которые InnerTube
+    не отдаёт без логина, это самый быстрый рабочий путь."""
+    vid = _youtube_id(video_url)
+    if not vid:
+        return ""
+    if api_key is None:
+        try:
+            from config import settings
+            api_key = settings.get("youtube_api_key", "") or ""
+        except Exception:
+            api_key = ""
+    if not api_key:
+        return ""
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/youtube/v3/videos",
+            params={"key": api_key, "part": "snippet", "id": vid},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            if items:
+                return items[0].get("snippet", {}).get("description", "") or ""
+        else:
+            log_message(f"DEBUG YouTube API описание: HTTP {r.status_code}")
+    except Exception as e:
+        log_message(f"WARNING YouTube API описание: {e}")
+    return ""
+
+
+def fetch_description(video_url):
+    """Единый путь получения описания в порядке скорость/надёжность:
+    официальный Data API (если есть ключ) → InnerTube → разбор HTML → yt-dlp."""
+    d = fetch_description_youtube_api(video_url)
+    if d:
+        return d
+    d = fetch_description_with_bs(video_url)   # InnerTube + HTML
+    if d:
+        return d
+    return fetch_description_with_ytdlp(video_url) or ""
+
+
 def fetch_description_with_bs(video_url):
     """Быстрый путь получения описания YouTube: сначала InnerTube API (~0.7 c),
     затем разбор HTML как запасной вариант. yt-dlp остаётся фолбэком у вызывающего."""

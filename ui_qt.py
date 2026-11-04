@@ -1336,11 +1336,11 @@ class SearchWindow(QMainWindow):
         log_message(f"INFO Открыто окно описания для: {title}")
 
     def _fetch_full_description(self, url):
-        """Загружает полное описание: быстрый путь InnerTube/HTML, затем yt-dlp.
-        Ключ YouTube API не требуется (раньше без него описание не грузилось)."""
+        """Полное описание единым путём: Data API (ключ из настроек) →
+        InnerTube → HTML → yt-dlp."""
         try:
-            from fetch import fetch_description_with_bs, fetch_description_with_ytdlp
-            desc = fetch_description_with_bs(url) or fetch_description_with_ytdlp(url)
+            from fetch import fetch_description
+            desc = fetch_description(url)
             if desc:
                 log_message(f"DEBUG Описание получено, длина: {len(desc)}")
                 return desc
