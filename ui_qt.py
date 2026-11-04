@@ -1336,40 +1336,16 @@ class SearchWindow(QMainWindow):
         log_message(f"INFO Открыто окно описания для: {title}")
 
     def _fetch_full_description(self, url):
-        """Загружает полное описание видео через YouTube API"""
+        """Загружает полное описание: быстрый путь InnerTube/HTML, затем yt-dlp.
+        Ключ YouTube API не требуется (раньше без него описание не грузилось)."""
         try:
-            import requests
-            from description import extract_video_id
-
-            video_id = extract_video_id(url)
-            if not video_id:
-                log_message("DEBUG Could not extract video ID from URL")
-                return None
-
-            api_key = self.api_input.text().strip()
-            if not api_key:
-                log_message("DEBUG No API key available")
-                return None
-
-            videos_url = "https://www.googleapis.com/youtube/v3/videos"
-            params = {
-                'key': api_key,
-                'part': 'snippet',
-                'id': video_id
-            }
-
-            response = requests.get(videos_url, params=params, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('items'):
-                    description = data['items'][0]['snippet'].get('description', '')
-                    log_message(f"DEBUG Fetched full description from API, length: {len(description)}")
-                    return description
-            else:
-                log_message(f"DEBUG API request failed: {response.status_code}")
+            from fetch import fetch_description_with_bs, fetch_description_with_ytdlp
+            desc = fetch_description_with_bs(url) or fetch_description_with_ytdlp(url)
+            if desc:
+                log_message(f"DEBUG Описание получено, длина: {len(desc)}")
+                return desc
         except Exception as e:
             log_message(f"DEBUG Error fetching full description: {e}")
-
         return None
 
     def _on_double_click(self, index):
