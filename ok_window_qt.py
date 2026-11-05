@@ -744,8 +744,11 @@ class OKSearchWindow(QWidget):
         menu = QMenu(self)
         act_dl = menu.addAction("⬇ Скачать выбранные")
         act_copy = None
+        act_copy_track = None
         if self._mode == "video":
             act_copy = menu.addAction("Копировать ссылку")
+        else:
+            act_copy_track = menu.addAction("Скопировать исполнителя и название")
         act = menu.exec(self.table.viewport().mapToGlobal(pos))
         if act == act_dl:
             self._download_selected()
@@ -755,6 +758,17 @@ class OKSearchWindow(QWidget):
                 from PyQt6.QtWidgets import QApplication
                 QApplication.clipboard().setText("\n".join(urls))
                 self._sig.status.emit(f"Скопировано ссылок: {len(urls)}")
+        elif act_copy_track is not None and act == act_copy_track:
+            lines = []
+            for t in self._selected_tracks():
+                artist, title = t.get("artist", ""), t.get("title", "")
+                line = f"{artist} — {title}".strip(" —") or title
+                if line:
+                    lines.append(line)
+            if lines:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.clipboard().setText("\n".join(lines))
+                self._sig.status.emit(f"Скопировано: {len(lines)}")
 
     # ── Браузер (Selenium) ────────────────────────────────────────────────────
 
