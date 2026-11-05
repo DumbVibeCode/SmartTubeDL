@@ -40,6 +40,8 @@ except Exception as _e:
     log_message(f"WARNING OK: зависимости недоступны: {_e}")
 
 OK_PROFILE_DIR = os.path.join(os.getcwd(), ".ok_chrome_profile")
+# Состояние окна (запрос, найденное, позиция в списке) между запусками
+_OK_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ok_search_state.json")
 
 
 # ── Сигналы (thread-safe) ─────────────────────────────────────────────────────
@@ -214,9 +216,12 @@ class OKSearchWindow(QWidget):
         self._sig = _Sig()
         self._mode = "music"      # 'music' | 'video' — задаётся последним поиском
         self._busy = False        # идёт поиск или загрузка
+        self._results = []        # последние результаты (для сохранения состояния)
+        self._restoring = False   # True во время восстановления (не сохранять)
 
         self._build_ui()
         self._connect_signals()
+        self._restore_state()
 
         if not SELENIUM_OK:
             QMessageBox.critical(
@@ -298,6 +303,7 @@ class OKSearchWindow(QWidget):
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_ctx_menu)
         self.table.doubleClicked.connect(self._download_selected)
+        self.table.currentCellChanged.connect(self._on_current_cell_changed)
         self.table.setSortingEnabled(True)   # сортировка по клику на заголовок
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -504,6 +510,7 @@ class OKSearchWindow(QWidget):
             self._sig.search_done.emit()
 
     def _populate_table(self, results: list):
+        self._results = list(results)
         self.table.setSortingEnabled(False)   # не даём Qt перемешивать при вставке
         self.table.setRowCount(0)
         if self._mode == "music":
@@ -537,6 +544,8 @@ class OKSearchWindow(QWidget):
                 self.table.setItem(r, 2, QTableWidgetItem(v.get("href", "")))
         self.table.setSortingEnabled(True)
         self.dl_btn.setEnabled(self.table.rowCount() > 0)
+        if not self._restoring:
+            self._save_state()
 
     def _selected_rows(self) -> list:
         rows = sorted({i.row() for i in self.table.selectedIndexes()})
@@ -769,6 +778,67 @@ class OKSearchWindow(QWidget):
                 from PyQt6.QtWidgets import QApplication
                 QApplication.clipboard().setText("\n".join(lines))
                 self._sig.status.emit(f"Скопировано: {len(lines)}")
+
+    # ── Сохранение состояния окна ─────────────────────────────────────────────
+
+    def _on_current_cell_changed(self, *args):
+        # Запоминаем позицию курсора в списке (не во время наполнения таблицы)
+        if not self._restoring:
+            self._save_state()
+
+    def _save_state(self):
+        try:
+            data = {
+                "mode": self._mode,
+                "query": self.query_input.text(),
+                "results": self._results,
+                "current_row": self.table.currentRow(),
+            }
+            hh = self.table.horizontalHeader()
+            if hh.isSortIndicatorShown():
+                data["sort_col"] = hh.sortIndicatorSection()
+                data["sort_order"] = hh.sortIndicatorOrder().value
+            with open(_OK_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log_message(f"WARNING OK save state: {e}")
+
+    def _restore_state(self):
+        if not os.path.exists(_OK_STATE_FILE):
+            return
+        try:
+            with open(_OK_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+        self.query_input.setText(data.get("query", ""))
+        results = data.get("results") or []
+        if not results:
+            return
+        self._restoring = True
+        try:
+            self._mode = data.get("mode", "music")
+            self._populate_table(results)
+            self._restore_row(data.get("current_row", -1), data)
+        finally:
+            self._restoring = False
+
+    def _restore_row(self, row: int, entry: dict):
+        # Сначала сортировка (двигает строки), потом выделение строки
+        sc = entry.get("sort_col", -1)
+        if sc is not None and sc >= 0:
+            self.table.sortItems(sc, Qt.SortOrder(entry.get("sort_order", 0)))
+        if 0 <= row < self.table.rowCount():
+            self.table.setCurrentCell(row, 0)
+            self.table.scrollTo(
+                self.table.model().index(row, 0),
+                QAbstractItemView.ScrollHint.PositionAtCenter,
+            )
+
+    def closeEvent(self, event):
+        self._save_state()
+        event.accept()
+        self.hide()
 
     # ── Браузер (Selenium) ────────────────────────────────────────────────────
 
