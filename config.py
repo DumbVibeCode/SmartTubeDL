@@ -28,7 +28,9 @@ DEFAULT_SETTINGS = {
     "search_in_descriptions": False,
     "advanced_search": False,
     "advanced_query": "",
-    "debug_mode": False  # Новый параметр
+    "debug_mode": False,
+    "auto_check_updates": True,
+    "last_update_check": 0,
 }
 
 def format_size(size_bytes):

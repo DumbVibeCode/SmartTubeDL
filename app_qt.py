@@ -350,9 +350,13 @@ class YouTubeDownloaderApp(QApplication):
         # Окно Одноклассников
         self.ok_window = None
 
+        # Окно обновлений утилит
+        self.updater_window = None
+
         log_message("INFO Приложение запущено (PyQt6)")
         QTimer.singleShot(500, self._check_queue_on_startup)
         QTimer.singleShot(800, self.restore_channel_windows)
+        QTimer.singleShot(5000, self._check_updates_background)
 
         # Периодическое автосохранение окон/вкладок (резервное) — раз в минуту.
         self._autosave_timer = QTimer(self)
@@ -366,12 +370,6 @@ class YouTubeDownloaderApp(QApplication):
         self._save_debounce.setSingleShot(True)
         self._save_debounce.setInterval(1500)
         self._save_debounce.timeout.connect(self._save_all_state)
-
-        # Периодическое автосохранение открытых окон и вкладок (раз в 3 минуты)
-        self._periodic_save = QTimer(self)
-        self._periodic_save.setInterval(3 * 60 * 1000)
-        self._periodic_save.timeout.connect(self._save_all_state)
-        self._periodic_save.start()
 
     def request_state_save(self):
         """Планирует сохранение состояния с дебаунсом. Безопасно вызывать часто
@@ -559,6 +557,31 @@ class YouTubeDownloaderApp(QApplication):
         self.ok_window.raise_()
         self.ok_window.activateWindow()
 
+    def show_updater_window(self):
+        """Открывает окно проверки и обновления утилит"""
+        if self.updater_window is None:
+            from updater_qt import UpdaterWindow
+            self.updater_window = UpdaterWindow()
+            self.updater_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        else:
+            self.updater_window.check_versions()
+        self.updater_window.show()
+        self.updater_window.raise_()
+        self.updater_window.activateWindow()
+
+    def _check_updates_background(self):
+        """Фоновая проверка обновлений yt-dlp раз в 7 дней."""
+        try:
+            from updater_qt import check_updates_if_due
+            check_updates_if_due(
+                lambda cur, latest: _bridge_show_notification(
+                    "Доступно обновление yt-dlp",
+                    f"Версия {cur} → {latest}. Откройте «Обновления утилит» в меню трея."
+                )
+            )
+        except Exception as e:
+            log_message(f"WARNING автопроверка обновлений: {e}")
+
     def show_direct_download_dialog(self):
         """Диалог для скачивания по произвольной ссылке"""
         url, ok = QInputDialog.getText(
@@ -745,6 +768,9 @@ class TrayIcon(QSystemTrayIcon):
 
         action_debug = menu.addAction("Режим отладки")
         action_debug.triggered.connect(self.app.show_debug_window)
+
+        action_updates = menu.addAction("Обновления утилит")
+        action_updates.triggered.connect(self.app.show_updater_window)
 
         menu.addSeparator()
 
