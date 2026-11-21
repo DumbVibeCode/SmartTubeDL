@@ -367,6 +367,12 @@ class YouTubeDownloaderApp(QApplication):
         self._save_debounce.setInterval(1500)
         self._save_debounce.timeout.connect(self._save_all_state)
 
+        # Периодическое автосохранение открытых окон и вкладок (раз в 3 минуты)
+        self._periodic_save = QTimer(self)
+        self._periodic_save.setInterval(3 * 60 * 1000)
+        self._periodic_save.timeout.connect(self._save_all_state)
+        self._periodic_save.start()
+
     def request_state_save(self):
         """Планирует сохранение состояния с дебаунсом. Безопасно вызывать часто
         и из разных мест — записи схлопываются в одну через ~1.5 с."""

@@ -3788,22 +3788,25 @@ return (function(){
                         return rows[i];
                     }
                 }
-                // Фолбэк без data-testid
+                // Фолбэк без data-testid: поднимаемся от ссылки /audio<fid> до строки,
+                // содержащей кнопку воспроизведения [aria-label*="рослуш"]
                 var links = document.querySelectorAll('a[href^="/audio' + fid + '"]');
                 for (var j = 0; j < links.length; j++) {
                     var row = links[j];
                     var topBar = false;
-                    for (var up = 0; up < 6 && row.parentElement; up++) {
+                    var matchedRow = null;
+                    for (var up = 0; up < 8 && row.parentElement; up++) {
                         row = row.parentElement;
                         var txt = row.textContent || '';
                         if (txt.indexOf('Показать текст') !== -1 || txt.indexOf('Микс по треку') !== -1) {
                             topBar = true; break;
                         }
-                        if (/\\b\\d{1,2}:\\d{2}\\b/.test(txt) && row.querySelectorAll('a[href]').length <= 8) {
+                        if (row.querySelector('[aria-label*="рослуш"]') && row.querySelectorAll('a[href]').length <= 8) {
+                            matchedRow = row;
                             break;
                         }
                     }
-                    if (!topBar) return row;
+                    if (!topBar && matchedRow) return matchedRow;
                 }
                 return null;
             """, full_id)
@@ -3824,24 +3827,33 @@ return (function(){
                     time.sleep(0.3)
                 except Exception:
                     pass
-                # У VKUI-Tappable стоит pointer-events:none, поэтому обычный клик
-                # «проваливается». Диспатчим полную последовательность pointer/mouse
-                # событий — она минует CSS pointer-events и запускает onClick React.
+                # В новой вёрстке ВК поверх кнопки «Начать прослушивание» лежит
+                # прозрачный оверлей VKUI-Tappable, поэтому искусственный dispatchEvent
+                # на внутреннем div не запускает воспроизведение. Сначала пробуем
+                # реальный клик по координатам через ActionChains, затем фолбэк dispatchEvent.
+                clicked = False
                 try:
-                    self.driver.execute_script("""
-                        var el = arguments[0];
-                        var r = el.getBoundingClientRect();
-                        var cx = r.left + r.width/2, cy = r.top + r.height/2;
-                        var opt = {bubbles:true, cancelable:true, view:window,
-                                   clientX:cx, clientY:cy, button:0, buttons:1};
-                        ['pointerover','pointerenter','pointermove','pointerdown',
-                         'mousedown','pointerup','mouseup','click'].forEach(function(t){
-                            var E = t.indexOf('pointer')===0 ? PointerEvent : MouseEvent;
-                            try { el.dispatchEvent(new E(t, opt)); } catch(e){}
-                        });
-                    """, target)
-                except Exception as _de:
-                    log_message(f"WARNING dispatch click failed: {_de}")
+                    from selenium.webdriver.common.action_chains import ActionChains
+                    ActionChains(self.driver).move_to_element(target).click().perform()
+                    clicked = True
+                except Exception as _ae:
+                    log_message(f"DEBUG ActionChains click fallback: {_ae}")
+                if not clicked:
+                    try:
+                        self.driver.execute_script("""
+                            var el = arguments[0];
+                            var r = el.getBoundingClientRect();
+                            var cx = r.left + r.width/2, cy = r.top + r.height/2;
+                            var opt = {bubbles:true, cancelable:true, view:window,
+                                       clientX:cx, clientY:cy, button:0, buttons:1};
+                            ['pointerover','pointerenter','pointermove','pointerdown',
+                             'mousedown','pointerup','mouseup','click'].forEach(function(t){
+                                var E = t.indexOf('pointer')===0 ? PointerEvent : MouseEvent;
+                                try { el.dispatchEvent(new E(t, opt)); } catch(e){}
+                            });
+                        """, target)
+                    except Exception as _de:
+                        log_message(f"WARNING dispatch click failed: {_de}")
             else:
                 # Старый формат audio_row
                 sel = f'div.audio_row[data-full-id="{full_id}"]'
@@ -3895,9 +3907,11 @@ return (function(){
                     elif "/seg-" in url and not fallback:
                         fallback = url
                     elif (("vkuseraudio" in url or "userapi" in url)
-                          and (".mp3" in url or "/audio/" in url) and not direct):
+                          and (".mp3" in url or "/audio/" in url or "/amp" in url or "/s/v1/" in url)
+                          and not any(ext in url.lower() for ext in (".jpg", ".jpeg", ".png", ".webp", ".svg"))
+                          and not direct):
                         direct = url
-                if m3u8:
+                if m3u8 or direct:
                     break
                 # Прямой mp3-файл (старые треки) через audio.src, но не blob:
                 if not direct:
