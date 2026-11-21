@@ -1,9 +1,17 @@
 import os
+import shutil
 
-# Добавляем Node.js в PATH чтобы yt-dlp мог решать n-challenge
-_nodejs_dir = r'C:\Program Files\nodejs'
-if os.path.isdir(_nodejs_dir) and _nodejs_dir not in os.environ.get('PATH', ''):
-    os.environ['PATH'] = _nodejs_dir + os.pathsep + os.environ.get('PATH', '')
+# Добавляем Node.js в PATH (если ещё не найден через shutil.which), чтобы yt-dlp мог решать n-challenge
+if not shutil.which('node'):
+    _node_candidates = [
+        r'C:\Program Files\nodejs',
+        r'C:\Program Files (x86)\nodejs',
+        os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'nodejs'),
+    ]
+    for _nodejs_dir in _node_candidates:
+        if _nodejs_dir and os.path.isdir(_nodejs_dir) and _nodejs_dir not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = _nodejs_dir + os.pathsep + os.environ.get('PATH', '')
+            break
 
 from config import format_duration, format_invidious_duration, initialize_settings
 from convert import convert_to_mp3, convert_to_mp4
@@ -35,9 +43,18 @@ _AGE_ERRORS = ("sign in to confirm your age", "age-restricted", "inappropriate f
 def _is_age_error(e) -> bool:
     return any(s in str(e).lower() for s in _AGE_ERRORS)
 
+def _cookies_browser() -> str:
+    """Возвращает браузер для извлечения куки из настроек (по умолчанию 'firefox')."""
+    return (settings.get("cookies_browser") or "").strip()
+
+
 def _auth_opts() -> dict:
-    """Опции для обхода возрастных ограничений: Firefox куки + Node.js для n-challenge."""
-    return {'cookiesfrombrowser': ('firefox',), 'js_runtimes': {'node': {}}}
+    """Опции для обхода возрастных ограничений: куки браузера + Node.js для n-challenge."""
+    opts = {'js_runtimes': {'node': {}}}
+    browser = _cookies_browser()
+    if browser:
+        opts['cookiesfrombrowser'] = (browser,)
+    return opts
 
 
 # «Sign in to confirm you're not a bot» — бот-проверка YouTube (обычно на
@@ -56,17 +73,21 @@ def _is_youtube(u: str) -> bool:
 
 
 def _yt_cookie_opts() -> dict:
-    """Живые куки залогиненного Firefox — главный способ пройти бот-проверку."""
-    return {'cookiesfrombrowser': ('firefox',)}
+    """Живые куки залогиненного браузера — главный способ пройти бот-проверку."""
+    browser = _cookies_browser()
+    return {'cookiesfrombrowser': (browser,)} if browser else {}
 
 
 def _yt_retry_opts() -> dict:
-    """Опции повтора при бот-проверке: куки Firefox + перебор клиентов, где
+    """Опции повтора при бот-проверке: куки браузера + перебор клиентов, где
     tv/web_safari обычно обходят проверку, которую валит обычный web-клиент."""
-    return {
-        'cookiesfrombrowser': ('firefox',),
+    opts = {
         'extractor_args': {'youtube': {'player_client': ['tv', 'web_safari', 'default']}},
     }
+    browser = _cookies_browser()
+    if browser:
+        opts['cookiesfrombrowser'] = (browser,)
+    return opts
 
 
 # VK рубит небраузерные TLS-соединения (SSL: UNEXPECTED_EOF_WHILE_READING при
@@ -250,7 +271,7 @@ def download_video(url, from_queue=False):
     def _extract_info(extra_opts: dict):
         opts = {
             "quiet": True, "noplaylist": True,
-            "js_runtimes": {"node": {}}, "remote_components": {"ejs": "github"},
+            "js_runtimes": {"node": {}}, "remote_components": ["ejs:github"],
         }
         # Для YouTube сразу подкладываем живые куки Firefox — так бот-проверка
         # обычно не срабатывает. Для остальных сайтов — локальный cookies.txt.
@@ -351,10 +372,10 @@ def download_video(url, from_queue=False):
         'noplaylist': True,
         'logger': _YtdlpLogger(),
         'js_runtimes': {'node': {}},
-        'remote_components': {'ejs': 'github'},
+        'remote_components': ['ejs:github'],
     }
     if _is_yt:
-        ydl_opts['cookiesfrombrowser'] = ('firefox',)
+        ydl_opts.update(_yt_cookie_opts())
     elif _has_cookies:
         ydl_opts['cookies'] = cookies_path
     if _is_vk_url:

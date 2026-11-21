@@ -14,6 +14,7 @@ DEFAULT_SETTINGS = {
     "auto_capture_enabled": True,
     "download_format": "mp4",
     "video_quality": "1080p",
+    "cookies_browser": "firefox",
     "conversion_enabled": True,
     "download_with_description": False,
     "save_settings_on_exit": False,

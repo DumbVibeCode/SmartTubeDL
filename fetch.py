@@ -7,12 +7,12 @@ import yt_dlp
 from bs4 import BeautifulSoup
 
 from utils import decode_html_entities
-from config import format_duration, format_invidious_duration, api_key_var
+from config import format_duration, format_invidious_duration, api_key_var, settings
 from logger import log_message
 
 def fetch_description_with_ytdlp(video_url, cookies_file="cookies.txt"):
     """Загружает описание видео через yt-dlp. Для YouTube берёт живые куки
-    Firefox (как при скачивании) — иначе бот-проверка не даёт получить описание."""
+    браузера из settings['cookies_browser'] (как при скачивании)."""
     ydl_opts = {
         'quiet': True,
         'skip_download': True,
@@ -21,8 +21,9 @@ def fetch_description_with_ytdlp(video_url, cookies_file="cookies.txt"):
     }
 
     low = (video_url or "").lower()
-    if "youtube.com" in low or "youtu.be" in low:
-        ydl_opts['cookiesfrombrowser'] = ('firefox',)
+    browser = (settings.get("cookies_browser") or "").strip()
+    if ("youtube.com" in low or "youtu.be" in low) and browser:
+        ydl_opts['cookiesfrombrowser'] = (browser,)
     elif os.path.exists(cookies_file):
         ydl_opts['cookiefile'] = cookies_file
 

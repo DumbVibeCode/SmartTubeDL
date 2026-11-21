@@ -13,28 +13,43 @@ __pycache__/
 # --- Секреты и личные данные (НИКОГДА не коммитить!) ---
 settings.json
 config.json
+config_vk.ini
 cookies.txt
 cookies_changes.log
 *.env
 .env.*
 
+# --- Браузерные профили с активными сессиями ---
+.vk_chrome_profile/
+.vk_chrome_profile.broken/
+.vk_yandex_profile/
+.ok_chrome_profile/
+
 # --- Рантайм-файлы ---
 lockfile.lock
 download_queue.txt
 log.txt
+log.txt.old
 logs/
 *.log
 
-# --- Данные пользователя ---
+# --- Данные пользователя и состояние окон ---
 download_history.json
+vk_history.json
+*_state.json
+*_state (*).json
+*_tabs.json
 
 # --- Архивы и временные файлы ---
 *.zip
 *.tmp
+_архив/
 
 # --- Отладочные дампы ---
 descriptions_debug.txt
 *_debug.txt
+debug_wall_comments.html
+vk_search.txt
 
 # --- Файлы с секретами (текстовые) ---
 "youtube api.txt"
