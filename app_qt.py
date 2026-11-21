@@ -326,9 +326,6 @@ class YouTubeDownloaderApp(QApplication):
         _signals.status.connect(self._on_status_update)
         _signals.open_video_list.connect(self._on_open_video_list)
 
-        # Регистрируем трей в мосте
-        _tray_bridge.tray_icon = self.tray
-
         # Главное окно (пока скрыто)
         self.main_window = None
 
