@@ -21,14 +21,7 @@ from logger import log_message
 from queues import add_to_queue, process_queue
 
 
-def _save_state_soon():
-    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
-    try:
-        app = QApplication.instance()
-        if app is not None and hasattr(app, "request_state_save"):
-            app.request_state_save()
-    except Exception:
-        pass
+from utils import request_state_save as _save_state_soon
 
 
 YDL_OPTS_BASE = {

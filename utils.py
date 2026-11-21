@@ -4,7 +4,7 @@ import re
 import threading
 
 import config as _config
-from config import format_size
+from config import format_size, atomic_write_json
 from logger import log_message
 
 # Глобальные переменные для прогресса и скорости
@@ -156,6 +156,23 @@ def prepare_tsquery(text):
     # Преобразуем в tsquery формат: концерт & 1991
     words = re.findall(r'\w+', text)
     return ' & '.join(words)
+
+def safe_filename(text: str, default: str = "file") -> str:
+    """Убирает запрещённые в Windows символы из имени файла."""
+    cleaned = re.sub(r'[\\/*?:"<>|]', "_", text or "").strip()
+    return cleaned or default
+
+
+def request_state_save() -> None:
+    """Просит главное PyQt6-приложение сохранить состояние окон/вкладок (с дебаунсом)."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None and hasattr(app, "request_state_save"):
+            app.request_state_save()
+    except Exception:
+        pass
+
 
 def format_date(date_str):
     """Преобразует дату в формат ДД.ММ.ГГГГ"""

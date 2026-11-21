@@ -10,15 +10,7 @@ import webbrowser
 _TABS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'search_tabs.json')
 
 
-def _save_state_soon():
-    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
-    try:
-        from PyQt6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is not None and hasattr(app, "request_state_save"):
-            app.request_state_save()
-    except Exception:
-        pass
+from utils import request_state_save as _save_state_soon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QTextEdit, QPushButton, QTableWidget,

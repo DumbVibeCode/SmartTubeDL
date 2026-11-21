@@ -293,7 +293,7 @@ def download_video(url, from_queue=False):
 
         video_title = info.get("title", "video")
         _dl_utils.queue_titles[url] = video_title
-        safe_title = re.sub(r'[\\/*?:"<>|]', "_", video_title)
+        safe_title = _dl_utils.safe_filename(video_title, default="video")
 
         if settings["conversion_enabled"]:
             video_ext = settings["download_format"]

@@ -60,10 +60,20 @@ def load_settings():
         log_message("ERROR Файл настроек поврежден, используются дефолтные настройки")
         return DEFAULT_SETTINGS.copy()
 
+def atomic_write_json(path, data, indent=2):
+    """Атомарно записывает JSON: сначала во временный файл рядом, затем os.replace."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=indent)
+    os.replace(tmp, path)
+
+
 def save_settings(settings):
     try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, ensure_ascii=False, indent=2)
+        atomic_write_json(SETTINGS_FILE, settings, indent=2)
     except Exception as e:
         log_message(f"ERROR Ошибка при сохранении настроек: {e}")
 
@@ -73,10 +83,9 @@ def update_single_setting(key, value):
             current_settings = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         current_settings = DEFAULT_SETTINGS.copy()
-    
+
     current_settings[key] = value
-    with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
-        json.dump(current_settings, f, ensure_ascii=False, indent=4)
+    atomic_write_json(SETTINGS_FILE, current_settings, indent=2)
 
 def initialize_settings():
     return load_settings()

@@ -26,22 +26,13 @@ from PyQt6.QtCore import (
 import json
 import styles as _styles
 from styles import COLORS_MINIMAL as COLORS
-from config import settings, save_settings, load_settings, SETTINGS_FILE, format_invidious_duration
+from config import settings, save_settings, load_settings, SETTINGS_FILE, format_invidious_duration, atomic_write_json as _atomic_write_json
 from logger import log_message
 from queues import get_queue_count, ensure_queue_file_exists
 from download_history import load_download_history
 
 _CHANNEL_WINDOWS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                      "channel_windows_state.json")
-
-
-def _atomic_write_json(path, data):
-    """Пишет JSON атомарно: сначала во временный файл рядом, затем os.replace.
-    Так падение во время записи не оставляет обрезанный/битый файл."""
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
 
 
 # ============================================================
@@ -99,7 +90,7 @@ _utils.register_ui_callbacks(
     open_playlist=_bridge_open_playlist_window,
 )
 
-from clipboard import clear_clipboard, start_monitoring
+from clipboard import start_monitoring
 
 
 # ============================================================
@@ -946,10 +937,35 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip(tooltip)
 
 
+_APP_MUTEX_HANDLE = None
+
+
+def _acquire_single_instance() -> bool:
+    """True — мы единственный экземпляр app_qt.py, False — программа уже запущена."""
+    global _APP_MUTEX_HANDLE
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        _APP_MUTEX_HANDLE = k.CreateMutexW(None, False, "YTD_AppQt_singleton")
+        ERROR_ALREADY_EXISTS = 183
+        if k.GetLastError() == ERROR_ALREADY_EXISTS:
+            k.CloseHandle(_APP_MUTEX_HANDLE)
+            _APP_MUTEX_HANDLE = None
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def main():
+    if not _acquire_single_instance():
+        log_message("INFO Программа уже запущена — повторный экземпляр завершён")
+        sys.exit(0)
+
     # Инициализация
     ensure_queue_file_exists()
-    clear_clipboard()
     start_monitoring()
 
     # Настройка для QtWebEngineWidgets (встроенный видеоплеер)

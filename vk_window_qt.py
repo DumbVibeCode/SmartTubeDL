@@ -29,15 +29,7 @@ from logger import log_message
 from config import settings
 
 
-def _save_state_soon():
-    """Просит приложение сохранить состояние окон/вкладок (с дебаунсом)."""
-    try:
-        from PyQt6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is not None and hasattr(app, "request_state_save"):
-            app.request_state_save()
-    except Exception:
-        pass
+from utils import request_state_save as _save_state_soon, safe_filename
 
 
 # ── Зависимости ──────────────────────────────────────────────────────────────

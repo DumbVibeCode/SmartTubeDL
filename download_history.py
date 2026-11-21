@@ -1,6 +1,7 @@
 import os
 import json
 import time
+from config import atomic_write_json
 from logger import log_message
 
 DOWNLOAD_HISTORY_FILE = os.path.join(os.getcwd(), "download_history.json")
@@ -48,15 +49,7 @@ def load_download_history():
 def save_download_history(history):
     """Атомарно сохраняет историю загрузок в файл"""
     try:
-        history_dir = os.path.dirname(DOWNLOAD_HISTORY_FILE)
-        if history_dir and not os.path.exists(history_dir):
-            os.makedirs(history_dir, exist_ok=True)
-
-        tmp_path = DOWNLOAD_HISTORY_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, DOWNLOAD_HISTORY_FILE)
-
+        atomic_write_json(DOWNLOAD_HISTORY_FILE, history, indent=2)
         log_message(f"INFO История загрузок сохранена ({len(history)} записей)")
     except Exception as e:
         log_message(f"ERROR Ошибка при сохранении истории: {e}")
