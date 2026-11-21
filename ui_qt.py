@@ -34,7 +34,7 @@ from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
 from config import settings, save_settings
 from logger import log_message
 from queues import add_to_queue, process_queue
-from config import is_downloading
+from utils import is_download_active
 import docker_manager
 
 
@@ -865,7 +865,7 @@ class SearchWindow(QMainWindow):
         completed = self.total_downloads - queue_count
 
         # Всё скачано
-        if completed >= self.total_downloads and not is_downloading:
+        if completed >= self.total_downloads and not is_download_active():
             self.download_progress.setValue(100)
             self.download_label.setText(f"Скачано: {self.total_downloads} из {self.total_downloads}")
             self.download_progress.setVisible(True)
@@ -1374,7 +1374,7 @@ class SearchWindow(QMainWindow):
             self._update_download_bar()
 
             # Запускаем обработку очереди
-            if not is_downloading:
+            if not is_download_active():
                 threading.Thread(target=process_queue, daemon=True).start()
         else:
             self._set_status("Видео уже в очереди", "warning")

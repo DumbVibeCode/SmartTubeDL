@@ -18,9 +18,12 @@ import re
 from queues import add_to_queue, add_to_queue_front, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
 import utils as _dl_utils
 from tray import show_notification, tray_icon, update_download_status
-from config import initialize_settings, settings, is_downloading
-from utils import global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes, format_speed, update_speed, format_date
+from config import initialize_settings, settings
+from utils import format_speed, update_speed, format_date
 from clipboard_utils import update_last_copy_time
+
+# Зеркало состояния загрузки для обратной совместимости
+is_downloading = False
 
 invidious_url_var = ""
 
@@ -190,9 +193,9 @@ def _save_description(folder: str, file_name: str, description: str):
 
 
 def download_video(url, from_queue=False):
-    global is_downloading, global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
+    global is_downloading
 
-    if is_downloading:
+    if not _dl_utils.try_acquire_download():
         log_message(f"INFO Загрузка уже идет, добавляем URL в очередь: {url}")
         add_to_queue(url)
         return
@@ -209,6 +212,7 @@ def download_video(url, from_queue=False):
     def on_download_complete():
         global is_downloading
         is_downloading = False
+        _dl_utils.release_download()
         queue_count = get_queue_count()
         if queue_count > 0:
             log_message(f"INFO В очереди остались URL ({queue_count}), запускаем обработку")
@@ -224,11 +228,7 @@ def download_video(url, from_queue=False):
             on_download_complete()
             return
 
-    globals()['global_file_size'] = 0
-    globals()['global_downloaded'] = 0
-    globals()['download_speed'] = "0 KB/s"
-    globals()['last_update_time'] = time.time()
-    globals()['last_downloaded_bytes'] = 0
+    _dl_utils.reset_progress()
 
     if not url:
         log_message("ERROR Пустой URL для загрузки")
@@ -452,7 +452,6 @@ def download_video(url, from_queue=False):
 
         if from_queue:
             remove_from_queue(url)
-        on_download_complete()
         return
 
     finally:
@@ -461,34 +460,31 @@ def download_video(url, from_queue=False):
             on_download_complete()
         else:
             is_downloading = False
+            _dl_utils.release_download()
 
 def progress_hook(d):
-    global global_file_size, global_downloaded, last_update_time, last_downloaded_bytes
-
     if _dl_utils.stop_requested:
         raise _UserStop()
 
     try:
         if d["status"] == "downloading":
             if "total_bytes" in d and d["total_bytes"] is not None:
-                globals()['global_file_size'] = d["total_bytes"]
+                _dl_utils.global_file_size = d["total_bytes"]
             elif "total_bytes_estimate" in d and d["total_bytes_estimate"] is not None:
-                globals()['global_file_size'] = d["total_bytes_estimate"]
+                _dl_utils.global_file_size = d["total_bytes_estimate"]
 
             if "downloaded_bytes" in d and d["downloaded_bytes"] is not None:
-                globals()['global_downloaded'] = d["downloaded_bytes"]
-                update_speed(global_downloaded)
+                _dl_utils.global_downloaded = d["downloaded_bytes"]
+                update_speed(_dl_utils.global_downloaded)
 
-            total = globals()['global_file_size']
-            downloaded = globals()['global_downloaded']
+            total = _dl_utils.global_file_size
+            downloaded = _dl_utils.global_downloaded
             percent = (downloaded / total * 100) if total else 0
             update_download_status("Загрузка...", int(percent), downloaded, total)
 
         elif d["status"] == "finished":
             update_download_status("Готово!", 100, 0, 0)
-            globals()['global_file_size'] = 0
-            globals()['global_downloaded'] = 0
-            globals()['download_speed'] = "0 KB/s"
+            _dl_utils.reset_progress()
 
     except Exception as e:
         log_message(f"Ошибка в progress_hook: {e}")

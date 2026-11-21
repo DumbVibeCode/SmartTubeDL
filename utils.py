@@ -1,8 +1,10 @@
 import time
 import html
 import re
+import threading
 import tkinter as tk
 
+import config as _config
 from config import format_size
 from logger import log_message
 
@@ -15,10 +17,45 @@ last_downloaded_bytes = 0
 
 save_settings_var = None
 
-# Управление загрузкой (пауза/стоп)
+# Управление загрузкой (пауза/стоп) и потокобезопасный флаг активной загрузки
+_download_lock = threading.Lock()
+_downloading_event = threading.Event()
+
 stop_requested = False       # True = остановить текущую загрузку
 current_download_url = ""    # URL текущей активной загрузки
 is_paused = False            # True = загрузка поставлена на паузу
+
+
+def is_download_active() -> bool:
+    """Возвращает True, если сейчас идёт активная загрузка."""
+    return _downloading_event.is_set()
+
+
+def try_acquire_download() -> bool:
+    """Атомарно захватывает слот загрузки. Возвращает False, если загрузка уже идёт."""
+    with _download_lock:
+        if _downloading_event.is_set():
+            return False
+        _downloading_event.set()
+        _config.is_downloading = True
+        return True
+
+
+def release_download() -> None:
+    """Освобождает слот загрузки."""
+    with _download_lock:
+        _downloading_event.clear()
+        _config.is_downloading = False
+
+
+def reset_progress() -> None:
+    """Сбрасывает счётчики прогресса и скорости загрузки."""
+    global global_file_size, global_downloaded, download_speed, last_update_time, last_downloaded_bytes
+    global_file_size = 0
+    global_downloaded = 0
+    download_speed = "0 KB/s"
+    last_update_time = time.time()
+    last_downloaded_bytes = 0
 
 # Кэш названий для очереди {url: title}
 queue_titles: dict = {}

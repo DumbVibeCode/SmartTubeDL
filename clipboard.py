@@ -6,7 +6,7 @@ from download import download_channel_with_selection, download_playlist_with_sel
 from logger import log_message
 from config import settings
 from queues import add_to_queue
-from config import is_downloading
+from utils import is_download_active
 from clipboard_utils import get_last_copy_time
 
 last_clipboard = ""
@@ -79,7 +79,7 @@ def clipboard_monitor():
                     log_message("INFO Обнаружена ссылка на канал")
                     threading.Thread(target=download_channel_with_selection, args=(current_clipboard,), daemon=True).start()
                 else:
-                    if is_downloading:
+                    if is_download_active():
                         log_message("INFO Загрузка уже идет, добавляем в очередь")
                         threading.Thread(target=add_to_queue, args=(current_clipboard,), daemon=True).start()
                     else:

@@ -601,12 +601,12 @@ class OKSearchWindow(QWidget):
             QMessageBox.information(self, "Нет видео", "Список пуст — сначала найдите видео.")
             return
         from queues import add_to_queue, process_queue
-        import download
+        from utils import is_download_active
         for u in urls:
             add_to_queue(u)
         log_message(f"INFO OK: в очередь добавлено видео: {len(urls)}")
         self._sig.status.emit(f"В очередь добавлено: {len(urls)} — качаю по очереди")
-        if not getattr(download, "is_downloading", False):
+        if not is_download_active():
             threading.Thread(target=process_queue, daemon=True).start()
 
     # ── Загрузка музыки: play → захват стрима → прямое скачивание MP3 ──────────

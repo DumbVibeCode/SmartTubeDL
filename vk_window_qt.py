@@ -2665,14 +2665,12 @@ return (function(){
         if not urls:
             self._sig.status.emit("Не выбрано ни одного видео")
             return
-        import config as _cfg
-        from download import download_video
-        from queues import add_to_queue
+        from queues import add_to_queue, process_queue
+        from utils import is_download_active
         for url in urls:
-            if _cfg.is_downloading:
-                add_to_queue(url)
-            else:
-                threading.Thread(target=download_video, args=(url,), daemon=True).start()
+            add_to_queue(url)
+        if not is_download_active():
+            threading.Thread(target=process_queue, daemon=True).start()
         self._sig.status.emit(f"Добавлено в очередь: {len(urls)} видео")
 
     def _cdp_capture_url(self, d: dict, id_to_el: dict, mobile_items, i: int):

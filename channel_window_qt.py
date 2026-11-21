@@ -504,8 +504,8 @@ class VideoListWindow(QWidget):
                 added += 1
         self.status_label.setText(f"Добавлено в очередь: {added}")
         log_message(f"INFO Добавлено в очередь: {added} видео")
-        from config import is_downloading
-        if not is_downloading:
+        from utils import is_download_active
+        if not is_download_active():
             threading.Thread(target=process_queue, daemon=True).start()
 
     def _show_context_menu(self, pos):
@@ -603,8 +603,8 @@ class VideoListWindow(QWidget):
         add_to_queue(url)
         self.status_label.setText(f"Добавлено в очередь: {url[:60]}...")
         log_message(f"INFO Видео добавлено в очередь: {url}")
-        from config import is_downloading
-        if not is_downloading:
+        from utils import is_download_active
+        if not is_download_active():
             threading.Thread(target=process_queue, daemon=True).start()
 
     def closeEvent(self, event):

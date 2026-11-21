@@ -282,7 +282,7 @@ class HistoryWindow(QWidget):
     def _download_selected(self):
         """Добавляет выбранные видео в очередь загрузки"""
         from queues import add_to_queue, process_queue
-        from config import is_downloading
+        from utils import is_download_active
         import threading
 
         selected_rows = list(set(item.row() for item in self.table.selectedItems()))
@@ -303,7 +303,7 @@ class HistoryWindow(QWidget):
             QMessageBox.information(self, "Успешно", f"Добавлено в очередь: {added}")
 
             # Запускаем обработку очереди
-            if not is_downloading:
+            if not is_download_active():
                 threading.Thread(target=process_queue, daemon=True).start()
 
     def closeEvent(self, event):
@@ -612,7 +612,7 @@ class YouTubeDownloaderApp(QApplication):
                                 "Не найдено ни одной ссылки (нужны http:// или https://).")
             return
         from queues import add_to_queue, process_queue
-        import download
+        from utils import is_download_active
         import threading
         for u in urls:
             add_to_queue(u)
@@ -623,7 +623,7 @@ class YouTubeDownloaderApp(QApplication):
         )
         # Запускаем обработку, только если сейчас ничего не качается —
         # иначе текущая загрузка сама подхватит очередь по завершении.
-        if not getattr(download, "is_downloading", False):
+        if not is_download_active():
             threading.Thread(target=process_queue, daemon=True).start()
 
     def show_settings_dialog(self):
