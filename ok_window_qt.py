@@ -112,25 +112,76 @@ _WALK_JS = (
     "if(e.shadowRoot)yield* walk(e.shadowRoot);}}\n"
 )
 
-# Перечислить треки по порядку DOM: [{title, artist, album, duration}]
+# Перечислить треки по порядку DOM: [{tid, title, artist, album, duration}]
 _LIST_TRACKS_JS = _WALK_JS + r"""
 var out=[];
 for (var e of walk(document)){
     if (!e.tagName || e.tagName.toLowerCase()!=='wm-track') continue;
+    var tid = '', propArtist = '', propAlbum = '';
+    try {
+        if (e.props && e.props.track) {
+            var trk = e.props.track;
+            if (trk.id != null) tid = String(trk.id);
+            propArtist = (trk.ensemble || trk.artistsStr || '').trim();
+            propAlbum = (trk.album && trk.album.name ? String(trk.album.name) : '').trim();
+        }
+    } catch(_){}
     var artist='', album='';
     for (var x of walk(e)){
         if (x.classList && x.classList.contains('artist') && !artist) artist=(x.innerText||'').trim();
         if (x.classList && x.classList.contains('album')  && !album)  album=(x.innerText||'').trim();
     }
+    if (!artist) artist = propArtist;
+    if (!album)  album  = propAlbum;
     var lines=(e.innerText||'').split('\n').map(function(s){return s.trim();}).filter(Boolean);
     var title=lines.length?lines[0]:'';
     var dur='';
     for (var li=lines.length-1; li>=0; li--){
         if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(lines[li])){ dur=lines[li]; break; }
     }
-    out.push({title:title, artist:artist, album:album, duration:dur});
+    out.push({tid:tid, title:title, artist:artist, album:album, duration:dur});
 }
 return out;
+"""
+
+# Мгновенно получить подписанный URL musicd .../stream (уже с clientHash) через store.player.playTrack(tid)
+# Без прокрутки списка, без кликов по кнопке Play и без спиннеров в браузере!
+_FETCH_STREAM_BY_TID_JS = _WALK_JS + r"""
+var tid = Number(arguments[0]);
+var done = arguments[arguments.length - 1];
+var player = null;
+for (var e of walk(document)) {
+    try {
+        if (e.store && e.store.player && typeof e.store.player.playTrack === 'function') {
+            player = e.store.player;
+            break;
+        }
+    } catch(_){}
+}
+if (!player) return done({ok: false, err: 'store.player not found'});
+var prevSrc = (player.state && player.state.currentTrackSrc) || '';
+Promise.resolve(player.playTrack(tid)).then(
+    function(){
+        var deadline = Date.now() + 8000;
+        (function poll(){
+            var src = (player.state && player.state.currentTrackSrc)
+                   || (player.audio && player.audio.currentSrc) || '';
+            if (src && src.indexOf('musicd.okcdn.ru') !== -1 && (src !== prevSrc || src.indexOf('fid=' + tid) !== -1)) {
+                try { player.pause(); } catch(_){}
+                return done({ok: true, play: src});
+            }
+            if (Date.now() > deadline) {
+                try { player.pause(); } catch(_){}
+                return done({ok: false, err: 'timeout waiting currentTrackSrc'});
+            }
+            setTimeout(poll, 100);
+        })();
+    },
+    function(err){
+        try { player.pause(); } catch(_){}
+        done({ok: false, err: String(err)});
+    }
+);
 """
 
 # Кликнуть play по i-му <wm-track> (строго внутри самого трека, порядок = _LIST_TRACKS_JS)
@@ -749,6 +800,21 @@ class OKSearchWindow(QWidget):
                 log_message(f"DEBUG OK play[{idx}]: повторный клик для захвата стрима")
         return None
 
+    def _fetch_stream_by_tid(self, tid: str) -> str | None:
+        """Мгновенно получает URL MP3 через внутренний store.api.post('play', {tid})."""
+        if not tid or not self.driver:
+            return None
+        try:
+            self.driver.set_script_timeout(15)
+            res = self.driver.execute_async_script(_FETCH_STREAM_BY_TID_JS, tid)
+            if isinstance(res, dict) and res.get("ok") and res.get("play"):
+                return res["play"]
+            if isinstance(res, dict) and res.get("err"):
+                log_message(f"DEBUG OK store.api.post(play, {tid}): {res['err']}")
+        except Exception as e:
+            log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
+        return None
+
     def _worker_music_download(self, tracks: list):
         folder = ""
         try:
@@ -758,108 +824,127 @@ class OKSearchWindow(QWidget):
             folder = os.path.expanduser("~")
 
         total = len(tracks)
-        remaining = {self._track_key(t): t for t in tracks}
         done = 0
         ok_count = 0
 
-        # Список виртуализирован: если у выбранных треков сохранена позиция scroll_top,
-        # прыгаем сразу в нужную область списка вместо прокрутки с самого верха.
-        known_ys = [t["scroll_top"] for t in remaining.values() if isinstance(t.get("scroll_top"), (int, float))]
-        start_y = max(0, int(min(known_ys)) - 300) if known_ys else 0
-        try:
-            if start_y > 0:
-                self.driver.execute_script(_SCROLL_TO_JS, start_y)
-                time.sleep(0.35)
-            else:
-                self.driver.execute_script(_SCROLL_TOP_JS)
-                time.sleep(0.5)
-        except Exception:
-            pass
-
-        end_hits = 0
-        max_steps = 250
-        steps = 0
-        jumped_to_top = (start_y == 0)
-        while remaining and steps < max_steps:
-            try:
-                rows = self.driver.execute_script(_LIST_TRACKS_JS) or []
-            except Exception:
-                rows = []
-            hit_i = None
-            hit_key = None
-            for i, r in enumerate(rows):
-                k = self._track_key(r)
-                if k in remaining:
-                    hit_i, hit_key = i, k
-                    break
-            if hit_i is None:
-                # В этом окне нет целей — если ближайший оставшийся трек далеко ниже,
-                # прыгаем к нему напрямую, иначе скроллим на один экран вниз.
-                steps += 1
-                info = {}
-                try:
-                    cur_y = int(self.driver.execute_script(_GET_SCROLL_TOP_JS) or 0)
-                    rem_ys = [t["scroll_top"] for t in remaining.values()
-                              if isinstance(t.get("scroll_top"), (int, float)) and t["scroll_top"] > cur_y + 900]
-                    if rem_ys:
-                        jump_y = max(0, int(min(rem_ys)) - 300)
-                        new_y = int(self.driver.execute_script(_SCROLL_TO_JS, jump_y) or 0)
-                        info = {"moved": abs(new_y - cur_y) > 2, "atEnd": False}
-                    else:
-                        info = self.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
-                except Exception:
-                    pass
-                time.sleep(0.18)
-                if not info.get("moved", False) and info.get("atEnd", False):
-                    end_hits += 1
-                    if end_hits >= 3:
-                        # Если начинали не с 0 и что-то осталось — делаем один запасной проход сверху
-                        if not jumped_to_top and remaining:
-                            jumped_to_top = True
-                            end_hits = 0
-                            try:
-                                self.driver.execute_script(_SCROLL_TOP_JS)
-                                time.sleep(0.4)
-                            except Exception:
-                                pass
-                            continue
-                        break
-                else:
-                    end_hits = 0
+        # ── Быстрый путь: треки с известным tid скачиваем напрямую через store.api ──
+        # Без прокрутки списка, без кликов Play, работает при любой сортировке таблицы!
+        fallback_tracks = []
+        for t in tracks:
+            tid = str(t.get("tid") or "").strip()
+            if not tid:
+                fallback_tracks.append(t)
                 continue
-
-            end_hits = 0
-            t = remaining.pop(hit_key)
             artist, title = t.get("artist", ""), t.get("title", "")
             label = f"{artist} — {title}".strip(" —") or title or "трек"
             done += 1
             self._sig.status.emit(f"Скачиваю {done}/{total}: {label}")
             self._sig.progress.emit((done - 1) / max(total, 1) * 100)
 
-            url = self._capture_stream_url(hit_i)
-            # Останавливаем воспроизведение в браузере сразу после захвата URL,
-            # чтобы на треке не висел спиннер и не мешал переходу к следующему треку.
+            url = self._fetch_stream_by_tid(tid)
+            if url and self._download_stream(url, folder, artist, title):
+                ok_count += 1
+            else:
+                # Если прямой API не отдал ссылку — пробуем запасной путь через клик Play
+                log_message(f"INFO OK: fallback через браузер для «{label}»")
+                done -= 1
+                fallback_tracks.append(t)
+
+        # ── Запасной путь (для старых сохранённых списков без tid) ──────────────────
+        remaining = {self._track_key(t): t for t in fallback_tracks}
+        if remaining:
+            known_ys = [t["scroll_top"] for t in remaining.values() if isinstance(t.get("scroll_top"), (int, float))]
+            start_y = max(0, int(min(known_ys)) - 300) if known_ys else 0
+            try:
+                if start_y > 0:
+                    self.driver.execute_script(_SCROLL_TO_JS, start_y)
+                    time.sleep(0.35)
+                else:
+                    self.driver.execute_script(_SCROLL_TOP_JS)
+                    time.sleep(0.5)
+            except Exception:
+                pass
+
+            end_hits = 0
+            max_steps = 250
+            steps = 0
+            jumped_to_top = (start_y == 0)
+            while remaining and steps < max_steps:
+                try:
+                    rows = self.driver.execute_script(_LIST_TRACKS_JS) or []
+                except Exception:
+                    rows = []
+                hit_i = None
+                hit_key = None
+                for i, r in enumerate(rows):
+                    k = self._track_key(r)
+                    if k in remaining:
+                        hit_i, hit_key = i, k
+                        break
+                if hit_i is None:
+                    steps += 1
+                    info = {}
+                    try:
+                        cur_y = int(self.driver.execute_script(_GET_SCROLL_TOP_JS) or 0)
+                        rem_ys = [t["scroll_top"] for t in remaining.values()
+                                  if isinstance(t.get("scroll_top"), (int, float)) and t["scroll_top"] > cur_y + 900]
+                        if rem_ys:
+                            jump_y = max(0, int(min(rem_ys)) - 300)
+                            new_y = int(self.driver.execute_script(_SCROLL_TO_JS, jump_y) or 0)
+                            info = {"moved": abs(new_y - cur_y) > 2, "atEnd": False}
+                        else:
+                            info = self.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
+                    except Exception:
+                        pass
+                    time.sleep(0.18)
+                    if not info.get("moved", False) and info.get("atEnd", False):
+                        end_hits += 1
+                        if end_hits >= 3:
+                            if not jumped_to_top and remaining:
+                                jumped_to_top = True
+                                end_hits = 0
+                                try:
+                                    self.driver.execute_script(_SCROLL_TOP_JS)
+                                    time.sleep(0.4)
+                                except Exception:
+                                    pass
+                                continue
+                            break
+                    else:
+                        end_hits = 0
+                    continue
+
+                end_hits = 0
+                t = remaining.pop(hit_key)
+                artist, title = t.get("artist", ""), t.get("title", "")
+                label = f"{artist} — {title}".strip(" —") or title or "трек"
+                done += 1
+                self._sig.status.emit(f"Скачиваю {done}/{total}: {label}")
+                self._sig.progress.emit((done - 1) / max(total, 1) * 100)
+
+                url = self._capture_stream_url(hit_i)
+                try:
+                    self.driver.execute_script(_STOP_AUDIO_JS)
+                except Exception:
+                    pass
+                if url and self._download_stream(url, folder, artist, title):
+                    ok_count += 1
+                else:
+                    log_message(f"WARNING OK: не удалось скачать «{label}»")
+                time.sleep(0.3)
+
+            if remaining:
+                missed = ", ".join(
+                    f"{t.get('artist', '')} - {t.get('title', '')}".strip(" -")
+                    for t in list(remaining.values())[:5]
+                )
+                log_message(f"WARNING OK: не найдены в списке при прокрутке ({len(remaining)} шт.): {missed}")
+
             try:
                 self.driver.execute_script(_STOP_AUDIO_JS)
             except Exception:
                 pass
-            if url and self._download_stream(url, folder, artist, title):
-                ok_count += 1
-            else:
-                log_message(f"WARNING OK: не удалось скачать «{label}»")
-            time.sleep(0.3)
 
-        if remaining:
-            missed = ", ".join(
-                f"{t.get('artist', '')} - {t.get('title', '')}".strip(" -")
-                for t in list(remaining.values())[:5]
-            )
-            log_message(f"WARNING OK: не найдены в списке при прокрутке ({len(remaining)} шт.): {missed}")
-
-        try:
-            self.driver.execute_script(_STOP_AUDIO_JS)
-        except Exception:
-            pass
         self._sig.progress.emit(100)
         self._sig.status.emit(f"Готово: скачано {ok_count} из {total}")
         self._busy = False
