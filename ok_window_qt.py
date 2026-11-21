@@ -228,6 +228,45 @@ else { try{ tracks[tracks.length-1].scrollIntoView(false); }catch(_){ } }
 return {n: tracks.length, scrolled: !!best};
 """
 
+# Прокрутить список треков на указанную позицию scrollTop (быстрый прыжок к нужной зоне)
+_SCROLL_TO_JS = _WALK_JS + r"""
+var targetY = Math.max(0, arguments[0] || 0);
+function up(n){var p=n.parentNode;if(p&&p.nodeType===11&&p.host)return p.host;if(p)return p;return n.assignedSlot||null;}
+var first=null;
+for (var e of walk(document)){ if(e.tagName&&e.tagName.toLowerCase()==='wm-track'){ first=e; break; } }
+if(!first) return 0;
+var node=first;
+for (var i=0;i<40&&node;i++){
+    try{ var st=getComputedStyle(node); var oy=st.overflowY,o=st.overflow;
+        if((oy==='auto'||oy==='scroll'||o==='auto'||o==='scroll')&&(node.scrollHeight-node.clientHeight>40)){
+            node.scrollTop = Math.min(node.scrollHeight, targetY);
+            return node.scrollTop;
+        }
+    }catch(_){}
+    node=up(node);
+}
+try{ window.scrollTo(0, targetY); }catch(_){}
+return window.scrollY || 0;
+"""
+
+# Получить текущий scrollTop контейнера списка треков
+_GET_SCROLL_TOP_JS = _WALK_JS + r"""
+function up(n){var p=n.parentNode;if(p&&p.nodeType===11&&p.host)return p.host;if(p)return p;return n.assignedSlot||null;}
+var first=null;
+for (var e of walk(document)){ if(e.tagName&&e.tagName.toLowerCase()==='wm-track'){ first=e; break; } }
+if(!first) return 0;
+var node=first;
+for (var i=0;i<40&&node;i++){
+    try{ var st=getComputedStyle(node); var oy=st.overflowY,o=st.overflow;
+        if((oy==='auto'||oy==='scroll'||o==='auto'||o==='scroll')&&(node.scrollHeight-node.clientHeight>40)){
+            return node.scrollTop;
+        }
+    }catch(_){}
+    node=up(node);
+}
+return window.scrollY || 0;
+"""
+
 # Прокрутить список треков в САМЫЙ ВЕРХ (перед перечислением/загрузкой)
 _SCROLL_TOP_JS = _WALK_JS + r"""
 function up(n){var p=n.parentNode;if(p&&p.nodeType===11&&p.host)return p.host;if(p)return p;return n.assignedSlot||null;}
@@ -486,12 +525,17 @@ class OKSearchWindow(QWidget):
             tracks = []
             stall = 0
             for _ in range(80):
+                try:
+                    cur_y = int(self.driver.execute_script(_GET_SCROLL_TOP_JS) or 0)
+                except Exception:
+                    cur_y = 0
                 rows = self.driver.execute_script(_LIST_TRACKS_JS) or []
                 added = 0
                 for r in rows:
                     k = self._track_key(r)
                     if k not in seen:
                         seen.add(k)
+                        r["scroll_top"] = cur_y
                         tracks.append(r)
                         added += 1
                 self._sig.status.emit(f"Загрузка треков... {len(tracks)}")
@@ -718,17 +762,24 @@ class OKSearchWindow(QWidget):
         done = 0
         ok_count = 0
 
-        # Список виртуализирован: прокручиваем сверху пошагово (по 70% экрана),
-        # чтобы не пропустить ни одного выбранного трека в середине списка.
+        # Список виртуализирован: если у выбранных треков сохранена позиция scroll_top,
+        # прыгаем сразу в нужную область списка вместо прокрутки с самого верха.
+        known_ys = [t["scroll_top"] for t in remaining.values() if isinstance(t.get("scroll_top"), (int, float))]
+        start_y = max(0, int(min(known_ys)) - 300) if known_ys else 0
         try:
-            self.driver.execute_script(_SCROLL_TOP_JS)
-            time.sleep(1.0)
+            if start_y > 0:
+                self.driver.execute_script(_SCROLL_TO_JS, start_y)
+                time.sleep(0.35)
+            else:
+                self.driver.execute_script(_SCROLL_TOP_JS)
+                time.sleep(0.5)
         except Exception:
             pass
 
         end_hits = 0
         max_steps = 250
         steps = 0
+        jumped_to_top = (start_y == 0)
         while remaining and steps < max_steps:
             try:
                 rows = self.driver.execute_script(_LIST_TRACKS_JS) or []
@@ -742,17 +793,36 @@ class OKSearchWindow(QWidget):
                     hit_i, hit_key = i, k
                     break
             if hit_i is None:
-                # В этом окне нет целей — скроллим на один экран вниз (с перекрытием)
+                # В этом окне нет целей — если ближайший оставшийся трек далеко ниже,
+                # прыгаем к нему напрямую, иначе скроллим на один экран вниз.
                 steps += 1
                 info = {}
                 try:
-                    info = self.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
+                    cur_y = int(self.driver.execute_script(_GET_SCROLL_TOP_JS) or 0)
+                    rem_ys = [t["scroll_top"] for t in remaining.values()
+                              if isinstance(t.get("scroll_top"), (int, float)) and t["scroll_top"] > cur_y + 900]
+                    if rem_ys:
+                        jump_y = max(0, int(min(rem_ys)) - 300)
+                        new_y = int(self.driver.execute_script(_SCROLL_TO_JS, jump_y) or 0)
+                        info = {"moved": abs(new_y - cur_y) > 2, "atEnd": False}
+                    else:
+                        info = self.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
                 except Exception:
                     pass
-                time.sleep(0.6)
+                time.sleep(0.18)
                 if not info.get("moved", False) and info.get("atEnd", False):
                     end_hits += 1
                     if end_hits >= 3:
+                        # Если начинали не с 0 и что-то осталось — делаем один запасной проход сверху
+                        if not jumped_to_top and remaining:
+                            jumped_to_top = True
+                            end_hits = 0
+                            try:
+                                self.driver.execute_script(_SCROLL_TOP_JS)
+                                time.sleep(0.4)
+                            except Exception:
+                                pass
+                            continue
                         break
                 else:
                     end_hits = 0
