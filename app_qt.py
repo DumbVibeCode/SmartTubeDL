@@ -5,7 +5,6 @@ YouTube Downloader - Новый интерфейс на PyQt6
 
 import sys
 import os
-import types
 
 # Windows: устанавливаем AppUserModelID для работы уведомлений
 if sys.platform == 'win32':
@@ -46,11 +45,7 @@ def _atomic_write_json(path, data):
 
 
 # ============================================================
-# Thread-safe мост для download.py
-#
-# ВАЖНО: мост должен быть установлен ДО импорта clipboard,
-# потому что clipboard → download → from tray import ...
-# Если мост не готов, download.py получит старый tray.py!
+# Thread-safe UI-колбэки для download.py и queue_window_qt.py
 # ============================================================
 
 class _TraySignals(QObject):
@@ -64,7 +59,7 @@ _signals = None  # Инициализируется после создания 
 _last_status_time = 0  # Для throttling обновлений прогресса
 
 
-def _bridge_show_notification(icon, title, message):
+def _bridge_show_notification(title, message):
     """Показывает уведомление (thread-safe)"""
     if _signals:
         _signals.notify.emit(str(title), str(message))
@@ -96,20 +91,14 @@ def _bridge_update_download_status(status, progress=None, downloaded=0, total_si
         _signals.status.emit(str(status), prog)
 
 
-# Подменяем модуль 'tray' ДО импорта clipboard/download
-_tray_bridge = types.ModuleType("tray")
-_tray_bridge.__file__ = "tray_bridge (Qt)"
-_tray_bridge.tray_icon = None
-_tray_bridge.root = None
-_tray_bridge.download_status = "Ожидание..."
-_tray_bridge.settings = settings
-_tray_bridge.show_notification = _bridge_show_notification
-_tray_bridge.update_download_status = _bridge_update_download_status
-_tray_bridge.open_channel_window = _bridge_open_channel_window
-_tray_bridge.open_playlist_window = _bridge_open_playlist_window
-sys.modules["tray"] = _tray_bridge
+import utils as _utils
+_utils.register_ui_callbacks(
+    notify=_bridge_show_notification,
+    status=_bridge_update_download_status,
+    open_channel=_bridge_open_channel_window,
+    open_playlist=_bridge_open_playlist_window,
+)
 
-# Теперь безопасно импортировать clipboard (clipboard → download → tray)
 from clipboard import clear_clipboard, start_monitoring
 
 

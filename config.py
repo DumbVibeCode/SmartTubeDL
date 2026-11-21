@@ -1,11 +1,6 @@
 import os
 import json
-import subprocess
-import threading
 import time
-from tkinter import Tk, filedialog, messagebox
-import tkinter
-import requests
 from logger import log_message
 
 SETTINGS_FILE = os.path.join(os.getcwd(), "settings.json")
@@ -86,84 +81,6 @@ def update_single_setting(key, value):
 def initialize_settings():
     return load_settings()
 
-def toggle_conversion(icon, item):
-    settings["conversion_enabled"] = not settings["conversion_enabled"]
-    save_settings(settings)
-    log_message(f"Конвертация {'включена' if settings['conversion_enabled'] else 'выключена'}")
-
-def set_convert_original(icon, item):
-    settings["convert_format"] = "original"
-    save_settings(settings)
-    log_message("Формат конвертации установлен: исходный формат")
-
-def set_convert_mp3(icon, item):
-    settings["convert_format"] = "mp3"
-    save_settings(settings)
-    log_message("Формат конвертации установлен: MP3")
-
-def set_convert_mp4(icon, item):
-    settings["convert_format"] = "mp4"
-    save_settings(settings)
-    log_message("Формат конвертации установлен: MP4")
-
-def set_quality_1080p(icon, item):
-    settings["video_quality"] = "1080p"
-    save_settings(settings)
-    log_message("Качество видео установлено: 1080p")
-
-def set_quality_720p(icon, item):
-    settings["video_quality"] = "720p"
-    save_settings(settings)
-    log_message("Качество видео установлено: 720p")
-
-def set_quality_480p(icon, item):
-    settings["video_quality"] = "480p"
-    save_settings(settings)
-    log_message("Качество видео установлено: 480p")
-
-def set_format_mp3(icon, item):
-    settings["download_format"] = "mp3"
-    save_settings(settings)
-    log_message("Формат загрузки изменён на MP3")
-
-def set_format_mp4(icon, item):
-    settings["download_format"] = "mp4"
-    save_settings(settings)
-    log_message("Формат загрузки изменён на MP4")
-
-def set_download_folder():
-    root = Tk()
-    root.withdraw()
-    folder = filedialog.askdirectory()
-    if folder:
-        settings["download_folder"] = folder
-        save_settings(settings)
-        messagebox.showinfo("Настройки", f"Папка сохранения изменена на: {folder}")
-        log_message(f"Выбрана папка: {folder}")
-    root.destroy()
-
-def toggle_auto_capture(icon, item):
-    from clipboard import last_clipboard
-    
-    settings["auto_capture_enabled"] = not settings["auto_capture_enabled"]
-    save_settings(settings)
-    
-    if settings["auto_capture_enabled"]:
-        try:
-            root = tkinter.Tk()
-            root.withdraw()
-            clipboard_snapshot = root.clipboard_get()
-            root.destroy()
-            last_clipboard = clipboard_snapshot
-            log_message(f"Автоперехват ссылок включен, текущий буфер: '{clipboard_snapshot}'")
-        except tkinter.TclError:
-            last_clipboard = ""
-            log_message("Автоперехват ссылок включен, буфер обмена пуст или недоступен")
-    else:
-        log_message("Автоперехват ссылок выключен")
-
-def show_settings(icon, item):
-    threading.Thread(target=set_download_folder).start()
 
 def ensure_invidious_running():
     import docker_manager
@@ -220,10 +137,4 @@ def format_invidious_duration(seconds):
         log_message(f"Ошибка форматирования времени Invidious: {e}")
         return "00:00:00"
     
-def bind_var_to_settings(var, key):
-    def callback(*args):
-        settings[key] = var.get()
-        # log_message(f"DEBUG settings[{key!r}] обновлено: {var.get()}")
-    var.trace_add("write", callback)    
-
 settings = initialize_settings()

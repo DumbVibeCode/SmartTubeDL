@@ -203,13 +203,12 @@ class QueueWindow(QWidget):
             log_message(f"INFO Удалено из очереди: {url}")
 
         if deleted_paused:
-            from tray import update_download_status
             remaining = get_queue_urls()
             if remaining:
                 from queues import process_queue
                 threading.Thread(target=process_queue, daemon=True).start()
             else:
-                update_download_status("Ожидание...", -1)
+                _utils.update_status_ui("Ожидание...", -1)
 
         self._refresh()
 

@@ -2,7 +2,6 @@ import time
 import html
 import re
 import threading
-import tkinter as tk
 
 import config as _config
 from config import format_size
@@ -24,6 +23,54 @@ _downloading_event = threading.Event()
 stop_requested = False       # True = остановить текущую загрузку
 current_download_url = ""    # URL текущей активной загрузки
 is_paused = False            # True = загрузка поставлена на паузу
+
+# UI-колбэки (регистрируются в app_qt.py, разрывают зависимость ядра от UI)
+_ui_callbacks = {
+    "notify": None,
+    "status": None,
+    "open_channel": None,
+    "open_playlist": None,
+}
+
+
+def register_ui_callbacks(notify=None, status=None, open_channel=None, open_playlist=None) -> None:
+    """Регистрирует UI-обработчики для уведомлений, статуса и окон каналов/плейлистов."""
+    if notify is not None:
+        _ui_callbacks["notify"] = notify
+    if status is not None:
+        _ui_callbacks["status"] = status
+    if open_channel is not None:
+        _ui_callbacks["open_channel"] = open_channel
+    if open_playlist is not None:
+        _ui_callbacks["open_playlist"] = open_playlist
+
+
+def notify_ui(title: str, message: str) -> None:
+    """Отправляет уведомление в UI (если зарегистрирован обработчик)."""
+    cb = _ui_callbacks.get("notify")
+    if cb:
+        cb(str(title), str(message))
+
+
+def update_status_ui(status: str, progress=None, downloaded: int = 0, total_size: int = 0) -> None:
+    """Обновляет статус загрузки в UI (если зарегистрирован обработчик)."""
+    cb = _ui_callbacks.get("status")
+    if cb:
+        cb(status, progress, downloaded, total_size)
+
+
+def open_channel_ui(url: str) -> None:
+    """Открывает окно канала в UI (если зарегистрирован обработчик)."""
+    cb = _ui_callbacks.get("open_channel")
+    if cb:
+        cb(str(url))
+
+
+def open_playlist_ui(url: str) -> None:
+    """Открывает окно плейлиста в UI (если зарегистрирован обработчик)."""
+    cb = _ui_callbacks.get("open_playlist")
+    if cb:
+        cb(str(url))
 
 
 def is_download_active() -> bool:
@@ -65,23 +112,22 @@ vk_queue: list = []        # [{"key": "vk:...", "label": "Исполнитель
 current_vk_key: str = ""   # ключ текущего скачивания ВК
 
 # utils.py
-def update_progress(completed: int, total: int, progress_var: tk.DoubleVar = None, root: tk.Tk = None, status_var: tk.StringVar = None):
-    """Обновляет прогресс-бар и статусную строку"""
+def update_progress(completed: int, total: int, progress_var=None, root=None, status_var=None):
+    """Обновляет прогресс-бар и статусную строку (совместимость с search.py)"""
     if total > 0:
         progress = (completed / total) * 100
         if progress_var and root:
             root.after(0, lambda: progress_var.set(progress))
-        if status_var:
+        if status_var and root:
             root.after(0, lambda: status_var.set(f"Обработано {completed}/{total} элементов"))
     else:
         if progress_var and root:
             root.after(0, lambda: progress_var.set(0))
-        if status_var:
+        if status_var and root:
             root.after(0, lambda: status_var.set("Нет элементов для обработки"))
 
 def decode_html_entities(text):
     """Декодирует HTML-сущности в обычный текст"""
-    import html
     if text:
         return html.unescape(text)
     return text
@@ -100,18 +146,16 @@ def update_speed(downloaded_bytes):
     global download_speed, last_update_time, last_downloaded_bytes
     current_time = time.time()
     time_diff = current_time - last_update_time
-    if time_diff >= 1:  # Обновляем скорость каждые 0.5 секунды
+    if time_diff >= 1:
         speed_bytes = (downloaded_bytes - last_downloaded_bytes) / time_diff
         download_speed = format_speed(speed_bytes)
         last_update_time = current_time
         last_downloaded_bytes = downloaded_bytes
-        
+
 def prepare_tsquery(text):
     # Преобразуем в tsquery формат: концерт & 1991
     words = re.findall(r'\w+', text)
     return ' & '.join(words)
-
-from logger import log_message  # Предполагается, что log_message импортируется в utils.py
 
 def format_date(date_str):
     """Преобразует дату в формат ДД.ММ.ГГГГ"""

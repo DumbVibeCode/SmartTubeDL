@@ -17,9 +17,12 @@ from bs4 import BeautifulSoup
 import re
 from queues import add_to_queue, add_to_queue_front, clear_queue_file, get_queue_count, get_queue_urls, process_queue, remove_from_queue
 import utils as _dl_utils
-from tray import show_notification, tray_icon, update_download_status
 from config import initialize_settings, settings
-from utils import format_speed, update_speed, format_date
+from utils import (
+    format_speed, update_speed, format_date,
+    notify_ui, update_status_ui as update_download_status,
+    open_channel_ui, open_playlist_ui,
+)
 from clipboard_utils import update_last_copy_time
 
 # Зеркало состояния загрузки для обратной совместимости
@@ -282,7 +285,7 @@ def download_video(url, from_queue=False):
 
         if info.get('is_premiere', False) or info.get('live_status', '') == 'is_upcoming':
             log_message(f"INFO Пропуск премьеры: {url}")
-            threading.Thread(target=show_notification, args=(tray_icon, "Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна."), daemon=True).start()
+            notify_ui("Премьера", "Это видео еще не вышло (премьера). Загрузка невозможна.")
             on_download_complete()
             if from_queue:
                 remove_from_queue(url)
@@ -309,13 +312,13 @@ def download_video(url, from_queue=False):
         if _is_vk_url and _is_vk_login_error(e):
             log_message(f"INFO VK: видео требует входа, пробую браузерный захват: {url}")
             if _try_vk_browser_download(url, save_path):
-                threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео ВК скачано через браузер"), daemon=True).start()
+                notify_ui("YouTube Downloader", "Видео ВК скачано через браузер")
                 if from_queue:
                     remove_from_queue(url)
                 on_download_complete()
                 return
         log_message(f"ERROR Видео недоступно: {url}. Ошибка: {e}")
-        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Видео недоступно: {str(e)}"), daemon=True).start()
+        notify_ui("Ошибка", f"Видео недоступно: {str(e)}")
         if from_queue:
             remove_from_queue(url)
         on_download_complete()
@@ -324,7 +327,7 @@ def download_video(url, from_queue=False):
     except Exception as e:
         log_message(f"ERROR Ошибка при проверке видео: {url}. Подробности: {e}")
         log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
-        threading.Thread(target=show_notification, args=(tray_icon, "Ошибка", f"Не удалось загрузить видео: {str(e)}"), daemon=True).start()
+        notify_ui("Ошибка", f"Не удалось загрузить видео: {str(e)}")
         if from_queue:
             remove_from_queue(url)
         on_download_complete()
@@ -365,7 +368,7 @@ def download_video(url, from_queue=False):
 
     _paused_by_user = False
     try:
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружается..."), daemon=True).start()
+        notify_ui("YouTube Downloader", "Видео загружается...")
 
         log_message(f"DEBUG ydl_opts: {ydl_opts}")
         ydl_opts["progress_hooks"] = [progress_hook]
@@ -432,7 +435,7 @@ def download_video(url, from_queue=False):
         if from_queue:
             remove_from_queue(url)
 
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", "Видео загружено успешно!"), daemon=True).start()
+        notify_ui("YouTube Downloader", "Видео загружено успешно!")
 
         log_message(f"SUCCESS Загрузка завершена: {url}")
 
@@ -446,7 +449,7 @@ def download_video(url, from_queue=False):
 
     except Exception as e:
         error_message = f"ERROR Ошибка загрузки видео: {url}. Подробности: {e}"
-        threading.Thread(target=show_notification, args=(tray_icon, "YouTube Downloader", f"Ошибка: {str(e)}"), daemon=True).start()
+        notify_ui("YouTube Downloader", f"Ошибка: {str(e)}")
         log_message(error_message)
         log_message(f"DEBUG Трассировка: {traceback.format_exc()}")
 
@@ -492,12 +495,10 @@ def progress_hook(d):
 def download_channel_with_selection(channel_url):
     """Открывает PyQt6-окно выбора видео с канала."""
     log_message(f"INFO Обработка канала: {channel_url}")
-    from tray import open_channel_window
-    open_channel_window(channel_url)
+    open_channel_ui(channel_url)
 
 
 def download_playlist_with_selection(playlist_url):
     """Открывает PyQt6-окно выбора видео из плейлиста."""
     log_message(f"INFO Обработка плейлиста: {playlist_url}")
-    from tray import open_playlist_window
-    open_playlist_window(playlist_url)
+    open_playlist_ui(playlist_url)
