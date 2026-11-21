@@ -34,7 +34,7 @@ class DebugWindow(QWidget):
         # Отслеживание изменений файла
         self._last_file_size = -1
         self._pending_update = False
-        self._word_wrap = False
+        self._word_wrap = True
 
         # Создаём интерфейс
         self._create_ui()
@@ -57,7 +57,7 @@ class DebugWindow(QWidget):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setFont(QFont("Consolas", 9))
-        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         layout.addWidget(self.log_text, 1)
 
         # Панель кнопок
@@ -97,7 +97,7 @@ class DebugWindow(QWidget):
 
         # Галочка переноса строк
         self.wrap_checkbox = QCheckBox("Перенос строк")
-        self.wrap_checkbox.setChecked(False)
+        self.wrap_checkbox.setChecked(True)
         self.wrap_checkbox.toggled.connect(self._toggle_word_wrap)
         btn_layout.addWidget(self.wrap_checkbox)
 
@@ -228,12 +228,20 @@ class DebugWindow(QWidget):
             html = f'<pre style="font-family: Consolas, monospace; font-size: 9pt; margin: 0; {wrap_style}">' + ''.join(html_lines) + '</pre>'
             self.log_text.setHtml(html)
 
-            # Прокручиваем вниз
-            scrollbar = self.log_text.verticalScrollBar()
-            scrollbar.setValue(scrollbar.maximum())
+            # Прокручиваем вниз (и сразу, и после пересчёта layout)
+            self._scroll_to_bottom()
+            QTimer.singleShot(0, self._scroll_to_bottom)
 
         except Exception:
             pass
+
+    def _scroll_to_bottom(self):
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _line_to_html(self, line: str) -> str:
         """Преобразует строку лога в HTML с цветовой подсветкой"""

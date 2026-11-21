@@ -703,6 +703,12 @@ class OKSearchWindow(QWidget):
             self._sig.progress.emit((done - 1) / max(total, 1) * 100)
 
             url = self._capture_stream_url(hit_i)
+            # Останавливаем воспроизведение в браузере сразу после захвата URL,
+            # чтобы на треке не висел спиннер и не мешал переходу к следующему треку.
+            try:
+                self.driver.execute_script(_STOP_AUDIO_JS)
+            except Exception:
+                pass
             if url and self._download_stream(url, folder, artist, title):
                 ok_count += 1
             else:
