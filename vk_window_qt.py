@@ -1517,12 +1517,32 @@ class VKSearchWindow(QWidget):
     # ── Воркеры поиска ───────────────────────────────────────────────────────
 
     def _rows_present(self):
-        """True, если на странице есть треки (старый audio_row или новый каталог)."""
+        """True, если на странице есть треки (старый audio_row, data-testid или ссылки /audio<owner>_<id>)."""
         try:
-            return self.driver.execute_script(
-                "return document.querySelectorAll("
-                "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
-            )
+            return self.driver.execute_script("""
+                if (document.querySelectorAll('div.audio_row, [data-testid="MusicTrackRow"]').length > 0) {
+                    return true;
+                }
+                var re = /^\\/audio-?\\d+_\\d+/;
+                var links = document.querySelectorAll('a[href*="/audio"]');
+                var cnt = 0;
+                for (var i = 0; i < links.length; i++) {
+                    var href = links[i].getAttribute('href') || '';
+                    if (!re.test(href)) continue;
+                    // Игнорируем верхнюю панель плеера (там обычно 1 ссылка)
+                    var p = links[i].parentElement;
+                    var isTopPlayer = false;
+                    for (var u = 0; u < 5 && p; u++) {
+                        var t = p.textContent || '';
+                        if (t.indexOf('Показать текст') !== -1 || t.indexOf('Микс по треку') !== -1) {
+                            isTopPlayer = true; break;
+                        }
+                        p = p.parentElement;
+                    }
+                    if (!isTopPlayer && ++cnt >= 1) return true;
+                }
+                return false;
+            """)
         except Exception:
             return False
 
@@ -1535,12 +1555,12 @@ class VKSearchWindow(QWidget):
         except Exception:
             pass
 
-        # Ищем href ссылки «Показать все» и переходим по нему напрямую.
-        # VK теперь ведёт на /music/catalog/... вместо ?section=audio.
+        # Ищем href ссылки «Показать все» ТОЛЬКО для секции треков («Все треки» / «Треки»).
+        # Не полагаемся на data-testid, т.к. ВК убрал data-testid из продакшн-сборки.
         try:
             show_all_url = self.driver.execute_script("""
                 var texts = ['показать все', 'показать всё', 'все треки', 'show all'];
-                function isShowAll(a){
+                function isShowAll(a) {
                     var t = (a.textContent || '').trim().toLowerCase();
                     for (var k = 0; k < texts.length; k++) {
                         if (t === texts[k] || t.startsWith(texts[k])) return true;
@@ -1548,23 +1568,60 @@ class VKSearchWindow(QWidget):
                     return false;
                 }
 
-                // Берём «Показать все» ТОЛЬКО из секции треков. Поднимаемся от
-                // первого трека вверх и останавливаемся, как только в блоке
-                // появляются плейлисты — иначе зацепим «Показать все» плейлистов.
+                // 1. Приоритет: ищем ссылку «Показать все» (/music/catalog/...), рядом с которой
+                // заголовок секции содержит «все треки» / «треки» / «аудиозаписи» (и НЕ плейлисты/альбомы/текст).
+                var badWords = ['плейлист', 'альбом', 'музыкант', 'исполнител', 'видео', 'в тексте', 'куратор', 'подкаст'];
+                var goodWords = ['все треки', 'треки', 'аудиозапис', 'tracks', 'audio'];
+                var allLinks = Array.from(document.querySelectorAll('a[href]')).filter(isShowAll);
+                for (var i = 0; i < allLinks.length; i++) {
+                    var a = allLinks[i];
+                    var p = a.parentElement;
+                    for (var up = 0; up < 4 && p; up++) {
+                        var ctx = (p.innerText || p.textContent || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+                        if (ctx.length > 12 && ctx.length < 160) {
+                            var isBad = badWords.some(function(w){ return ctx.indexOf(w) !== -1; });
+                            var isGood = goodWords.some(function(w){ return ctx.indexOf(w) !== -1; });
+                            if (isGood && !isBad) return a.href;
+                            break;
+                        }
+                        p = p.parentElement;
+                    }
+                }
+
+                // 2. Фолбэк: обход вверх от первого трека (если заголовок секции нестандартный)
+                var audioRe = /^\\/audio-?\\d+_\\d+/;
                 var trackRow = document.querySelector('[data-testid="MusicTrackRow"], div.audio_row');
+                if (!trackRow) {
+                    var al = document.querySelectorAll('a[href*="/audio"]');
+                    for (var j = 0; j < al.length; j++) {
+                        if (!audioRe.test(al[j].getAttribute('href') || '')) continue;
+                        var pr = al[j].parentElement;
+                        var topBar = false;
+                        for (var u = 0; u < 5 && pr; u++) {
+                            var tx = pr.textContent || '';
+                            if (tx.indexOf('Показать текст') !== -1 || tx.indexOf('Микс по треку') !== -1) {
+                                topBar = true; break;
+                            }
+                            pr = pr.parentElement;
+                        }
+                        if (!topBar) { trackRow = al[j]; break; }
+                    }
+                }
                 if (!trackRow) return null;
 
                 var node = trackRow.parentElement;
-                for (var up = 0; up < 10 && node; up++) {
-                    // вышли за пределы секции треков (появились плейлисты) — стоп
-                    if (node.querySelector('[data-testid="music_playlist_item_block"]')) break;
+                for (var up2 = 0; up2 < 10 && node; up2++) {
                     var links = node.querySelectorAll('a[href]');
-                    for (var i = 0; i < links.length; i++) {
-                        if (isShowAll(links[i])) return links[i].href;
+                    for (var m = 0; m < links.length; m++) {
+                        if (isShowAll(links[m])) {
+                            var ctx2 = ((links[m].parentElement && links[m].parentElement.innerText) || '').toLowerCase();
+                            var bad2 = badWords.some(function(w){ return ctx2.indexOf(w) !== -1; });
+                            if (!bad2) return links[m].href;
+                        }
                     }
                     node = node.parentElement;
                 }
-                return null;   // у треков нет «Показать все» — остаёмся на странице поиска
+                return null;
             """)
             log_message(f"INFO VK search: show_all_url = {show_all_url!r}")
             if show_all_url:
@@ -3070,21 +3127,84 @@ return (function(){
             self._sig.status.emit(f"Скачано {ok_count}, ошибок: {fail_count}")
 
     def _extract_catalog_tracks(self, max_count) -> list:
-        """Извлекает треки из нового React-каталога ВК через JS (data-testid)."""
+        """Извлекает треки из нового React-каталога ВК через JS (data-testid или семантические ссылки /audio)."""
         try:
             raw = self.driver.execute_script("""
                 var rows = document.querySelectorAll('[data-testid="MusicTrackRow"]');
-                return Array.from(rows).map(function(row){
-                    var t = row.querySelector('[data-testid="MusicTrackRow_Title"]');
-                    var a = row.querySelector('[data-testid="MusicTrackRow_Authors"]');
-                    var d = row.querySelector('[data-testid="MusicTrackRow_Duration"]');
-                    return {
-                        href:   t ? (t.getAttribute('href') || '') : '',
-                        title:  t ? t.textContent.trim() : '',
-                        artist: a ? a.textContent.trim() : '',
-                        dur:    d ? d.textContent.trim() : ''
-                    };
-                });
+                if (rows.length > 0) {
+                    return Array.from(rows).map(function(row){
+                        var t = row.querySelector('[data-testid="MusicTrackRow_Title"]');
+                        var a = row.querySelector('[data-testid="MusicTrackRow_Authors"]');
+                        var d = row.querySelector('[data-testid="MusicTrackRow_Duration"]');
+                        return {
+                            href:   t ? (t.getAttribute('href') || '') : '',
+                            title:  t ? t.textContent.trim() : '',
+                            artist: a ? a.textContent.trim() : '',
+                            dur:    d ? d.textContent.trim() : ''
+                        };
+                    });
+                }
+
+                // Фолбэк без data-testid: ищем все ссылки на треки /audio<owner>_<id>
+                var audioRe = /^\\/audio-?\\d+_\\d+/;
+                var durRe = /\\b(\\d{1,2}:\\d{2})\\b/g;
+                var links = document.querySelectorAll('a[href*="/audio"]');
+                var out = [];
+                for (var i = 0; i < links.length; i++) {
+                    var a = links[i];
+                    var href = a.getAttribute('href') || '';
+                    if (!audioRe.test(href)) continue;
+                    var title = (a.textContent || '').trim();
+                    if (!title) continue;
+
+                    // Поднимаемся до контейнера строки трека (где есть длительность и не слишком много ссылок)
+                    var row = a;
+                    var isTopPlayer = false;
+                    for (var up = 0; up < 6 && row.parentElement; up++) {
+                        row = row.parentElement;
+                        var txt = row.innerText || row.textContent || '';
+                        if (txt.indexOf('Показать текст') !== -1 || txt.indexOf('Микс по треку') !== -1) {
+                            isTopPlayer = true;
+                            break;
+                        }
+                        if (/\\b\\d{1,2}:\\d{2}\\b/.test(txt) && row.querySelectorAll('a[href]').length <= 8) {
+                            break;
+                        }
+                    }
+                    if (isTopPlayer) continue;
+
+                    // Исполнители: ссылки на /artist/... или /audio?performer=1...
+                    var rowLinks = row.querySelectorAll('a[href]');
+                    var artists = [];
+                    for (var j = 0; j < rowLinks.length; j++) {
+                        var rl = rowLinks[j];
+                        if (rl === a) continue;
+                        var rh = rl.getAttribute('href') || '';
+                        if (rh.indexOf('/artist/') !== -1 || rh.indexOf('performer=1') !== -1) {
+                            var at = (rl.textContent || '').trim();
+                            if (at) artists.push(at);
+                        }
+                    }
+                    var rowText = (row.innerText || row.textContent || '').trim();
+                    var dur = '';
+                    var dm, lastDur = '';
+                    durRe.lastIndex = 0;
+                    while ((dm = durRe.exec(rowText)) !== null) { lastDur = dm[1]; }
+                    dur = lastDur;
+                    if (dur === '0:00') continue;
+
+                    // Если ссылок на исполнителя нет — пробуем взять вторую строку innerText
+                    var artistStr = artists.join(', ');
+                    if (!artistStr) {
+                        var parts = rowText.split('\\n').map(function(s){ return s.trim(); }).filter(Boolean);
+                        if (parts.length >= 2 && parts[1] !== dur && parts[1] !== title) {
+                            artistStr = parts[1];
+                        }
+                    }
+
+                    out.push({ href: href, title: title, artist: artistStr, dur: dur });
+                }
+                return out;
             """) or []
         except Exception as e:
             log_message(f"WARNING catalog JS extraction: {e}")
@@ -3455,10 +3575,7 @@ return (function(){
         # Если треки без URL и браузер не на странице со списком треков — перегружаем поиск
         if vk_query and self.driver and any(not d.get("url") for d in rows):
             try:
-                has_rows = self.driver.execute_script(
-                    "return document.querySelectorAll("
-                    "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
-                )
+                has_rows = self._rows_present()
                 if not has_rows:
                     self._sig.status.emit("Обновляю список треков в браузере...")
                     q = vk_query.strip()
@@ -3468,12 +3585,7 @@ return (function(){
                     else:
                         # Текстовый запрос: повторяем навигацию как при поиске
                         self._worker_search_navigate(q)
-                    WebDriverWait(self.driver, 15).until(
-                        lambda d: d.execute_script(
-                            "return document.querySelectorAll("
-                            "'div.audio_row, [data-testid=\"MusicTrackRow\"]').length > 0"
-                        )
-                    )
+                    WebDriverWait(self.driver, 15).until(lambda d: self._rows_present())
             except Exception as e:
                 log_message(f"WARNING dl_batch: не удалось обновить список: {e}")
 
@@ -3675,6 +3787,23 @@ return (function(){
                     if (t && (t.getAttribute('href') || '').indexOf('/audio' + fid) === 0) {
                         return rows[i];
                     }
+                }
+                // Фолбэк без data-testid
+                var links = document.querySelectorAll('a[href^="/audio' + fid + '"]');
+                for (var j = 0; j < links.length; j++) {
+                    var row = links[j];
+                    var topBar = false;
+                    for (var up = 0; up < 6 && row.parentElement; up++) {
+                        row = row.parentElement;
+                        var txt = row.textContent || '';
+                        if (txt.indexOf('Показать текст') !== -1 || txt.indexOf('Микс по треку') !== -1) {
+                            topBar = true; break;
+                        }
+                        if (/\\b\\d{1,2}:\\d{2}\\b/.test(txt) && row.querySelectorAll('a[href]').length <= 8) {
+                            break;
+                        }
+                    }
+                    if (!topBar) return row;
                 }
                 return null;
             """, full_id)
