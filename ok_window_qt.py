@@ -133,15 +133,20 @@ for (var e of walk(document)){
 return out;
 """
 
-# Кликнуть play по i-му треку (порядок совпадает с _LIST_TRACKS_JS)
+# Кликнуть play по i-му <wm-track> (строго внутри самого трека, порядок = _LIST_TRACKS_JS)
 _PLAY_TRACK_JS = _WALK_JS + r"""
-var i=arguments[0], btns=[];
+var i=arguments[0], tracks=[];
 for (var e of walk(document)){
-    if (e.tagName && e.tagName.toLowerCase()==='wm-track-play-button') btns.push(e);
+    if (e.tagName && e.tagName.toLowerCase()==='wm-track') tracks.push(e);
 }
-if (i>=btns.length) return false;
-var b=btns[i].querySelector('button')||btns[i];
-try{ b.scrollIntoView({block:'center'}); }catch(_){}
+if (i>=tracks.length) return false;
+var tr = tracks[i], btn = null;
+for (var x of walk(tr)){
+    if (x.tagName && x.tagName.toLowerCase()==='wm-track-play-button'){ btn = x; break; }
+}
+if (!btn) return false;
+var b = btn.querySelector('button') || btn;
+try{ tr.scrollIntoView({block:'center'}); }catch(_){}
 b.click();
 return true;
 """
@@ -149,9 +154,49 @@ return true;
 # Остановить любое проигрывание (аудио может быть в shadow DOM)
 _STOP_AUDIO_JS = _WALK_JS + r"""
 for (var e of walk(document)){
-    if (e.tagName && e.tagName.toLowerCase()==='audio'){ try{ e.pause(); }catch(_){ } }
+    if (e.tagName && e.tagName.toLowerCase()==='audio'){
+        try{ e.pause(); }catch(_){}
+    }
 }
 return true;
+"""
+
+# Прокрутить контейнер списка треков на ОДИН экран вниз (с перекрытием 30%),
+# чтобы при скачивании не перескакивать треки в виртуализированном списке.
+_SCROLL_MUSIC_STEP_JS = _WALK_JS + r"""
+function up(n){
+    var p = n.parentNode;
+    if (p && p.nodeType === 11 && p.host) return p.host;
+    if (p) return p;
+    return (n.assignedSlot) ? n.assignedSlot : null;
+}
+var tracks = [];
+for (var e of walk(document)){
+    if (e.tagName && e.tagName.toLowerCase()==='wm-track') tracks.push(e);
+}
+if (!tracks.length) return {moved: false, atEnd: true};
+var node = tracks[0], best = null;
+for (var i=0; i<40 && node; i++){
+    try{
+        var st = getComputedStyle(node);
+        var oy = st.overflowY, o = st.overflow;
+        if ((oy==='auto'||oy==='scroll'||o==='auto'||o==='scroll') &&
+            (node.scrollHeight - node.clientHeight > 40)){ best = node; break; }
+    }catch(_){}
+    node = up(node);
+}
+if (best){
+    var before = best.scrollTop;
+    var step = Math.max(250, Math.floor(best.clientHeight * 0.7));
+    best.scrollTop = Math.min(best.scrollHeight, before + step);
+    var after = best.scrollTop;
+    var atEnd = (after + best.clientHeight >= best.scrollHeight - 5);
+    return {moved: Math.abs(after - before) > 2, atEnd: atEnd, scrollTop: after, scrollHeight: best.scrollHeight};
+}
+var wb = window.scrollY;
+window.scrollBy(0, Math.max(300, Math.floor(window.innerHeight * 0.7)));
+var wa = window.scrollY;
+return {moved: Math.abs(wa - wb) > 2, atEnd: Math.abs(wa - wb) <= 2};
 """
 
 # Прокрутить ВНУТРЕННИЙ контейнер списка треков (не окно): от трека поднимаемся
@@ -632,21 +677,32 @@ class OKSearchWindow(QWidget):
             pass
         return found
 
-    def _capture_stream_url(self, idx: int, timeout: float = 14.0):
+    def _capture_stream_url(self, idx: int, timeout: float = 12.0):
         """Кликает play по idx-му треку и ловит URL аудиопотока из CDP-логов."""
-        self._drain_stream()   # очистить накопленное
         try:
-            if not self.driver.execute_script(_PLAY_TRACK_JS, idx):
+            self.driver.execute_cdp_cmd("Network.enable", {})
+            self.driver.execute_cdp_cmd("Network.clearBrowserCache", {})
+        except Exception:
+            pass
+        self._drain_stream()   # очистить накопленное
+        for attempt in range(2):
+            try:
+                if not self.driver.execute_script(_PLAY_TRACK_JS, idx):
+                    return None
+            except Exception as e:
+                log_message(f"WARNING OK play[{idx}]: {e}")
                 return None
-        except Exception as e:
-            log_message(f"WARNING OK play[{idx}]: {e}")
-            return None
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            time.sleep(0.5)
-            u = self._drain_stream()
-            if u:
-                return u
+            wait_sec = timeout if attempt == 0 else 6.0
+            deadline = time.time() + wait_sec
+            while time.time() < deadline:
+                time.sleep(0.4)
+                u = self._drain_stream()
+                if u:
+                    return u
+            # Если первый клик попал на уже играющий трек (поставил паузу),
+            # второй клик запустит воспроизведение заново.
+            if attempt == 0:
+                log_message(f"DEBUG OK play[{idx}]: повторный клик для захвата стрима")
         return None
 
     def _worker_music_download(self, tracks: list):
@@ -662,17 +718,18 @@ class OKSearchWindow(QWidget):
         done = 0
         ok_count = 0
 
-        # Список виртуализирован: прокручиваем сверху и в каждом «окне» находим
-        # очередной выбранный трек по сигнатуре, играем его по текущему индексу,
-        # ловим стрим. Один трек за окно — клик центрирует трек, индексы стабильны.
+        # Список виртуализирован: прокручиваем сверху пошагово (по 70% экрана),
+        # чтобы не пропустить ни одного выбранного трека в середине списка.
         try:
             self.driver.execute_script(_SCROLL_TOP_JS)
             time.sleep(1.0)
         except Exception:
             pass
 
-        stall = 0
-        while remaining and stall < 60:
+        end_hits = 0
+        max_steps = 250
+        steps = 0
+        while remaining and steps < max_steps:
             try:
                 rows = self.driver.execute_script(_LIST_TRACKS_JS) or []
             except Exception:
@@ -685,16 +742,23 @@ class OKSearchWindow(QWidget):
                     hit_i, hit_key = i, k
                     break
             if hit_i is None:
-                # В этом окне нет целей — прокручиваем дальше
+                # В этом окне нет целей — скроллим на один экран вниз (с перекрытием)
+                steps += 1
+                info = {}
                 try:
-                    self.driver.execute_script(_SCROLL_MUSIC_JS)
+                    info = self.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
                 except Exception:
                     pass
-                time.sleep(1.0)
-                stall += 1
+                time.sleep(0.6)
+                if not info.get("moved", False) and info.get("atEnd", False):
+                    end_hits += 1
+                    if end_hits >= 3:
+                        break
+                else:
+                    end_hits = 0
                 continue
 
-            stall = 0
+            end_hits = 0
             t = remaining.pop(hit_key)
             artist, title = t.get("artist", ""), t.get("title", "")
             label = f"{artist} — {title}".strip(" —") or title or "трек"
@@ -714,6 +778,13 @@ class OKSearchWindow(QWidget):
             else:
                 log_message(f"WARNING OK: не удалось скачать «{label}»")
             time.sleep(0.3)
+
+        if remaining:
+            missed = ", ".join(
+                f"{t.get('artist', '')} - {t.get('title', '')}".strip(" -")
+                for t in list(remaining.values())[:5]
+            )
+            log_message(f"WARNING OK: не найдены в списке при прокрутке ({len(remaining)} шт.): {missed}")
 
         try:
             self.driver.execute_script(_STOP_AUDIO_JS)
