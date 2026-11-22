@@ -20,7 +20,7 @@ import utils as _utils
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QProgressBar, QMenu, QMessageBox, QFileDialog, QSizePolicy, QTabWidget
+    QProgressBar, QMenu, QMessageBox, QFileDialog, QSizePolicy, QTabWidget, QComboBox
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont
@@ -410,29 +410,16 @@ class VKSearchWindow(QWidget):
         row.addWidget(self.query_input, 1)
 
         row.addWidget(QLabel("Кол-во:"))
-        self.count_input = QLineEdit("0")
-        self.count_input.setFixedWidth(48)
-        row.addWidget(self.count_input)
+        self.count_combo = QComboBox()
+        self.count_combo.addItems(["Все", "50", "100", "200", "500"])
+        self.count_combo.setCurrentText("Все")
+        self.count_combo.setFixedWidth(74)
+        row.addWidget(self.count_combo)
 
-        self.search_btn = QPushButton("Искать")
+        self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
         self.search_btn.clicked.connect(self._on_search)
         row.addWidget(self.search_btn)
-
-        self.dl_btn = QPushButton("⬇ Скачать выбранные")
-        self.dl_btn.setProperty("secondary", True)
-        self.dl_btn.clicked.connect(self._download_selected)
-        row.addWidget(self.dl_btn)
-
-        # Кнопка показа ошибок последней загрузки (скрыта, пока нет ошибок)
-        self.btn_errors = QPushButton("⚠ Посмотреть ошибки")
-        self.btn_errors.clicked.connect(self._show_errors_dialog)
-        self.btn_errors.setVisible(False)
-        self._last_errors = []       # [(имя, причина)] для окна
-        self._retry_ctx = None       # контекст для повторного скачивания
-        self._error_tab = None       # вкладка, на которой были ошибки
-        self._dl_tab = None          # вкладка, с которой запущена загрузка
-        row.addWidget(self.btn_errors)
 
         hist_btn = QPushButton("История")
         hist_btn.setProperty("secondary", True)
@@ -456,7 +443,7 @@ class VKSearchWindow(QWidget):
 
         new_tab_btn = QPushButton("+")
         new_tab_btn.setFixedWidth(28)
-        new_tab_btn.setToolTip("Новая вкладка")
+        new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
         new_tab_btn.setProperty("secondary", True)
         new_tab_btn.clicked.connect(lambda: self._new_tab("", "Новая вкладка"))
         self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
@@ -464,8 +451,9 @@ class VKSearchWindow(QWidget):
         self._new_tab("", "Поиск")
         root.addWidget(self.tabs, 1)
 
-        # Статус + скорость + batch
+        # Единая нижняя панель: слева статус/скорость, справа «⚠ Ошибки» и «⬇ Скачать выбранные»
         bot = QHBoxLayout()
+        bot.setSpacing(8)
         self.status_lbl = QLabel("Готово")
         self.status_lbl.setProperty("secondary", True)
         bot.addWidget(self.status_lbl, 1)
@@ -475,6 +463,21 @@ class VKSearchWindow(QWidget):
         self.batch_lbl = QLabel("")
         self.batch_lbl.setProperty("secondary", True)
         bot.addWidget(self.batch_lbl)
+
+        # Кнопка показа ошибок последней загрузки (скрыта, пока нет ошибок)
+        self.btn_errors = QPushButton("⚠ Посмотреть ошибки")
+        self.btn_errors.clicked.connect(self._show_errors_dialog)
+        self.btn_errors.setVisible(False)
+        self._last_errors = []       # [(имя, причина)] для окна
+        self._retry_ctx = None       # контекст для повторного скачивания
+        self._error_tab = None       # вкладка, на которой были ошибки
+        self._dl_tab = None          # вкладка, с которой запущена загрузка
+        bot.addWidget(self.btn_errors)
+
+        self.dl_btn = QPushButton("⬇ Скачать выбранные")
+        self.dl_btn.clicked.connect(self._download_selected)
+        bot.addWidget(self.dl_btn)
+
         root.addLayout(bot)
 
     def _connect_signals(self):
@@ -1374,9 +1377,10 @@ class VKSearchWindow(QWidget):
             self._sig.status.emit("Введите запрос!")
             return
         try:
-            count = max(0, min(500, int(self.count_input.text().strip() or "30")))
+            raw_cnt = self.count_combo.currentText().strip()
+            count = 0 if raw_cnt.lower() == "все" else max(0, min(500, int(raw_cnt)))
         except ValueError:
-            count = 30
+            count = 0
 
         self._pending_vk_query = query
         self.search_btn.setEnabled(False)

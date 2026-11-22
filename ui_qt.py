@@ -611,23 +611,18 @@ class SearchWindow(QMainWindow):
 
         opts_row.addStretch()
 
+        # Поля API Key / Invidious URL и кнопка обновления yt-dlp перенесены в общий раздел «Настройки»
+        # (оставляем скрытыми для обратной совместимости с существующими методами)
         self.update_ytdlp_btn = QPushButton("Обновить yt-dlp")
-        self.update_ytdlp_btn.setProperty("secondary", True)
-        self.update_ytdlp_btn.clicked.connect(self._update_ytdlp)
-        opts_row.addWidget(self.update_ytdlp_btn)
+        self.update_ytdlp_btn.setVisible(False)
 
         self.api_input = QLineEdit()
-        self.api_input.setPlaceholderText("API Key")
         self.api_input.setText(settings.get("youtube_api_key", ""))
-        self.api_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_input.setMaximumWidth(200)
-        opts_row.addWidget(self.api_input)
+        self.api_input.setVisible(False)
 
         self.invidious_input = QLineEdit()
-        self.invidious_input.setPlaceholderText("Invidious URL")
         self.invidious_input.setText(settings.get("invidious_url", "http://localhost:3000"))
-        self.invidious_input.setMaximumWidth(200)
-        opts_row.addWidget(self.invidious_input)
+        self.invidious_input.setVisible(False)
 
         self.invidious_status_label = QLabel("●")
         self.invidious_status_label.setToolTip("Статус Invidious")
@@ -689,14 +684,9 @@ class SearchWindow(QMainWindow):
         bottom_layout.setContentsMargins(16, 6, 16, 8)
         bottom_layout.setSpacing(4)
 
-        # Строка с кнопками и статусом
+        # Единая нижняя строка: слева статус и вспомогательные кнопки, справа «⬇ Скачать выбранные»
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
-
-        self.download_btn = QPushButton("Скачать")
-        self.download_btn.setObjectName("searchBtn")
-        self.download_btn.clicked.connect(self._on_download)
-        action_row.addWidget(self.download_btn)
 
         self.status_label = QLabel("Готово к поиску")
         self.status_label.setProperty("secondary", True)
@@ -714,15 +704,12 @@ class SearchWindow(QMainWindow):
         action_row.addWidget(load_btn)
 
         self.log_toggle_btn = QPushButton("Лог")
-        self.log_toggle_btn.setProperty("secondary", True)
-        self.log_toggle_btn.setCheckable(True)
-        self.log_toggle_btn.clicked.connect(self._toggle_log)
-        action_row.addWidget(self.log_toggle_btn)
+        self.log_toggle_btn.setVisible(False)
 
-        clear_log_btn = QPushButton("Очистить")
-        clear_log_btn.setProperty("secondary", True)
-        clear_log_btn.clicked.connect(self._clear_log)
-        action_row.addWidget(clear_log_btn)
+        self.download_btn = QPushButton("⬇ Скачать выбранные")
+        self.download_btn.setObjectName("searchBtn")
+        self.download_btn.clicked.connect(self._on_download)
+        action_row.addWidget(self.download_btn)
 
         bottom_layout.addLayout(action_row)
 
@@ -1010,13 +997,15 @@ class SearchWindow(QMainWindow):
         settings["search_history"] = history[:50]
         self._history_model.setStringList(settings["search_history"])
 
+        # Синхронизируем API Key и Invidious URL из общих настроек (раздел «Настройки»)
+        self.api_input.setText(settings.get("youtube_api_key", ""))
+        self.invidious_input.setText(settings.get("invidious_url", "http://localhost:3000"))
+
         # Сохраняем настройки
         settings["last_search_query"] = query
         settings["search_type"] = self.type_combo.currentText()
         settings["sort_order"] = self.order_combo.currentText()
         settings["max_results"] = self.max_combo.currentText()
-        settings["youtube_api_key"] = self.api_input.text()
-        settings["invidious_url"] = self.invidious_input.text()
         settings["use_alternative_api"] = self.check_alternative.isChecked()
         settings["use_ytdlp_search"] = self.check_ytdlp.isChecked()
         settings["desc_filter"] = self.desc_filter_input.text().strip()

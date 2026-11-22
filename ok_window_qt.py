@@ -19,7 +19,7 @@ import subprocess
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QProgressBar, QMessageBox, QMenu
+    QProgressBar, QMessageBox, QMenu, QTabWidget
 )
 from PyQt6.QtCore import Qt, QObject, pyqtSignal, QMetaObject, Q_ARG
 from PyQt6.QtGui import QFont
@@ -344,14 +344,85 @@ def _safe_name(name: str) -> str:
     return name[:150] or "track"
 
 
+class _OKTab(QWidget):
+    """Одна вкладка результатов в ОК (таблица + единая нижняя панель с фильтром и «Скачать»)."""
+
+    def __init__(self, query: str = "", mode: str = "music", on_download=None,
+                 on_ctx_menu=None, on_cell_changed=None):
+        super().__init__()
+        self.query = query
+        self.mode = mode
+        self.results = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.setSpacing(6)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Название", "Длит.", "Ссылка"])
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        if on_ctx_menu:
+            self.table.customContextMenuRequested.connect(on_ctx_menu)
+        if on_download:
+            self.table.doubleClicked.connect(on_download)
+        if on_cell_changed:
+            self.table.currentCellChanged.connect(on_cell_changed)
+        self.table.itemSelectionChanged.connect(self._update_sel)
+        self.table.setSortingEnabled(True)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(self.table, 1)
+
+        # Единая нижняя панель под таблицей: слева фильтр, справа счётчик + «Скачать выбранные»
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию или исполнителю (Ctrl+F)...")
+        self.filter_input.textChanged.connect(self._apply_filter)
+        bar.addWidget(self.filter_input, 1)
+
+        self.sel_lbl = QLabel("Выбрано: 0")
+        bar.addWidget(self.sel_lbl)
+
+        self.dl_btn = QPushButton("⬇ Скачать выбранные")
+        self.dl_btn.setEnabled(False)
+        if on_download:
+            self.dl_btn.clicked.connect(on_download)
+        bar.addWidget(self.dl_btn)
+        lay.addLayout(bar)
+
+    def _update_sel(self):
+        cnt = len({idx.row() for idx in self.table.selectedIndexes()})
+        self.sel_lbl.setText(f"Выбрано: {cnt}")
+
+    def _apply_filter(self, text: str):
+        q = text.strip().lower()
+        cols = self.table.columnCount()
+        for r in range(self.table.rowCount()):
+            if not q:
+                self.table.setRowHidden(r, False)
+                continue
+            matched = False
+            for c in range(min(cols, 3)):
+                it = self.table.item(r, c)
+                if it and q in it.text().lower():
+                    matched = True
+                    break
+            self.table.setRowHidden(r, not matched)
+
+
 class OKSearchWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.driver = None
         self._sig = _Sig()
-        self._mode = "music"      # 'music' | 'video' — задаётся последним поиском
         self._busy = False        # идёт поиск или загрузка
-        self._results = []        # последние результаты (для сохранения состояния)
         self._restoring = False   # True во время восстановления (не сохранять)
 
         self._build_ui()
@@ -366,6 +437,83 @@ class OKSearchWindow(QWidget):
             )
         else:
             threading.Thread(target=self._browser_worker, daemon=True).start()
+
+    # ── Свойства текущей вкладки для совместимости со всеми методами ─────────
+
+    def _cur_tab(self) -> _OKTab:
+        w = self.tabs.currentWidget()
+        if isinstance(w, _OKTab):
+            return w
+        return self._new_tab("")
+
+    @property
+    def table(self) -> QTableWidget:
+        return self._cur_tab().table
+
+    @property
+    def dl_btn(self) -> QPushButton:
+        return self._cur_tab().dl_btn
+
+    @property
+    def filter_input(self) -> QLineEdit:
+        return self._cur_tab().filter_input
+
+    @property
+    def _mode(self) -> str:
+        return self._cur_tab().mode
+
+    @_mode.setter
+    def _mode(self, value: str):
+        self._cur_tab().mode = value
+
+    @property
+    def _results(self) -> list:
+        return self._cur_tab().results
+
+    @_results.setter
+    def _results(self, value: list):
+        self._cur_tab().results = value
+
+    def _new_tab(self, query: str = "", mode: str = "music") -> _OKTab:
+        tab = _OKTab(
+            query=query,
+            mode=mode,
+            on_download=self._download_selected,
+            on_ctx_menu=self._show_ctx_menu,
+            on_cell_changed=self._on_current_cell_changed,
+        )
+        prefix = "🎬" if mode == "video" else "🎵"
+        short = (query[:20] + "…") if len(query) > 20 else (query or "Новая вкладка")
+        idx = self.tabs.addTab(tab, f"{prefix} {short}")
+        self.tabs.setCurrentIndex(idx)
+        return tab
+
+    def _close_tab(self, index: int):
+        if self.tabs.count() <= 1:
+            return
+        w = self.tabs.widget(index)
+        self.tabs.removeTab(index)
+        if w is not None:
+            w.deleteLater()
+        self._save_state()
+
+    def _on_tab_changed(self, _index: int):
+        w = self.tabs.currentWidget()
+        if isinstance(w, _OKTab) and not self._restoring:
+            self.query_input.setText(w.query)
+            self._save_state()
+
+    def _update_cur_tab_title(self):
+        tab = self._cur_tab()
+        idx = self.tabs.indexOf(tab)
+        if idx < 0:
+            return
+        prefix = "🎬" if tab.mode == "video" else "🎵"
+        q = tab.query or ("Видео" if tab.mode == "video" else "Музыка")
+        short = (q[:20] + "…") if len(q) > 20 else q
+        cnt = f" ({len(tab.results)})" if tab.results else ""
+        self.tabs.setTabText(idx, f"{prefix} {short}{cnt}")
+        self.tabs.setTabToolTip(idx, q)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -401,7 +549,7 @@ class OKSearchWindow(QWidget):
 
         root.addLayout(top)
 
-        # Строка поиска (пока заглушка — наполним на следующем этапе)
+        # Единая верхняя строка поиска (кнопка «Скачать» перенесена вниз под таблицу)
         row = QHBoxLayout(); row.setSpacing(6)
         self.query_input = QLineEdit()
         self.query_input.setPlaceholderText(
@@ -410,16 +558,10 @@ class OKSearchWindow(QWidget):
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
 
-        self.search_btn = QPushButton("Искать")
+        self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
         self.search_btn.clicked.connect(self._on_search)
         row.addWidget(self.search_btn)
-
-        self.dl_btn = QPushButton("⬇ Скачать выбранные")
-        self.dl_btn.setProperty("secondary", True)
-        self.dl_btn.setEnabled(False)
-        self.dl_btn.clicked.connect(self._download_selected)
-        row.addWidget(self.dl_btn)
 
         root.addLayout(row)
 
@@ -430,21 +572,20 @@ class OKSearchWindow(QWidget):
         self.prog_bar.setVisible(False)
         root.addWidget(self.prog_bar)
 
-        # Таблица результатов (видео со страницы)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Название", "Длит.", "Ссылка"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.table.customContextMenuRequested.connect(self._show_ctx_menu)
-        self.table.doubleClicked.connect(self._download_selected)
-        self.table.currentCellChanged.connect(self._on_current_cell_changed)
-        self.table.setSortingEnabled(True)   # сортировка по клику на заголовок
-        hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        root.addWidget(self.table, 1)
+        # Вкладки результатов (как в YouTube и ВК)
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        new_tab_btn = QPushButton("+")
+        new_tab_btn.setFixedSize(26, 24)
+        new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
+        new_tab_btn.clicked.connect(lambda: self._new_tab(""))
+        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+        root.addWidget(self.tabs, 1)
+
+        self._new_tab("")
 
         # Статус
         bot = QHBoxLayout()
@@ -526,7 +667,12 @@ class OKSearchWindow(QWidget):
                 page = raw if low.startswith("http") else "https://" + raw.lstrip("/")
             else:
                 page = "https://ok.ru/music/search/" + quote(raw)
-            self._mode = "music"
+            tab = self._cur_tab()
+            if tab.results and tab.query and tab.query != raw:
+                tab = self._new_tab(raw, mode="music")
+            tab.query = raw
+            tab.mode = "music"
+            self._update_cur_tab_title()
             self._start_search("Открываю музыку...", self._worker_music, page)
             return
 
@@ -539,7 +685,12 @@ class OKSearchWindow(QWidget):
                 "ok.ru/video/…\nДля музыки введите исполнителя или название."
             )
             return
-        self._mode = "video"
+        tab = self._cur_tab()
+        if tab.results and tab.query and tab.query != raw:
+            tab = self._new_tab(raw, mode="video")
+        tab.query = raw
+        tab.mode = "video"
+        self._update_cur_tab_title()
         if re.search(r'/video/\d+', page):
             self._populate_table([{"href": page, "title": raw, "duration": ""}])
             self._sig.status.emit("Готово: 1 видео")
@@ -664,8 +815,8 @@ class OKSearchWindow(QWidget):
                 r = self.table.rowCount()
                 self.table.insertRow(r)
                 it0 = QTableWidgetItem(t.get("artist", ""))
-                # альбом не показываем, но держим для точной сигнатуры при загрузке
-                it0.setData(Qt.ItemDataRole.UserRole, t.get("album", ""))
+                # Храним полный dict трека (включая tid и scroll_top для мгновенного скачивания)
+                it0.setData(Qt.ItemDataRole.UserRole, dict(t))
                 self.table.setItem(r, 0, it0)
                 self.table.setItem(r, 1, QTableWidgetItem(t.get("title", "")))
                 self.table.setItem(r, 2, QTableWidgetItem(t.get("duration", "")))
@@ -684,6 +835,7 @@ class OKSearchWindow(QWidget):
                 self.table.setItem(r, 2, QTableWidgetItem(v.get("href", "")))
         self.table.setSortingEnabled(True)
         self.dl_btn.setEnabled(self.table.rowCount() > 0)
+        self._update_cur_tab_title()
         if not self._restoring:
             self._save_state()
 
@@ -704,7 +856,7 @@ class OKSearchWindow(QWidget):
         return urls
 
     def _selected_tracks(self) -> list:
-        """[{artist,title,album,duration}] для выбранных строк музыки."""
+        """Возвращает dict треков (включая tid, scroll_top, album) для выбранных строк."""
         out = []
         for r in self._selected_rows():
             it0 = self.table.item(r, 0)
@@ -712,12 +864,16 @@ class OKSearchWindow(QWidget):
             it2 = self.table.item(r, 2)
             if it0 is None:
                 continue
-            out.append({
-                "artist": it0.text(),
-                "title": it1.text() if it1 else "",
-                "album": it0.data(Qt.ItemDataRole.UserRole) or "",
-                "duration": it2.text() if it2 else "",
-            })
+            raw = it0.data(Qt.ItemDataRole.UserRole)
+            if isinstance(raw, dict):
+                out.append(dict(raw))
+            else:
+                out.append({
+                    "artist": it0.text(),
+                    "title": it1.text() if it1 else "",
+                    "album": raw or "",
+                    "duration": it2.text() if it2 else "",
+                })
         return out
 
     def _download_selected(self):
@@ -1020,18 +1176,26 @@ class OKSearchWindow(QWidget):
 
     def _save_state(self):
         try:
-            data = {
-                "mode": self._mode,
-                "query": self.query_input.text(),
-                "results": self._results,
-                "current_row": self.table.currentRow(),
-            }
-            hh = self.table.horizontalHeader()
-            if hh.isSortIndicatorShown():
-                data["sort_col"] = hh.sortIndicatorSection()
-                data["sort_order"] = hh.sortIndicatorOrder().value
-            with open(_OK_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            from config import atomic_write_json
+            tabs_data = []
+            cur_idx = self.tabs.currentIndex()
+            for i in range(self.tabs.count()):
+                t = self.tabs.widget(i)
+                if not isinstance(t, _OKTab) or not t.results:
+                    continue
+                entry = {
+                    "mode": t.mode,
+                    "query": t.query,
+                    "results": t.results,
+                    "current_row": t.table.currentRow(),
+                    "active": i == cur_idx,
+                }
+                hh = t.table.horizontalHeader()
+                if hh.isSortIndicatorShown():
+                    entry["sort_col"] = hh.sortIndicatorSection()
+                    entry["sort_order"] = hh.sortIndicatorOrder().value
+                tabs_data.append(entry)
+            atomic_write_json(_OK_STATE_FILE, {"tabs": tabs_data}, indent=2)
         except Exception as e:
             log_message(f"WARNING OK save state: {e}")
 
@@ -1043,15 +1207,41 @@ class OKSearchWindow(QWidget):
                 data = json.load(f)
         except Exception:
             return
-        self.query_input.setText(data.get("query", ""))
-        results = data.get("results") or []
-        if not results:
+
+        # Обратная совместимость со старым однооконным форматом (без ключа "tabs")
+        if isinstance(data, dict) and "tabs" in data:
+            tabs_data = data.get("tabs") or []
+        elif isinstance(data, dict) and data.get("results"):
+            tabs_data = [data]
+        else:
             return
+        if not tabs_data:
+            return
+
         self._restoring = True
         try:
-            self._mode = data.get("mode", "music")
-            self._populate_table(results)
-            self._restore_row(data.get("current_row", -1), data)
+            # Убираем начальную пустую вкладку
+            if self.tabs.count() == 1:
+                w0 = self.tabs.widget(0)
+                if isinstance(w0, _OKTab) and not w0.results:
+                    self.tabs.removeTab(0)
+                    w0.deleteLater()
+            active_idx = 0
+            for td in tabs_data:
+                results = td.get("results") or []
+                if not results:
+                    continue
+                tab = self._new_tab(td.get("query", ""), mode=td.get("mode", "music"))
+                self._populate_table(results)
+                self._update_cur_tab_title()
+                self._restore_row(td.get("current_row", -1), td)
+                if td.get("active"):
+                    active_idx = self.tabs.indexOf(tab)
+            if self.tabs.count() == 0:
+                self._new_tab("")
+            self.tabs.setCurrentIndex(active_idx)
+            cur = self._cur_tab()
+            self.query_input.setText(cur.query)
         finally:
             self._restoring = False
 

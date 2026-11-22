@@ -9,7 +9,7 @@ import re
 import threading
 
 from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QTableWidget,
@@ -70,21 +70,10 @@ class MailRuPage(QWidget):
         self.url_input.returnPressed.connect(self._on_fetch)
         row.addWidget(self.url_input, 1)
 
-        self.btn_fetch = QPushButton("Загрузить список")
+        self.btn_fetch = QPushButton("Найти / Загрузить")
         self.btn_fetch.clicked.connect(self._on_fetch)
         row.addWidget(self.btn_fetch)
         lay.addLayout(row)
-
-        flt_row = QHBoxLayout()
-        self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("Фильтр по названию или исполнителю...")
-        self.filter_input.textChanged.connect(self._apply_filter)
-        flt_row.addWidget(self.filter_input, 1)
-
-        self.btn_dl = QPushButton("Скачать выбранные")
-        self.btn_dl.clicked.connect(self._on_download)
-        flt_row.addWidget(self.btn_dl)
-        lay.addLayout(flt_row)
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Исполнитель", "Название", "Длительность"])
@@ -94,12 +83,28 @@ class MailRuPage(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(lambda _idx: self._on_download())
+        self.table.itemSelectionChanged.connect(self._update_selection_count)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setColumnWidth(0, 220)
         lay.addWidget(self.table, 1)
+
+        # Единая нижняя панель под таблицей: слева фильтр, справа счётчик + «Скачать выбранные»
+        bottom_bar = QHBoxLayout()
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию или исполнителю (Ctrl+F)...")
+        self.filter_input.textChanged.connect(self._apply_filter)
+        bottom_bar.addWidget(self.filter_input, 1)
+
+        self.sel_lbl = QLabel("Выбрано: 0")
+        bottom_bar.addWidget(self.sel_lbl)
+
+        self.btn_dl = QPushButton("⬇ Скачать выбранные")
+        self.btn_dl.clicked.connect(self._on_download)
+        bottom_bar.addWidget(self.btn_dl)
+        lay.addLayout(bottom_bar)
 
         foot = QHBoxLayout()
         self.status_lbl = QLabel("Вставьте ссылку на плейлист Mail.ru")
@@ -109,6 +114,10 @@ class MailRuPage(QWidget):
         self.pbar.setVisible(False)
         foot.addWidget(self.pbar)
         lay.addLayout(foot)
+
+    def _update_selection_count(self):
+        cnt = len({idx.row() for idx in self.table.selectedIndexes()})
+        self.sel_lbl.setText(f"Выбрано: {cnt}")
 
     def status_label_set(self, text: str):
         self.status_lbl.setText(text)
@@ -576,6 +585,33 @@ class SettingsPage(QWidget):
         self.chk_save_exit.toggled.connect(self._save)
         gl.addWidget(self.chk_save_exit)
 
+        # Источники поиска YouTube (перенесены с экрана поиска для чистоты)
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {COLORS['border']};")
+        gl.addWidget(sep)
+
+        yt_hdr = QLabel("YouTube API / Invidious (необязательно — поиск работает и через yt-dlp)")
+        yt_hdr.setStyleSheet(f"color: {COLORS['text_secondary']}; font-weight: bold;")
+        gl.addWidget(yt_hdr)
+
+        r_api = QHBoxLayout()
+        r_api.addWidget(QLabel("YouTube API Key:"))
+        self.api_key_edit = QLineEdit(settings.get("youtube_api_key", ""))
+        self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.api_key_edit.setPlaceholderText("AIza... (опционально)")
+        self.api_key_edit.editingFinished.connect(self._save)
+        r_api.addWidget(self.api_key_edit, 1)
+        gl.addLayout(r_api)
+
+        r_inv = QHBoxLayout()
+        r_inv.addWidget(QLabel("Invidious URL:"))
+        self.inv_edit = QLineEdit(settings.get("invidious_url", "http://localhost:3000"))
+        self.inv_edit.setPlaceholderText("http://localhost:3000")
+        self.inv_edit.editingFinished.connect(self._save)
+        r_inv.addWidget(self.inv_edit, 1)
+        gl.addLayout(r_inv)
+
         gl.addStretch()
         tabs.addTab(gen, "Основные настройки")
         tabs.addTab(self._updater, "Обновления утилит")
@@ -584,7 +620,8 @@ class SettingsPage(QWidget):
     def sync_from_settings(self):
         self.dir_edit.setText(settings.get("download_folder", ""))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
-                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit):
+                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
+                  self.api_key_edit, self.inv_edit):
             w.blockSignals(True)
         self.fmt_combo.setCurrentText(settings.get("download_format", "mp4"))
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
@@ -593,8 +630,11 @@ class SettingsPage(QWidget):
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
         self.chk_desc.setChecked(settings.get("download_with_description", False))
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
+        self.api_key_edit.setText(settings.get("youtube_api_key", ""))
+        self.inv_edit.setText(settings.get("invidious_url", "http://localhost:3000"))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
-                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit):
+                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
+                  self.api_key_edit, self.inv_edit):
             w.blockSignals(False)
 
     def _choose_folder(self):
@@ -617,6 +657,8 @@ class SettingsPage(QWidget):
         settings["conversion_enabled"] = self.chk_conv.isChecked()
         settings["download_with_description"] = self.chk_desc.isChecked()
         settings["save_settings_on_exit"] = self.chk_save_exit.isChecked()
+        settings["youtube_api_key"] = self.api_key_edit.text().strip()
+        settings["invidious_url"] = self.inv_edit.text().strip() or "http://localhost:3000"
         save_settings(settings)
         self.settings_changed.emit()
 
@@ -785,6 +827,50 @@ class MainWindow(QMainWindow):
         self.sync_footer_settings()
         # По умолчанию открываем YouTube
         self.nav.setCurrentRow(self.IDX_YOUTUBE)
+
+        # Единые горячие клавиши для всех разделов: Ctrl+F (фильтр), Ctrl+T (новая вкладка), Ctrl+W (закрыть вкладку)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._shortcut_focus_filter)
+        QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(self._shortcut_new_tab)
+        QShortcut(QKeySequence("Ctrl+W"), self).activated.connect(self._shortcut_close_tab)
+
+    def _shortcut_focus_filter(self):
+        idx = self.stack.currentIndex()
+        w = self.stack.widget(idx)
+        target = None
+        if idx == self.IDX_YOUTUBE and self.youtube_page:
+            cur = self.youtube_page.tabs.currentWidget()
+            target = getattr(cur, "filter_input", None)
+        elif idx == self.IDX_VK and self.vk_page:
+            cur = self.vk_page.tabs.currentWidget() if hasattr(self.vk_page, "tabs") else None
+            target = getattr(cur, "filter_input", None) or getattr(self.vk_page, "filter_edit", None)
+        elif idx == self.IDX_OK and self.ok_page:
+            cur = self.ok_page.tabs.currentWidget() if hasattr(self.ok_page, "tabs") else self.ok_page
+            target = getattr(cur, "filter_input", None) or getattr(self.ok_page, "filter_input", None)
+        elif idx == self.IDX_MAILRU and self.mailru_page:
+            target = self.mailru_page.filter_input
+        elif idx == self.IDX_HISTORY and self.history_page:
+            target = self.history_page.search_input
+        if target is not None:
+            target.setFocus()
+            target.selectAll()
+
+    def _shortcut_new_tab(self):
+        idx = self.stack.currentIndex()
+        if idx == self.IDX_YOUTUBE and self.youtube_page:
+            self.youtube_page._new_tab("")
+        elif idx == self.IDX_VK and self.vk_page and hasattr(self.vk_page, "_new_tab"):
+            self.vk_page._new_tab("")
+        elif idx == self.IDX_OK and self.ok_page and hasattr(self.ok_page, "_new_tab"):
+            self.ok_page._new_tab("")
+
+    def _shortcut_close_tab(self):
+        idx = self.stack.currentIndex()
+        if idx == self.IDX_YOUTUBE and self.youtube_page and self.youtube_page.tabs.count() > 1:
+            self.youtube_page._close_tab(self.youtube_page.tabs.currentIndex())
+        elif idx == self.IDX_VK and self.vk_page and hasattr(self.vk_page, "tabs") and self.vk_page.tabs.count() > 1:
+            self.vk_page._close_tab(self.vk_page.tabs.currentIndex())
+        elif idx == self.IDX_OK and self.ok_page and hasattr(self.ok_page, "tabs") and self.ok_page.tabs.count() > 1:
+            self.ok_page._close_tab(self.ok_page.tabs.currentIndex())
 
     def _ensure_page(self, idx: int) -> QWidget:
         """Лениво создаёт страницу раздела при первом обращении."""
