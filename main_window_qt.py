@@ -357,8 +357,9 @@ class HistoryPage(QWidget):
     def __init__(self):
         super().__init__()
         self._entries = []
+        self._last_mtime = -1.0
         self._setup_ui()
-        self.reload()
+        self.reload(force=True)
 
     def _setup_ui(self):
         lay = QVBoxLayout(self)
@@ -387,7 +388,7 @@ class HistoryPage(QWidget):
 
         btn_refresh = QPushButton("Обновить")
         btn_refresh.setProperty("secondary", True)
-        btn_refresh.clicked.connect(self.reload)
+        btn_refresh.clicked.connect(lambda: self.reload(force=True))
         top.addWidget(btn_refresh)
         lay.addLayout(top)
 
@@ -397,12 +398,18 @@ class HistoryPage(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.doubleClicked.connect(lambda _idx: self._download_selected())
         hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        # Фиксированные/интерактивные ширины вместо ResizeToContents —
+        # иначе на 1000+ строк Qt пересчитывает ширину O(N^2) и зависает!
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 145)
+        self.table.setColumnWidth(2, 70)
+        self.table.setColumnWidth(3, 95)
         lay.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -420,39 +427,49 @@ class HistoryPage(QWidget):
         btns.addWidget(self.count_lbl)
         lay.addLayout(btns)
 
-    def reload(self):
+    def reload(self, force: bool = False):
+        from download_history import DOWNLOAD_HISTORY_FILE
+        try:
+            mtime = os.path.getmtime(DOWNLOAD_HISTORY_FILE) if os.path.exists(DOWNLOAD_HISTORY_FILE) else 0.0
+        except OSError:
+            mtime = 0.0
+        if not force and mtime == self._last_mtime and self._entries:
+            return
+        self._last_mtime = mtime
         self._entries = load_download_history()
-        self.table.setRowCount(len(self._entries))
-        for row, entry in enumerate(self._entries):
-            date = entry.get("date", "N/A")
-            title = entry.get("title", "Без названия")
-            fmt = str(entry.get("format", "N/A")).upper()
-            dur_s = entry.get("duration", 0)
-            dur = format_invidious_duration(dur_s) if dur_s else "—"
-            it0 = QTableWidgetItem(date)
-            it0.setData(Qt.ItemDataRole.UserRole, entry.get("url", ""))
-            self.table.setItem(row, 0, it0)
-            self.table.setItem(row, 1, QTableWidgetItem(title))
-            self.table.setItem(row, 2, QTableWidgetItem(fmt))
-            self.table.setItem(row, 3, QTableWidgetItem(dur))
         self._apply_filter()
 
     def _apply_filter(self):
         q = self.search_input.text().strip().lower()
         fmt = self.fmt_combo.currentText()
-        visible = 0
-        for r in range(self.table.rowCount()):
-            title = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").lower()
-            rfmt = (self.table.item(r, 2).text() if self.table.item(r, 2) else "").upper()
-            hide = False
-            if q and q not in title:
-                hide = True
+        filtered = []
+        for entry in self._entries:
+            title = entry.get("title", "Без названия")
+            rfmt = str(entry.get("format", "N/A")).upper()
+            if q and q not in title.lower():
+                continue
             if fmt in ("MP4", "MP3") and rfmt != fmt:
-                hide = True
-            self.table.setRowHidden(r, hide)
-            if not hide:
-                visible += 1
-        self.count_lbl.setText(f"Показано: {visible} из {len(self._entries)}")
+                continue
+            filtered.append(entry)
+
+        self.table.setUpdatesEnabled(False)
+        try:
+            self.table.setRowCount(len(filtered))
+            for row, entry in enumerate(filtered):
+                date = entry.get("date", "N/A")
+                title = entry.get("title", "Без названия")
+                rfmt = str(entry.get("format", "N/A")).upper()
+                dur_s = entry.get("duration", 0)
+                dur = format_invidious_duration(dur_s) if dur_s else "—"
+                it0 = QTableWidgetItem(date)
+                it0.setData(Qt.ItemDataRole.UserRole, entry.get("url", ""))
+                self.table.setItem(row, 0, it0)
+                self.table.setItem(row, 1, QTableWidgetItem(title))
+                self.table.setItem(row, 2, QTableWidgetItem(rfmt))
+                self.table.setItem(row, 3, QTableWidgetItem(dur))
+        finally:
+            self.table.setUpdatesEnabled(True)
+        self.count_lbl.setText(f"Показано: {len(filtered)} из {len(self._entries)}")
 
     def _download_selected(self):
         rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
