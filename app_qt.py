@@ -354,6 +354,7 @@ class YouTubeDownloaderApp(QApplication):
         self.updater_window = None
 
         log_message("INFO Приложение запущено (PyQt6)")
+        QTimer.singleShot(150, self.show_search_window)
         QTimer.singleShot(500, self._check_queue_on_startup)
         QTimer.singleShot(800, self.restore_channel_windows)
         QTimer.singleShot(5000, self._check_updates_background)
@@ -416,72 +417,79 @@ class YouTubeDownloaderApp(QApplication):
         # Только кастомный toast - закрывается через 2 секунды
         self.show_toast(title, message)
 
+    def _ensure_main_window(self):
+        """Создаёт единое главное окно SmartTubeDL (UI v2) при первом обращении."""
+        if self.main_window is None:
+            from main_window_qt import MainWindow
+            self.main_window = MainWindow(self)
+            self.main_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        return self.main_window
+
+    def _sync_window_refs(self):
+        """Синхронизирует ссылки на встроенные страницы для _save_all_state и download.py."""
+        mw = self.main_window
+        if mw is None:
+            return
+        if mw.youtube_page is not None:
+            self.search_window = mw.youtube_page
+        if mw.vk_page is not None:
+            self.vk_window = mw.vk_page
+        if mw.ok_page is not None:
+            self.ok_window = mw.ok_page
+        if mw.queue_page is not None:
+            self.queue_window = mw.queue_page
+        if mw.logs_page is not None:
+            self.debug_window = mw.logs_page
+        if mw.updater_page is not None:
+            self.updater_window = mw.updater_page
+
     def _on_status_update(self, status: str, progress: int):
         """Слот: обновляет статус и прогресс (вызывается в главном потоке)"""
         self.tray.update_status(status, progress if progress >= 0 else None)
         if progress >= 0:
             self.tray.update_progress_icon(progress)
 
+        if self.main_window is not None:
+            self.main_window.update_footer_status(status, progress)
+
         # Обновляем прогресс в окне поиска (если оно открыто)
+        self._sync_window_refs()
         if self.search_window is not None and self.search_window.isVisible():
             self.search_window.update_download_progress(status, progress if progress >= 0 else 0)
 
     def show_search_window(self):
-        """Показывает окно поиска YouTube"""
-        if self.search_window is None:
-            from ui_qt import SearchWindow
-            self.search_window = SearchWindow()
-
-        self.search_window.show()
-        self.search_window.raise_()
-        self.search_window.activateWindow()
+        """Открывает раздел YouTube в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_YOUTUBE)
+        self._sync_window_refs()
 
     def show_history_window(self):
-        """Показывает окно истории загрузок"""
-        if not hasattr(self, 'history_window') or self.history_window is None:
-            self.history_window = HistoryWindow()
-            self.history_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-
-        self.history_window.show()
-        self.history_window.raise_()
-        self.history_window.activateWindow()
+        """Открывает раздел История в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_HISTORY)
+        self._sync_window_refs()
 
     def show_queue_window(self):
-        """Показывает окно очереди загрузок"""
-        if self.queue_window is None:
-            from queue_window_qt import QueueWindow
-            self.queue_window = QueueWindow()
-            self.queue_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-        self.queue_window.show()
-        self.queue_window.raise_()
-        self.queue_window.activateWindow()
+        """Открывает раздел Очередь в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_QUEUE)
+        self._sync_window_refs()
 
     def show_debug_window(self):
-        """Показывает окно отладки с логами"""
-        if self.debug_window is None:
-            from debug_qt import DebugWindow
-            self.debug_window = DebugWindow()
-            self.debug_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-
-        self.debug_window.show()
-        self.debug_window.raise_()
-        self.debug_window.activateWindow()
+        """Открывает раздел Логи в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_LOGS)
+        self._sync_window_refs()
 
     def _on_open_video_list(self, url: str, mode: str):
-        """Слот: открывает PyQt6-окно канала или плейлиста в главном потоке."""
-        from channel_window_qt import VideoListWindow
-        # Убираем уже закрытые окна
-        self.video_list_windows = [w for w in self.video_list_windows if w.isVisible()]
-        win = VideoListWindow(url, mode)
-        win.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-        self.video_list_windows.append(win)
-        win.show()
-        win.raise_()
-        win.activateWindow()
+        """Слот: открывает канал (📺) или плейлист (📋) как вкладку в разделе YouTube."""
+        mw = self._ensure_main_window()
+        mw.open_youtube_video_list(url, mode=mode)
+        self._sync_window_refs()
         self.request_state_save()
 
     def restore_channel_windows(self):
-        """Восстанавливает окна каналов/плейлистов из сохранённого состояния."""
+        """Мигрирует старые отдельные окна каналов/плейлистов во вкладки YouTube."""
         if not os.path.exists(_CHANNEL_WINDOWS_FILE):
             return
         try:
@@ -489,22 +497,29 @@ class YouTubeDownloaderApp(QApplication):
                 states = json.load(f)
         except Exception:
             return
-        from channel_window_qt import VideoListWindow
+        if not states:
+            return
+        mw = self._ensure_main_window()
         for state in states:
-            url  = state.get("url", "")
+            url = state.get("url", "")
             mode = state.get("mode", "channel")
             if not url:
                 continue
             try:
-                win = VideoListWindow(url, mode, state=state)
-                win.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-                self.video_list_windows.append(win)
-                win.show()
+                mw.open_youtube_video_list(url, mode=mode, state=state)
             except Exception as e:
-                log_message(f"WARNING restore channel window: {e}")
+                log_message(f"WARNING restore channel tab: {e}")
+        self._sync_window_refs()
+        # Очищаем legacy-файл, теперь вкладки сохраняются вместе с YouTube в search_tabs.json
+        try:
+            _atomic_write_json(_CHANNEL_WINDOWS_FILE, [])
+        except Exception:
+            pass
 
     def _save_channel_windows(self):
-        """Сохраняет состояние всех видимых окон каналов/плейлистов."""
+        """Сохраняет состояние всех видимых отдельных окон каналов/плейлистов (если есть)."""
+        if not self.video_list_windows:
+            return
         states = []
         for w in self.video_list_windows:
             if w.isVisible():
@@ -518,56 +533,50 @@ class YouTubeDownloaderApp(QApplication):
             log_message(f"WARNING save channel windows file: {e}")
 
     def _save_all_state(self):
-        """Сохраняет открытые окна и их вкладки. Вызывается по таймеру
-        (автосейв раз в 5 мин) и при выходе, чтобы после аварийного
-        завершения не восстанавливалось устаревшее состояние."""
+        """Сохраняет открытые вкладки всех разделов."""
+        self._sync_window_refs()
         self._save_channel_windows()
-        # Вкладки окна поиска YouTube
+        # Вкладки YouTube (поиск + каналы + плейлисты)
         sw = self.search_window
         if sw is not None:
             try:
                 sw._save_tabs()
             except Exception as e:
                 log_message(f"WARNING autosave search tabs: {e}")
-        # Вкладки окна поиска VK
+        # Вкладки VK
         vw = self.vk_window
         if vw is not None:
             try:
                 vw._save_vk_tabs()
             except Exception as e:
                 log_message(f"WARNING autosave vk tabs: {e}")
+        # Состояние OK
+        ow = self.ok_window
+        if ow is not None and hasattr(ow, "_save_state"):
+            try:
+                ow._save_state()
+            except Exception as e:
+                log_message(f"WARNING autosave ok state: {e}")
 
     def show_vk_search_window(self):
-        """Показывает окно поиска ВКонтакте"""
-        if self.vk_window is None:
-            from vk_window_qt import VKSearchWindow
-            self.vk_window = VKSearchWindow()
-            self.vk_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-        self.vk_window.show()
-        self.vk_window.raise_()
-        self.vk_window.activateWindow()
+        """Открывает раздел ВКонтакте в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_VK)
+        self._sync_window_refs()
 
     def show_ok_search_window(self):
-        """Показывает окно Одноклассников"""
-        if self.ok_window is None:
-            from ok_window_qt import OKSearchWindow
-            self.ok_window = OKSearchWindow()
-            self.ok_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-        self.ok_window.show()
-        self.ok_window.raise_()
-        self.ok_window.activateWindow()
+        """Открывает раздел Одноклассники в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_OK)
+        self._sync_window_refs()
 
     def show_updater_window(self):
-        """Открывает окно проверки и обновления утилит"""
-        if self.updater_window is None:
-            from updater_qt import UpdaterWindow
-            self.updater_window = UpdaterWindow()
-            self.updater_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
-        else:
-            self.updater_window.check_versions()
-        self.updater_window.show()
-        self.updater_window.raise_()
-        self.updater_window.activateWindow()
+        """Открывает раздел Настройки → Обновления утилит в главном окне"""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_SETTINGS)
+        self._sync_window_refs()
+        if mw.updater_page is not None:
+            mw.updater_page.check_versions()
 
     def _check_updates_background(self):
         """Фоновая проверка обновлений yt-dlp раз в 7 дней."""
@@ -597,40 +606,10 @@ class YouTubeDownloaderApp(QApplication):
             threading.Thread(target=download_video, args=(url,), daemon=True).start()
 
     def show_bulk_download_dialog(self):
-        """Диалог массовой загрузки: много ссылок сразу (качаются по очереди)"""
-        import re
-        text, ok = QInputDialog.getMultiLineText(
-            None,
-            "Массовая загрузка",
-            "Вставьте ссылки (по одной в строке или через пробел):",
-            "",
-        )
-        if not (ok and text and text.strip()):
-            return
-        urls, seen = [], set()
-        for part in re.split(r"\s+", text.strip()):
-            u = part.strip()
-            if u and u.lower().startswith(("http://", "https://")) and u not in seen:
-                seen.add(u)
-                urls.append(u)
-        if not urls:
-            QMessageBox.warning(None, "Массовая загрузка",
-                                "Не найдено ни одной ссылки (нужны http:// или https://).")
-            return
-        from queues import add_to_queue, process_queue
-        from utils import is_download_active
-        import threading
-        for u in urls:
-            add_to_queue(u)
-        log_message(f"INFO Массовая загрузка: в очередь добавлено {len(urls)} ссылок")
-        QMessageBox.information(
-            None, "Массовая загрузка",
-            f"Добавлено в очередь: {len(urls)} ссылок.\nЗагрузка идёт по очереди."
-        )
-        # Запускаем обработку, только если сейчас ничего не качается —
-        # иначе текущая загрузка сама подхватит очередь по завершении.
-        if not is_download_active():
-            threading.Thread(target=process_queue, daemon=True).start()
+        """Открывает раздел «По ссылкам» в едином главном окне."""
+        mw = self._ensure_main_window()
+        mw.switch_to(mw.IDX_LINKS)
+        self._sync_window_refs()
 
     def show_settings_dialog(self):
         """Диалог выбора папки для загрузки"""
@@ -869,6 +848,8 @@ class TrayIcon(QSystemTrayIcon):
         self._original_icon = self._create_format_icon(fmt)
         self.setIcon(self._original_icon)
         self.update_status(self.download_status)
+        if self.app.main_window is not None:
+            self.app.main_window.sync_footer_settings()
 
     def _set_quality(self, quality: str):
         settings["video_quality"] = quality
@@ -876,6 +857,8 @@ class TrayIcon(QSystemTrayIcon):
         log_message(f"INFO Качество: {quality}")
         for action in self.quality_actions:
             action.setChecked(quality in action.text())
+        if self.app.main_window is not None:
+            self.app.main_window.sync_footer_settings()
 
     def _toggle_auto_capture(self):
         settings["auto_capture_enabled"] = not settings.get("auto_capture_enabled", True)
@@ -926,6 +909,13 @@ class TrayIcon(QSystemTrayIcon):
         if self.app.vk_window is not None:
             try:
                 self.app.vk_window.quit_browser()
+            except Exception:
+                pass
+
+        # Закрываем браузер OK (Selenium) если он был открыт
+        if self.app.ok_window is not None and hasattr(self.app.ok_window, "quit_browser"):
+            try:
+                self.app.ok_window.quit_browser()
             except Exception:
                 pass
 

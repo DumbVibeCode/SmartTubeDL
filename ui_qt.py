@@ -774,20 +774,80 @@ class SearchWindow(QMainWindow):
         return w if isinstance(w, _ResultTab) else None
 
     def _new_tab(self, query: str) -> _ResultTab:
-        """Создаёт новую вкладку, добавляет и переключается на неё."""
+        """Создаёт новую вкладку поиска, добавляет и переключается на неё."""
         tab = _ResultTab(query)
         tab.filter_input.textChanged.connect(self._filter_results)
         tab.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tab.table.customContextMenuRequested.connect(self._show_context_menu)
         tab.table.doubleClicked.connect(self._on_double_click)
-        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
-        idx = self.tabs.addTab(tab, title)
+        short = (query[:22] + "…") if len(query) > 22 else (query or "Поиск")
+        idx = self.tabs.addTab(tab, f"🔍 {short}")
+        self.tabs.setTabToolTip(idx, f"Поиск YouTube: {query or 'новая вкладка'}")
         self.tabs.setCurrentIndex(idx)
         return tab
 
+    def open_video_list_tab(self, url: str, mode: str = "channel", state: dict = None):
+        """Открывает канал (📺) или плейлист (📋) как вкладку прямо внутри YouTube."""
+        from channel_window_qt import VideoListWindow
+        from PyQt6.QtGui import QColor
+
+        # Если такой URL уже открыт во вкладке — просто переключаемся на неё
+        if url:
+            for i in range(self.tabs.count()):
+                w = self.tabs.widget(i)
+                if isinstance(w, VideoListWindow) and getattr(w, "url", "") == url:
+                    self.tabs.setCurrentIndex(i)
+                    return w
+
+        # Убираем начальную пустую вкладку поиска, если она единственная и пустая
+        if self.tabs.count() == 1:
+            w0 = self.tabs.widget(0)
+            if isinstance(w0, _ResultTab) and not w0.results and not w0.query:
+                self.tabs.removeTab(0)
+
+        w = VideoListWindow(url, mode=mode, state=state)
+        w.setWindowFlags(Qt.WindowType.Widget)
+        prefix = "📋" if mode == "playlist" else "📺"
+        color = QColor("#e65100") if mode == "playlist" else QColor("#00796b")
+
+        init_name = ""
+        if state and state.get("subtitle"):
+            init_name = state["subtitle"]
+        elif url:
+            init_name = url.rstrip("/").split("/")[-1][:22]
+        label_base = init_name or ("Плейлист" if mode == "playlist" else "Канал")
+        short = (label_base[:20] + "…") if len(label_base) > 20 else label_base
+        count_hint = f" ({len(state.get('videos', []))})" if (state and state.get("videos")) else ""
+        idx = self.tabs.addTab(w, f"{prefix} {short}{count_hint}")
+        self.tabs.tabBar().setTabTextColor(idx, color)
+        self.tabs.setTabToolTip(idx, f"{'Плейлист' if mode == 'playlist' else 'Канал'}: {label_base}\n{url}")
+        self.tabs.setCurrentIndex(idx)
+
+        def _update_tab_label(title_text="", subtitle_text=""):
+            ti = self.tabs.indexOf(w)
+            if ti < 0:
+                return
+            name = (subtitle_text or getattr(w, "subtitle_label", None) and w.subtitle_label.text() or label_base).strip()
+            s = (name[:20] + "…") if len(name) > 20 else name
+            cnt = w.table.rowCount()
+            suffix = f" ({cnt})" if cnt > 0 else ""
+            self.tabs.setTabText(ti, f"{prefix} {s}{suffix}")
+            self.tabs.tabBar().setTabTextColor(ti, color)
+            self.tabs.setTabToolTip(ti, f"{'Плейлист' if mode == 'playlist' else 'Канал'}: {name}\n{url}")
+
+        w.sig_set_subtitle.connect(_update_tab_label)
+        w.sig_loading_done.connect(lambda _st: _update_tab_label())
+        _save_state_soon()
+        return w
+
     def _close_tab(self, index: int):
-        """Закрывает вкладку."""
+        """Закрывает вкладку (для канала/плейлиста останавливает фоновую загрузку)."""
+        w = self.tabs.widget(index)
+        if hasattr(w, "cancelled"):
+            w.cancelled = True
         self.tabs.removeTab(index)
+        if w is not None:
+            w.deleteLater()
         _save_state_soon()
 
     def _fill_tab(self, tab: _ResultTab, results: list):
@@ -917,11 +977,21 @@ class SearchWindow(QMainWindow):
         self._history_model.setStringList([])
 
     def _on_search(self):
-        """Запускает поиск"""
+        """Запускает поиск (или открывает вкладку канала/плейлиста, если вставлена ссылка)."""
         query = self.search_input.text().strip()
         if not query:
             self._set_status("Введите поисковый запрос!", "error")
             return
+
+        if query.lower().startswith(("http://", "https://")):
+            if "playlist?list=" in query:
+                self.open_video_list_tab(query, mode="playlist")
+                self._set_status("Открыта вкладка плейлиста", "info")
+                return
+            if any(p in query for p in ("/channel/", "/c/", "/user/", "/@")):
+                self.open_video_list_tab(query, mode="channel")
+                self._set_status("Открыта вкладка канала", "info")
+                return
 
         # Сохраняем в историю запросов
         history = settings.get("search_history", [])
@@ -987,8 +1057,11 @@ class SearchWindow(QMainWindow):
         query = getattr(self, '_pending_query', self.search_input.text().strip())
         tab = self._current_tab() or self._new_tab(query)
         tab.query = query
-        title = (query[:22] + "…") if len(query) > 22 else (query or "Результаты")
-        self.tabs.setTabText(self.tabs.currentIndex(), title)
+        short = (query[:22] + "…") if len(query) > 22 else (query or "Поиск")
+        idx = self.tabs.indexOf(tab)
+        if idx >= 0:
+            self.tabs.setTabText(idx, f"🔍 {short}")
+            self.tabs.setTabToolTip(idx, f"Поиск YouTube: {query}")
         self._fill_tab(tab, results)
 
         self._set_status(f"Найдено: {len(results)}", "success")
@@ -1341,7 +1414,15 @@ class SearchWindow(QMainWindow):
         return None
 
     def _on_double_click(self, index):
-        """Двойной клик - добавить в очередь"""
+        """Двойной клик: для канала/плейлиста — открыть вкладку, для видео — добавить в очередь."""
+        url = self._url_for_row(index.row()) if index else ""
+        if url:
+            if "playlist?list=" in url:
+                self.open_video_list_tab(url, mode="playlist")
+                return
+            if any(p in url for p in ("/channel/", "/c/", "/user/", "/@")):
+                self.open_video_list_tab(url, mode="channel")
+                return
         self._on_download()
 
     def _on_download(self):
@@ -1408,7 +1489,10 @@ class SearchWindow(QMainWindow):
             log_message(f"ERROR Ошибка при очистке лога: {e}")
 
     def _save_tabs(self):
-        """Сохраняет все непустые вкладки в файл."""
+        """Атомарно сохраняет все непустые вкладки (поиск + каналы/плейлисты) в файл."""
+        from channel_window_qt import VideoListWindow
+        from config import atomic_write_json
+
         data = []
         cur = self.tabs.currentIndex()
         for i in range(self.tabs.count()):
@@ -1416,21 +1500,29 @@ class SearchWindow(QMainWindow):
             if isinstance(tab, _ResultTab) and tab.results:
                 hh = tab.table.horizontalHeader()
                 data.append({
-                    'query':   tab.query,
+                    'kind': 'search',
+                    'query': tab.query,
                     'results': tab.results,
-                    'active':  i == cur,
-                    'sort_col':    hh.sortIndicatorSection(),
-                    'sort_order':  hh.sortIndicatorOrder().value,
+                    'active': i == cur,
+                    'sort_col': hh.sortIndicatorSection(),
+                    'sort_order': hh.sortIndicatorOrder().value,
                     'current_row': tab.table.currentRow(),
                 })
+            elif isinstance(tab, VideoListWindow):
+                st = tab.get_state()
+                if st and st.get("url"):
+                    data.append({
+                        'kind': 'video_list',
+                        'state': st,
+                        'active': i == cur,
+                    })
         try:
-            with open(_TABS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(_TABS_FILE, data, indent=2)
         except Exception:
             pass
 
     def _load_tabs(self):
-        """Восстанавливает вкладки из файла."""
+        """Восстанавливает вкладки (поиск + каналы/плейлисты) из файла."""
         try:
             if not os.path.exists(_TABS_FILE):
                 return
@@ -1445,6 +1537,18 @@ class SearchWindow(QMainWindow):
                     self.tabs.removeTab(0)
             active_idx = 0
             for td in data:
+                kind = td.get('kind', 'search')
+                if kind == 'video_list' and isinstance(td.get('state'), dict):
+                    st = td['state']
+                    w = self.open_video_list_tab(
+                        st.get('url', ''),
+                        mode=st.get('mode', 'channel'),
+                        state=st,
+                    )
+                    if td.get('active'):
+                        active_idx = self.tabs.indexOf(w)
+                    continue
+
                 tab = self._new_tab(td.get('query', ''))
                 self._fill_tab(tab, td.get('results', []))
                 # Порядок сортировки (до выделения — сортировка двигает строки)
