@@ -669,6 +669,7 @@ class SearchWindow(QMainWindow):
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.currentChanged.connect(lambda _i: _save_state_soon())
 
         new_tab_btn = QPushButton("+")
         new_tab_btn.setFixedWidth(28)
@@ -810,25 +811,33 @@ class SearchWindow(QMainWindow):
         prefix = "📋" if mode == "playlist" else "📺"
         color = QColor("#e65100") if mode == "playlist" else QColor("#00796b")
 
+        def _clean_list_name(raw_title: str) -> str:
+            t = (raw_title or "").strip()
+            for pfx in ("Канал:", "Плейлист:", "Канал —", "Плейлист —"):
+                if t.lower().startswith(pfx.lower()):
+                    t = t[len(pfx):].strip()
+            return t
+
         init_name = ""
-        if state and state.get("subtitle"):
-            init_name = state["subtitle"]
-        elif url:
+        if state and state.get("title"):
+            init_name = _clean_list_name(state["title"])
+        if not init_name and url:
             init_name = url.rstrip("/").split("/")[-1][:22]
         label_base = init_name or ("Плейлист" if mode == "playlist" else "Канал")
-        short = (label_base[:20] + "…") if len(label_base) > 20 else label_base
-        count_hint = f" ({len(state.get('videos', []))})" if (state and state.get("videos")) else ""
+        short = (label_base[:22] + "…") if len(label_base) > 22 else label_base
+        restored_rows = len(state.get("rows", [])) if state else 0
+        count_hint = f" ({restored_rows})" if restored_rows > 0 else ""
         idx = self.tabs.addTab(w, f"{prefix} {short}{count_hint}")
         self.tabs.tabBar().setTabTextColor(idx, color)
         self.tabs.setTabToolTip(idx, f"{'Плейлист' if mode == 'playlist' else 'Канал'}: {label_base}\n{url}")
         self.tabs.setCurrentIndex(idx)
 
-        def _update_tab_label(title_text="", subtitle_text=""):
+        def _update_tab_label(title_text="", _subtitle_text=""):
             ti = self.tabs.indexOf(w)
             if ti < 0:
                 return
-            name = (subtitle_text or getattr(w, "subtitle_label", None) and w.subtitle_label.text() or label_base).strip()
-            s = (name[:20] + "…") if len(name) > 20 else name
+            name = _clean_list_name(title_text or w.windowTitle()) or label_base
+            s = (name[:22] + "…") if len(name) > 22 else name
             cnt = w.table.rowCount()
             suffix = f" ({cnt})" if cnt > 0 else ""
             self.tabs.setTabText(ti, f"{prefix} {s}{suffix}")
@@ -836,7 +845,7 @@ class SearchWindow(QMainWindow):
             self.tabs.setTabToolTip(ti, f"{'Плейлист' if mode == 'playlist' else 'Канал'}: {name}\n{url}")
 
         w.sig_set_subtitle.connect(_update_tab_label)
-        w.sig_loading_done.connect(lambda _st: _update_tab_label())
+        w.sig_loading_done.connect(lambda _st: (_update_tab_label(), _save_state_soon()))
         _save_state_soon()
         return w
 

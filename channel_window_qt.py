@@ -100,7 +100,7 @@ class VideoListWindow(QWidget):
         self._setup_ui()
         self._connect_signals()
 
-        if state:
+        if state and state.get("rows"):
             self._restore_from_state(state)
         else:
             threading.Thread(target=self._load_info, daemon=True).start()
