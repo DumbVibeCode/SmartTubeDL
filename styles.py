@@ -3,6 +3,9 @@
 Современный минималистичный дизайн
 """
 
+import os
+import tempfile
+
 # Цветовая палитра (классический Windows)
 COLORS = {
     # Основные цвета
@@ -315,23 +318,26 @@ QStatusBar {{
 }}
 """
 
-# ── Компактная светлая тема ─────────────────────────────────────────────────
+# ── Компактная светлая тема (Fluent / Windows 11 минимализм) ─────────────────
 _COLORS_LIGHT = {
-    "bg_primary":       "#f0f2f5",
+    "bg_primary":       "#f3f4f6",
     "bg_secondary":     "#ffffff",
     "bg_input":         "#ffffff",
+    "bg_hover":         "#f8fafc",
+    "row_hover":        "#f5f7fa",
     "text_primary":     "#1a1a2e",
-    "text_secondary":   "#6b7280",
-    "text_placeholder": "#9ca3af",
+    "text_secondary":   "#64748b",
+    "text_placeholder": "#94a3b8",
     "accent":           "#2563eb",
     "accent_hover":     "#1d4ed8",
     "accent_pressed":   "#1e40af",
-    "accent_light":     "#dbeafe",
+    "accent_light":     "#e0edff",
     "success":          "#16a34a",
     "warning":          "#d97706",
     "error":            "#dc2626",
     "info":             "#2563eb",
-    "border":           "rgba(0,0,0,0.10)",
+    "border":           "#e2e8f0",
+    "border_strong":    "#cbd5e1",
     "border_focus":     "#2563eb",
 }
 
@@ -340,24 +346,82 @@ _COLORS_DARK = {
     "bg_primary":       "#1e1e1e",
     "bg_secondary":     "#252526",
     "bg_input":         "#2d2d30",
+    "bg_hover":         "#333337",
+    "row_hover":        "rgba(255,255,255,0.04)",
     "text_primary":     "#cccccc",
     "text_secondary":   "#858585",
     "text_placeholder": "#555555",
     "accent":           "#0ea5e9",
     "accent_hover":     "#38bdf8",
     "accent_pressed":   "#7dd3fc",
-    "accent_light":     "rgba(14,165,233,0.15)",
+    "accent_light":     "rgba(14,165,233,0.18)",
     "success":          "#4ec9b0",
     "warning":          "#ce9178",
     "error":            "#f48771",
     "info":             "#9cdcfe",
-    "border":           "rgba(255,255,255,0.08)",
+    "border":           "rgba(255,255,255,0.10)",
+    "border_strong":    "rgba(255,255,255,0.20)",
     "border_focus":     "#0ea5e9",
 }
 
 
+def _ensure_svg_icons(c: dict) -> dict:
+    """Создаёт векторные SVG-иконки для QSS (шевроны комбобокса и галочка чекбокса)."""
+    icon_dir = os.path.join(tempfile.gettempdir(), "smarttubedl_ui_icons")
+    os.makedirs(icon_dir, exist_ok=True)
+
+    sec = c["text_secondary"]
+    acc = c["accent"]
+    tag = f"{sec.strip('#')}_{acc.strip('#')}"
+
+    specs = {
+        "chevron_down": (
+            f"chevron_down_{tag}.svg",
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+            f'<path d="M2.5 4.25L6 7.75L9.5 4.25" fill="none" stroke="{sec}" '
+            f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        ),
+        "chevron_down_hover": (
+            f"chevron_down_hover_{tag}.svg",
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+            f'<path d="M2.5 4.25L6 7.75L9.5 4.25" fill="none" stroke="{acc}" '
+            f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        ),
+        "chevron_up": (
+            f"chevron_up_{tag}.svg",
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+            f'<path d="M2.5 7.75L6 4.25L9.5 7.75" fill="none" stroke="{acc}" '
+            f'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        ),
+        "checkmark": (
+            "checkmark_white.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+            '<path d="M2.3 6.2L4.9 8.8L9.7 3.4" fill="none" stroke="#ffffff" '
+            'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        ),
+    }
+
+    paths = {}
+    for key, (fname, svg) in specs.items():
+        fpath = os.path.join(icon_dir, fname)
+        try:
+            if not os.path.exists(fpath):
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(svg)
+            paths[key] = fpath.replace("\\", "/")
+        except OSError:
+            paths[key] = ""
+    return paths
+
+
 def _build_stylesheet(c: dict) -> str:
-    """Генерирует QSS из цветового словаря (компактный стиль)."""
+    """Генерирует QSS из цветового словаря (современный Fluent-минимализм)."""
+    icons = _ensure_svg_icons(c)
+    chev_down = f'image: url("{icons["chevron_down"]}");' if icons["chevron_down"] else "image: none;"
+    chev_hover = f'image: url("{icons["chevron_down_hover"]}");' if icons["chevron_down_hover"] else "image: none;"
+    chev_up = f'image: url("{icons["chevron_up"]}");' if icons["chevron_up"] else "image: none;"
+    chk_svg = f'image: url("{icons["checkmark"]}");' if icons["checkmark"] else ""
+
     return f"""
 /* === ГЛОБАЛЬНЫЕ СТИЛИ === */
 QWidget {{
@@ -374,16 +438,16 @@ QMainWindow {{
 QGroupBox {{
     background-color: {c["bg_secondary"]};
     border: 1px solid {c["border"]};
-    border-radius: 4px;
-    margin-top: 8px;
-    padding: 8px;
-    padding-top: 16px;
+    border-radius: 8px;
+    margin-top: 10px;
+    padding: 10px;
+    padding-top: 18px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 8px;
-    padding: 0 4px;
+    left: 10px;
+    padding: 0 6px;
     color: {c["text_secondary"]};
     font-size: 11px;
     font-weight: 600;
@@ -392,17 +456,17 @@ QGroupBox::title {{
 /* === ПОЛЯ ВВОДА === */
 QLineEdit, QTextEdit, QPlainTextEdit {{
     background-color: {c["bg_input"]};
-    border: 1px solid {c["border"]};
-    border-radius: 4px;
-    padding: 4px 8px;
+    border: 1px solid {c["border_strong"]};
+    border-radius: 6px;
+    padding: 4px 10px;
     color: {c["text_primary"]};
     selection-background-color: {c["accent"]};
     selection-color: white;
 }}
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-    border: 1px solid {c["border_focus"]};
+QLineEdit:hover, QTextEdit:hover, QPlainTextEdit:hover {{
+    border: 1px solid {c["text_secondary"]};
 }}
-QLineEdit:hover, QTextEdit:hover {{
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
     border: 1px solid {c["border_focus"]};
 }}
 
@@ -411,8 +475,8 @@ QPushButton {{
     background-color: {c["accent"]};
     color: white;
     border: none;
-    border-radius: 4px;
-    padding: 4px 12px;
+    border-radius: 6px;
+    padding: 5px 14px;
     min-height: 18px;
     font-weight: 500;
 }}
@@ -429,73 +493,105 @@ QPushButton:disabled {{
 QPushButton[secondary="true"] {{
     background-color: {c["bg_input"]};
     color: {c["text_primary"]};
-    border: 1px solid {c["border"]};
+    border: 1px solid {c["border_strong"]};
 }}
 QPushButton[secondary="true"]:hover {{
+    background-color: {c["bg_hover"]};
     border-color: {c["accent"]};
     color: {c["accent"]};
 }}
 QPushButton[secondary="true"]:pressed {{
     background-color: {c["accent_light"]};
+    border-color: {c["accent"]};
 }}
 
 /* === КОМБОБОКС === */
 QComboBox {{
     background-color: {c["bg_input"]};
-    border: 1px solid {c["border"]};
-    border-radius: 4px;
-    padding: 4px 8px;
-    min-width: 80px;
+    border: 1px solid {c["border_strong"]};
+    border-radius: 6px;
+    padding: 4px 26px 4px 10px;
     color: {c["text_primary"]};
 }}
 QComboBox:hover {{
-    border-color: {c["border_focus"]};
+    background-color: {c["bg_hover"]};
+    border-color: {c["text_secondary"]};
 }}
-QComboBox:focus {{
+QComboBox:focus, QComboBox:on {{
     border: 1px solid {c["border_focus"]};
+    background-color: {c["bg_input"]};
+}}
+QComboBox:disabled {{
+    background-color: {c["bg_primary"]};
+    color: {c["text_placeholder"]};
+    border-color: {c["border"]};
 }}
 QComboBox::drop-down {{
     subcontrol-origin: padding;
     subcontrol-position: center right;
-    width: 18px;
+    width: 24px;
     border: none;
+    background: transparent;
 }}
 QComboBox::down-arrow {{
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid {c["text_secondary"]};
-    margin-right: 5px;
+    {chev_down}
+    width: 12px;
+    height: 12px;
+}}
+QComboBox::down-arrow:hover {{
+    {chev_hover}
+}}
+QComboBox::down-arrow:on {{
+    {chev_up}
 }}
 QComboBox QAbstractItemView {{
     background-color: {c["bg_secondary"]};
-    border: 1px solid {c["border"]};
+    border: 1px solid {c["border_strong"]};
+    border-radius: 6px;
+    padding: 4px;
     selection-background-color: {c["accent_light"]};
     selection-color: {c["text_primary"]};
     outline: none;
 }}
 QComboBox QAbstractItemView::item {{
-    padding: 4px 8px;
+    padding: 5px 10px;
+    min-height: 20px;
+    border-radius: 4px;
+    color: {c["text_primary"]};
+}}
+QComboBox QAbstractItemView::item:hover {{
+    background-color: {c["row_hover"]};
+}}
+QComboBox QAbstractItemView::item:selected {{
+    background-color: {c["accent_light"]};
+    color: {c["accent"]};
+    font-weight: 500;
 }}
 
 /* === ЧЕКБОКСЫ === */
 QCheckBox {{
-    spacing: 6px;
+    spacing: 7px;
     color: {c["text_primary"]};
 }}
 QCheckBox::indicator {{
-    width: 14px;
-    height: 14px;
-    border: 1px solid {c["border"]};
-    border-radius: 3px;
+    width: 16px;
+    height: 16px;
+    border: 1px solid {c["border_strong"]};
+    border-radius: 4px;
     background-color: {c["bg_input"]};
 }}
 QCheckBox::indicator:hover {{
     border-color: {c["accent"]};
+    background-color: {c["bg_hover"]};
 }}
 QCheckBox::indicator:checked {{
     background-color: {c["accent"]};
     border-color: {c["accent"]};
+    {chk_svg}
+}}
+QCheckBox::indicator:checked:hover {{
+    background-color: {c["accent_hover"]};
+    border-color: {c["accent_hover"]};
 }}
 
 /* === ТАБЛИЦА === */
@@ -508,22 +604,22 @@ QTableWidget, QTableView, QTreeView {{
     outline: none;
 }}
 QTableWidget::item, QTableView::item, QTreeView::item {{
-    padding: 3px 8px;
+    padding: 4px 8px;
     border: none;
     border-bottom: 1px solid {c["border"]};
     outline: none;
+}}
+QTableWidget::item:hover, QTableView::item:hover {{
+    background-color: {c["row_hover"]};
 }}
 QTableWidget::item:selected, QTableView::item:selected {{
     background-color: {c["accent_light"]};
     color: {c["text_primary"]};
 }}
-QTableWidget::item:hover {{
-    background-color: {c["accent_light"]};
-}}
 QHeaderView::section {{
     background-color: {c["bg_primary"]};
     color: {c["text_secondary"]};
-    padding: 4px 8px;
+    padding: 5px 8px;
     border: none;
     border-bottom: 1px solid {c["border"]};
     font-weight: 600;
@@ -545,12 +641,12 @@ QProgressBar::chunk {{
 /* === СКРОЛЛБАР === */
 QScrollBar:vertical {{
     background-color: transparent;
-    width: 7px;
+    width: 8px;
     margin: 2px 1px;
 }}
 QScrollBar::handle:vertical {{
-    background-color: {c["border"]};
-    min-height: 20px;
+    background-color: {c["border_strong"]};
+    min-height: 24px;
     border-radius: 3px;
 }}
 QScrollBar::handle:vertical:hover {{
@@ -561,12 +657,12 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
 }}
 QScrollBar:horizontal {{
     background-color: transparent;
-    height: 7px;
+    height: 8px;
     margin: 1px 2px;
 }}
 QScrollBar::handle:horizontal {{
-    background-color: {c["border"]};
-    min-width: 20px;
+    background-color: {c["border_strong"]};
+    min-width: 24px;
     border-radius: 3px;
 }}
 QScrollBar::handle:horizontal:hover {{
@@ -589,13 +685,13 @@ QLabel[secondary="true"] {{
 /* === МЕНЮ === */
 QMenu {{
     background-color: {c["bg_secondary"]};
-    border: 1px solid {c["border"]};
-    border-radius: 4px;
-    padding: 3px;
+    border: 1px solid {c["border_strong"]};
+    border-radius: 6px;
+    padding: 4px;
 }}
 QMenu::item {{
-    padding: 4px 20px 4px 8px;
-    border-radius: 3px;
+    padding: 5px 22px 5px 10px;
+    border-radius: 4px;
 }}
 QMenu::item:selected {{
     background-color: {c["accent_light"]};
@@ -604,16 +700,16 @@ QMenu::item:selected {{
 QMenu::separator {{
     height: 1px;
     background-color: {c["border"]};
-    margin: 3px 0;
+    margin: 4px 6px;
 }}
 
 /* === ТУЛТИПЫ === */
 QToolTip {{
-    background-color: {c["bg_primary"]};
+    background-color: {c["bg_secondary"]};
     color: {c["text_primary"]};
-    border: 1px solid {c["border"]};
-    border-radius: 4px;
-    padding: 4px 8px;
+    border: 1px solid {c["border_strong"]};
+    border-radius: 6px;
+    padding: 5px 9px;
     font-size: 11px;
 }}
 
@@ -631,11 +727,14 @@ QSplitter::handle:vertical   {{ height: 6px; }}
 }}
 #searchInput {{
     font-size: 12px;
-    padding: 5px 10px;
-    border-radius: 4px;
+    padding: 5px 12px;
+    border-radius: 6px;
     background-color: {c["bg_input"]};
-    border: 1px solid {c["border"]};
+    border: 1px solid {c["border_strong"]};
     color: {c["text_primary"]};
+}}
+#searchInput:hover {{
+    border: 1px solid {c["text_secondary"]};
 }}
 #searchInput:focus {{
     border: 1px solid {c["border_focus"]};
@@ -646,7 +745,7 @@ QSplitter::handle:vertical   {{ height: 6px; }}
     font-size: 12px;
     font-weight: 600;
     padding: 5px 16px;
-    border-radius: 4px;
+    border-radius: 6px;
 }}
 #searchBtn:hover {{
     background-color: {c["accent_hover"]};
@@ -678,7 +777,7 @@ QSplitter::handle:vertical   {{ height: 6px; }}
 #logPanel {{
     background-color: {c["bg_primary"]};
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     font-family: "Consolas", monospace;
     font-size: 11px;
     color: {c["text_secondary"]};
