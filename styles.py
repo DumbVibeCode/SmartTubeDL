@@ -610,7 +610,7 @@ QCheckBox::indicator:checked:hover {{
 /* === ВКЛАДКИ === */
 QTabWidget::pane {{
     background-color: {c["bg_secondary"]};
-    border: 1px solid {c["border"]};
+    border: 1px solid {c["border_strong"]};
     border-radius: 6px;
     top: -1px;
 }}
@@ -618,35 +618,37 @@ QTabWidget::tab-bar {{
     left: 6px;
 }}
 QTabBar::tab {{
-    background-color: transparent;
+    background-color: {c["bg_primary"]};
     color: {c["text_secondary"]};
-    border: 1px solid transparent;
+    border: 1px solid {c["border_strong"]};
     border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    padding: 5px 10px;
+    padding: 5px 10px 5px 10px;
     min-height: 20px;
     margin-right: 3px;
     margin-top: 3px;
 }}
 QTabBar::tab:hover:!selected {{
-    background-color: {c["border"]};
+    background-color: {c["bg_hover"]};
+    border-color: {c["text_secondary"]};
     color: {c["text_primary"]};
 }}
 QTabBar::tab:selected {{
     background-color: {c["bg_secondary"]};
     color: {c["text_primary"]};
-    border: 1px solid {c["border"]};
+    border: 1px solid {c["border_strong"]};
     border-bottom: 1px solid {c["bg_secondary"]};
     font-weight: 600;
 }}
 QTabBar::close-button {{
     {tab_close_svg}
-    subcontrol-position: right;
-    width: 8px;
-    height: 8px;
-    padding: 3px;
-    margin-left: 4px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 10px;
+    height: 10px;
+    padding: 2px;
+    margin-right: 6px;
     border-radius: 3px;
 }}
 QTabBar::close-button:hover {{
