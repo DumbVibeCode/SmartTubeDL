@@ -1169,64 +1169,13 @@ class VKSearchWindow(QWidget):
 
     @staticmethod
     def _kill_profile_chrome(profile_dir):
-        """Убивает зависшие процессы браузера, которые держат наш профиль
-        (осиротевшие после краша/убийства приложения). Пока такой процесс жив,
-        новый запуск падает с 'Chrome failed to start: crashed /
-        DevToolsActivePort file doesn't exist', потому что профиль занят.
-        Бьём только по нашему профилю — личный браузер пользователя не трогаем."""
-        if sys.platform != "win32":
-            return
-        marker = os.path.basename(profile_dir.rstrip("\\/"))
-        if not marker:
-            return
-        ps = (
-            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' or "
-            "Name='browser.exe'\" | Where-Object { $_.CommandLine -like "
-            "'*" + marker + "*' } | ForEach-Object { Stop-Process -Id "
-            "$_.ProcessId -Force -ErrorAction SilentlyContinue }"
-        )
-        try:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            log_message(f"INFO VK: закрыты зависшие процессы браузера профиля {marker}")
-        except Exception as e:
-            log_message(f"WARNING VK: не удалось закрыть зависшие процессы браузера: {e}")
+        from browser_helper import kill_profile_chrome
+        kill_profile_chrome(profile_dir, label="VK")
 
     @staticmethod
     def _clean_chrome_crash_markers(profile_dir):
-        """Убирает следы аварийного завершения Chrome (зависание/краш),
-        из-за которых новый запуск падает с
-        'Chrome failed to start: crashed / DevToolsActivePort file doesn't exist'."""
-        try:
-            # Файлы-блокировки singleton + остаточный DevToolsActivePort
-            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket",
-                         "DevToolsActivePort", "lockfile"):
-                p = os.path.join(profile_dir, name)
-                try:
-                    if os.path.lexists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            # Сбрасываем пометку "грязного" выхода в Preferences,
-            # чтобы Chrome не пытался восстановить сессию и не падал
-            prefs_path = os.path.join(profile_dir, "Default", "Preferences")
-            if os.path.exists(prefs_path):
-                try:
-                    with open(prefs_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    prof = data.get("profile", {})
-                    prof["exited_cleanly"] = True
-                    prof["exit_type"] = "Normal"
-                    data["profile"] = prof
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f)
-                except Exception:
-                    pass
-        except Exception as e:
-            log_message(f"WARNING VK: очистка профиля: {e}")
+        from browser_helper import clean_chrome_crash_markers
+        clean_chrome_crash_markers(profile_dir, label="VK")
 
     def _browser_worker(self):
         try:

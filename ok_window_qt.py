@@ -1262,83 +1262,27 @@ class OKSearchWindow(QWidget):
         event.accept()
         self.hide()
 
-    # ── Браузер (Selenium) ────────────────────────────────────────────────────
+    # ── Браузер (Selenium, через общий browser_helper) ────────────────────────
 
     @staticmethod
     def _kill_profile_chrome(profile_dir):
-        """Убивает зависшие процессы Chrome, держащие наш профиль (осиротевшие
-        после краша). Бьём только по нашему профилю — личный браузер не трогаем."""
-        if sys.platform != "win32":
-            return
-        marker = os.path.basename(profile_dir.rstrip("\\/"))
-        if not marker:
-            return
-        ps = (
-            "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-            "Where-Object { $_.CommandLine -like '*" + marker + "*' } | "
-            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
-            "-ErrorAction SilentlyContinue }"
-        )
-        try:
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            log_message(f"INFO OK: закрыты зависшие процессы браузера профиля {marker}")
-        except Exception as e:
-            log_message(f"WARNING OK: не удалось закрыть зависшие процессы браузера: {e}")
+        from browser_helper import kill_profile_chrome
+        kill_profile_chrome(profile_dir, label="OK")
 
     @staticmethod
     def _clean_chrome_crash_markers(profile_dir):
-        """Убирает следы аварийного завершения Chrome, из-за которых новый запуск
-        падает с 'DevToolsActivePort file doesn't exist'."""
-        try:
-            for name in ("SingletonLock", "SingletonCookie", "SingletonSocket",
-                         "DevToolsActivePort", "lockfile"):
-                p = os.path.join(profile_dir, name)
-                try:
-                    if os.path.lexists(p):
-                        os.remove(p)
-                except Exception:
-                    pass
-            prefs_path = os.path.join(profile_dir, "Default", "Preferences")
-            if os.path.exists(prefs_path):
-                try:
-                    with open(prefs_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    prof = data.get("profile", {})
-                    prof["exited_cleanly"] = True
-                    prof["exit_type"] = "Normal"
-                    data["profile"] = prof
-                    with open(prefs_path, "w", encoding="utf-8") as f:
-                        json.dump(data, f)
-                except Exception:
-                    pass
-        except Exception as e:
-            log_message(f"WARNING OK: очистка профиля: {e}")
+        from browser_helper import clean_chrome_crash_markers
+        clean_chrome_crash_markers(profile_dir, label="OK")
 
     def _browser_worker(self):
         try:
+            from browser_helper import make_chrome_options
             log_message("INFO OK: запуск браузера")
             profile_dir = OK_PROFILE_DIR
             os.makedirs(profile_dir, exist_ok=True)
 
             def _make_opts():
-                o = webdriver.ChromeOptions()
-                o.add_argument(f"--user-data-dir={profile_dir}")
-                o.add_argument("--start-maximized")
-                o.add_argument("--disable-blink-features=AutomationControlled")
-                o.add_argument("--disable-session-crashed-bubble")
-                o.add_argument("--restore-last-session=false")
-                o.add_argument("--no-first-run")
-                o.add_argument("--no-default-browser-check")
-                o.add_argument(
-                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-                )
-                o.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-                return o
+                return make_chrome_options(profile_dir, perf_logging=True)
 
             def _launch():
                 try:
