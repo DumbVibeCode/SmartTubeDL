@@ -87,13 +87,16 @@ def search_mailru_tracks(query: str, max_results: int = 200) -> list[dict]:
             seen.add(mp3_url)
 
             br = item.get("BitRate") or 0
+            owner_dir = (item.get("OwnerDir") or "").strip()
+            owner_url = f"https://my.mail.ru{owner_dir}" if owner_dir.startswith("/") else ""
             tracks.append({
-                "artist":   (item.get("Author") or "").strip(),
-                "title":    (item.get("Name") or "").strip() or f"track_{len(tracks)+1}",
-                "duration": (item.get("DurationStr") or item.get("Duration") or "").strip(),
-                "bitrate":  f"{br} kbps" if br else "",
-                "owner":    (item.get("OwnerName") or "").strip(),
-                "url":      mp3_url,
+                "artist":    (item.get("Author") or "").strip(),
+                "title":     (item.get("Name") or "").strip() or f"track_{len(tracks)+1}",
+                "duration":  (item.get("DurationStr") or item.get("Duration") or "").strip(),
+                "bitrate":   f"{br} kbps" if br else "",
+                "owner":     (item.get("OwnerName") or "").strip(),
+                "owner_url": owner_url,
+                "url":       mp3_url,
             })
             added += 1
             if len(tracks) >= cap:
@@ -161,9 +164,12 @@ def search_mailru_playlists(query: str, max_results: int = 100) -> list[dict]:
                 continue
             seen.add(pl_url)
 
+            owner_dir = (item.get("OwnerDir") or "").strip()
+            owner_url = f"https://my.mail.ru{owner_dir}" if owner_dir.startswith("/") else ""
             playlists.append({
                 "title":        (item.get("Name") or "Плейлист").strip(),
                 "owner":        (item.get("OwnerName") or "").strip(),
+                "owner_url":    owner_url,
                 "tracks_count": str(item.get("TracksCount") or item.get("TracksCount_hr") or ""),
                 "url":          pl_url,
             })

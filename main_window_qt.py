@@ -125,7 +125,10 @@ class _MailRuTab(QWidget):
                     it0 = QTableWidgetItem(p.get("title", "Плейлист"))
                     it0.setData(Qt.ItemDataRole.UserRole, dict(p))
                     self.table.setItem(i, 0, it0)
-                    self.table.setItem(i, 1, QTableWidgetItem(p.get("owner", "")))
+                    it_own = QTableWidgetItem(p.get("owner", ""))
+                    if p.get("owner_url"):
+                        it_own.setToolTip(p["owner_url"])
+                    self.table.setItem(i, 1, it_own)
                     self.table.setItem(i, 2, QTableWidgetItem(str(p.get("tracks_count", ""))))
                     self.table.setItem(i, 3, QTableWidgetItem(p.get("url", "")))
                 self.action_btn.setText("📋 Открыть плейлист")
@@ -149,7 +152,10 @@ class _MailRuTab(QWidget):
                     self.table.setItem(i, 1, QTableWidgetItem(t.get("title", "")))
                     self.table.setItem(i, 2, QTableWidgetItem(t.get("duration", "")))
                     self.table.setItem(i, 3, QTableWidgetItem(t.get("bitrate", "")))
-                    self.table.setItem(i, 4, QTableWidgetItem(t.get("owner", "")))
+                    it_own = QTableWidgetItem(t.get("owner", ""))
+                    if t.get("owner_url"):
+                        it_own.setToolTip(t["owner_url"])
+                    self.table.setItem(i, 4, it_own)
                 self.action_btn.setText("⬇ Скачать выбранные")
             self.action_btn.setEnabled(len(items) > 0)
         finally:
@@ -379,16 +385,33 @@ class MailRuPage(QWidget):
         tab = self._cur_tab()
         if tab.table.rowCount() == 0:
             return
+        rows = sorted({idx.row() for idx in tab.table.selectedIndexes()})
+        first_data = None
+        if rows:
+            it0 = tab.table.item(rows[0], 0)
+            if it0:
+                first_data = it0.data(Qt.ItemDataRole.UserRole)
+        has_owner_url = isinstance(first_data, dict) and bool(first_data.get("owner_url"))
+
         menu = QMenu(self)
         act_main = menu.addAction("📋 Открыть плейлист" if tab.kind == "playlists" else "⬇ Скачать выбранные")
         act_copy_name = menu.addAction("Копировать название")
         act_copy_url = menu.addAction("Копировать ссылку")
+        menu.addSeparator()
+        act_open_owner = menu.addAction("🌐 Открыть владельца в браузере")
+        act_open_owner.setEnabled(has_owner_url)
+        act_copy_owner = menu.addAction("Копировать ссылку на владельца")
+        act_copy_owner.setEnabled(has_owner_url)
+
         act = menu.exec(tab.table.viewport().mapToGlobal(pos))
         if act == act_main:
             self._on_tab_action()
-        elif act in (act_copy_name, act_copy_url):
+        elif act == act_open_owner and has_owner_url:
+            import webbrowser
+            webbrowser.open(first_data["owner_url"])
+            self.status_label_set(f"Открыт профиль: {first_data['owner_url']}")
+        elif act in (act_copy_name, act_copy_url, act_copy_owner):
             from PyQt6.QtWidgets import QApplication
-            rows = sorted({idx.row() for idx in tab.table.selectedIndexes()})
             lines = []
             for r in rows:
                 it = tab.table.item(r, 0)
@@ -397,6 +420,8 @@ class MailRuPage(QWidget):
                     continue
                 if act == act_copy_url and d.get("url"):
                     lines.append(d["url"])
+                elif act == act_copy_owner and d.get("owner_url"):
+                    lines.append(d["owner_url"])
                 elif act == act_copy_name:
                     s = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —")
                     if s:
