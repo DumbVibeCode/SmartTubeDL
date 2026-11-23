@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QCheckBox,
-    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QFrame, QTabWidget
+    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QFrame, QTabWidget, QMenu
 )
 
 import styles as _styles
@@ -26,36 +26,160 @@ from queues import add_to_queue, process_queue, get_queue_count
 import utils as _utils
 
 
-# ── Раздел: Mail.ru (отдельный пункт под плейлисты и будущий поиск) ──────────
+# ── Раздел: Mail.ru (полноценный поиск музыки и плейлистов + вкладки) ────────
+
+_MAILRU_TABS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mailru_search_tabs.json")
+
 
 class _MailRuSignals(QObject):
-    tracks_ready = pyqtSignal(list, str)   # (tracks, owner)
+    results_ready = pyqtSignal(object, list, str, str)  # (tab, items, kind: 'tracks'|'playlists', title_hint)
     status = pyqtSignal(str)
     progress = pyqtSignal(int)
     busy = pyqtSignal(bool)
     error = pyqtSignal(str)
 
 
+class _MailRuTab(QWidget):
+    """Одна вкладка Mail.ru: таблица + единая нижняя панель (фильтр + счётчик + действие)."""
+
+    def __init__(self, query: str = "", kind: str = "tracks", on_action=None, on_ctx=None):
+        super().__init__()
+        self.query = query
+        self.kind = kind          # 'tracks' | 'playlists'
+        self.items = []
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.setSpacing(6)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(True)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        if on_ctx:
+            self.table.customContextMenuRequested.connect(on_ctx)
+        if on_action:
+            self.table.doubleClicked.connect(lambda _idx: on_action())
+        self.table.itemSelectionChanged.connect(self._update_sel)
+        lay.addWidget(self.table, 1)
+
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Фильтр по названию или исполнителю (Ctrl+F)...")
+        self.filter_input.textChanged.connect(self._apply_filter)
+        bar.addWidget(self.filter_input, 1)
+
+        self.sel_lbl = QLabel("Выбрано: 0")
+        bar.addWidget(self.sel_lbl)
+
+        self.action_btn = QPushButton("⬇ Скачать выбранные")
+        self.action_btn.setEnabled(False)
+        if on_action:
+            self.action_btn.clicked.connect(on_action)
+        bar.addWidget(self.action_btn)
+        lay.addLayout(bar)
+
+    def _update_sel(self):
+        cnt = len({idx.row() for idx in self.table.selectedIndexes()})
+        self.sel_lbl.setText(f"Выбрано: {cnt}")
+
+    def _apply_filter(self, text: str):
+        q = text.strip().lower()
+        cols = self.table.columnCount()
+        for r in range(self.table.rowCount()):
+            if not q:
+                self.table.setRowHidden(r, False)
+                continue
+            matched = False
+            for c in range(cols):
+                it = self.table.item(r, c)
+                if it and q in it.text().lower():
+                    matched = True
+                    break
+            self.table.setRowHidden(r, not matched)
+
+    def populate(self, items: list, kind: str):
+        self.items = list(items)
+        self.kind = kind
+        self.table.setUpdatesEnabled(False)
+        self.table.setSortingEnabled(False)
+        try:
+            self.table.setRowCount(0)
+            hh = self.table.horizontalHeader()
+            if kind == "playlists":
+                self.table.setColumnCount(4)
+                self.table.setHorizontalHeaderLabels(["Плейлист", "Владелец", "Треков", "Ссылка"])
+                hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+                hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+                hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+                hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(1, 160)
+                self.table.setColumnWidth(2, 70)
+                self.table.setColumnWidth(3, 220)
+                self.table.setRowCount(len(items))
+                for i, p in enumerate(items):
+                    it0 = QTableWidgetItem(p.get("title", "Плейлист"))
+                    it0.setData(Qt.ItemDataRole.UserRole, dict(p))
+                    self.table.setItem(i, 0, it0)
+                    self.table.setItem(i, 1, QTableWidgetItem(p.get("owner", "")))
+                    self.table.setItem(i, 2, QTableWidgetItem(str(p.get("tracks_count", ""))))
+                    self.table.setItem(i, 3, QTableWidgetItem(p.get("url", "")))
+                self.action_btn.setText("📋 Открыть плейлист")
+            else:
+                self.table.setColumnCount(5)
+                self.table.setHorizontalHeaderLabels(["Исполнитель", "Название", "Длит.", "Битрейт", "Владелец"])
+                hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+                hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+                hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+                hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+                hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+                self.table.setColumnWidth(0, 210)
+                self.table.setColumnWidth(2, 65)
+                self.table.setColumnWidth(3, 80)
+                self.table.setColumnWidth(4, 150)
+                self.table.setRowCount(len(items))
+                for i, t in enumerate(items):
+                    it0 = QTableWidgetItem(t.get("artist", ""))
+                    it0.setData(Qt.ItemDataRole.UserRole, dict(t))
+                    self.table.setItem(i, 0, it0)
+                    self.table.setItem(i, 1, QTableWidgetItem(t.get("title", "")))
+                    self.table.setItem(i, 2, QTableWidgetItem(t.get("duration", "")))
+                    self.table.setItem(i, 3, QTableWidgetItem(t.get("bitrate", "")))
+                    self.table.setItem(i, 4, QTableWidgetItem(t.get("owner", "")))
+                self.action_btn.setText("⬇ Скачать выбранные")
+            self.action_btn.setEnabled(len(items) > 0)
+        finally:
+            self.table.setSortingEnabled(True)
+            self.table.setUpdatesEnabled(True)
+
+
 class MailRuPage(QWidget):
-    """Раздел Mail.ru: загрузка плейлистов (с заделом под полноценный поиск)."""
+    """Раздел Mail.ru: полноценный поиск треков/плейлистов, прямые ссылки и вкладки."""
 
     def __init__(self):
         super().__init__()
-        self._tracks = []
-        self._owner = ""
         self._busy = False
+        self._restoring = True
         self._sig = _MailRuSignals()
-        self._sig.tracks_ready.connect(self._populate)
+        self._sig.results_ready.connect(self._on_results_ready)
         self._sig.status.connect(self.status_label_set)
         self._sig.progress.connect(self._set_progress)
         self._sig.busy.connect(self._set_busy)
         self._sig.error.connect(lambda m: QMessageBox.warning(self, "Mail.ru", m))
-        self._setup_ui()
+        try:
+            self._setup_ui()
+            self._restore_tabs()
+        finally:
+            self._restoring = False
 
     def _setup_ui(self):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(12, 12, 12, 8)
+        lay.setSpacing(6)
 
         hdr = QLabel("Mail.ru — Музыка")
         f = QFont()
@@ -65,59 +189,98 @@ class MailRuPage(QWidget):
         lay.addWidget(hdr)
 
         row = QHBoxLayout()
+        row.setSpacing(6)
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Вставьте ссылку на плейлист my.mail.ru/music/playlists/...")
+        self.url_input.setPlaceholderText("Поиск музыки / плейлистов или вставьте ссылку my.mail.ru/music/...")
         self.url_input.returnPressed.connect(self._on_fetch)
         row.addWidget(self.url_input, 1)
 
-        self.btn_fetch = QPushButton("Найти / Загрузить")
+        self.kind_combo = QComboBox()
+        self.kind_combo.addItems(["Треки", "Плейлисты"])
+        self.kind_combo.setFixedWidth(105)
+        row.addWidget(self.kind_combo)
+
+        row.addWidget(QLabel("Кол-во:"))
+        self.count_combo = QComboBox()
+        self.count_combo.addItems(["100", "200", "500", "Все"])
+        self.count_combo.setCurrentText("200")
+        self.count_combo.setFixedWidth(74)
+        row.addWidget(self.count_combo)
+
+        self.btn_fetch = QPushButton("Найти")
         self.btn_fetch.clicked.connect(self._on_fetch)
         row.addWidget(self.btn_fetch)
         lay.addLayout(row)
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Исполнитель", "Название", "Длительность"])
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSortingEnabled(True)
-        self.table.doubleClicked.connect(lambda _idx: self._on_download())
-        self.table.itemSelectionChanged.connect(self._update_selection_count)
-        hh = self.table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.setColumnWidth(0, 220)
-        lay.addWidget(self.table, 1)
+        self.pbar = QProgressBar()
+        self.pbar.setFixedHeight(3)
+        self.pbar.setTextVisible(False)
+        self.pbar.setVisible(False)
+        lay.addWidget(self.pbar)
 
-        # Единая нижняя панель под таблицей: слева фильтр, справа счётчик + «Скачать выбранные»
-        bottom_bar = QHBoxLayout()
-        self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("Фильтр по названию или исполнителю (Ctrl+F)...")
-        self.filter_input.textChanged.connect(self._apply_filter)
-        bottom_bar.addWidget(self.filter_input, 1)
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
+        self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        new_btn = QPushButton("+")
+        new_btn.setFixedSize(26, 24)
+        new_btn.setToolTip("Новая вкладка (Ctrl+T)")
+        new_btn.clicked.connect(lambda: self._new_tab(""))
+        self.tabs.setCornerWidget(new_btn, Qt.Corner.TopRightCorner)
+        lay.addWidget(self.tabs, 1)
 
-        self.sel_lbl = QLabel("Выбрано: 0")
-        bottom_bar.addWidget(self.sel_lbl)
-
-        self.btn_dl = QPushButton("⬇ Скачать выбранные")
-        self.btn_dl.clicked.connect(self._on_download)
-        bottom_bar.addWidget(self.btn_dl)
-        lay.addLayout(bottom_bar)
+        self._new_tab("")
 
         foot = QHBoxLayout()
-        self.status_lbl = QLabel("Вставьте ссылку на плейлист Mail.ru")
+        self.status_lbl = QLabel("Введите запрос для поиска или вставьте ссылку на плейлист Mail.ru")
+        self.status_lbl.setProperty("secondary", True)
         foot.addWidget(self.status_lbl, 1)
-        self.pbar = QProgressBar()
-        self.pbar.setMaximumWidth(220)
-        self.pbar.setVisible(False)
-        foot.addWidget(self.pbar)
         lay.addLayout(foot)
 
-    def _update_selection_count(self):
-        cnt = len({idx.row() for idx in self.table.selectedIndexes()})
-        self.sel_lbl.setText(f"Выбрано: {cnt}")
+    def _cur_tab(self) -> _MailRuTab:
+        w = self.tabs.currentWidget()
+        if isinstance(w, _MailRuTab):
+            return w
+        return self._new_tab("")
+
+    @property
+    def filter_input(self) -> QLineEdit:
+        return self._cur_tab().filter_input
+
+    def _new_tab(self, query: str = "", kind: str = "tracks") -> _MailRuTab:
+        tab = _MailRuTab(query=query, kind=kind, on_action=self._on_tab_action, on_ctx=self._show_ctx_menu)
+        prefix = "📋" if kind == "playlists" else "🎵"
+        short = (query[:20] + "…") if len(query) > 20 else (query or "Поиск")
+        idx = self.tabs.addTab(tab, f"{prefix} {short}")
+        self.tabs.setCurrentIndex(idx)
+        return tab
+
+    def _close_tab(self, index: int):
+        if self.tabs.count() <= 1:
+            return
+        w = self.tabs.widget(index)
+        self.tabs.removeTab(index)
+        if w is not None:
+            w.deleteLater()
+        self._save_tabs()
+
+    def _on_tab_changed(self, _index: int):
+        w = self.tabs.currentWidget()
+        if isinstance(w, _MailRuTab) and not self._restoring:
+            self.url_input.setText(w.query)
+            self._save_tabs()
+
+    def _update_tab_title(self, tab: _MailRuTab, title_hint: str = ""):
+        idx = self.tabs.indexOf(tab)
+        if idx < 0:
+            return
+        prefix = "📋" if (tab.kind == "playlists" or tab.query.startswith("http")) else "🎵"
+        base = title_hint or tab.query or "Поиск"
+        short = (base[:20] + "…") if len(base) > 20 else base
+        cnt = f" ({len(tab.items)})" if tab.items else ""
+        self.tabs.setTabText(idx, f"{prefix} {short}{cnt}")
+        self.tabs.setTabToolTip(idx, base)
 
     def status_label_set(self, text: str):
         self.status_lbl.setText(text)
@@ -130,72 +293,132 @@ class MailRuPage(QWidget):
     def _set_busy(self, busy: bool):
         self._busy = busy
         self.btn_fetch.setEnabled(not busy)
-        self.btn_dl.setEnabled(not busy)
+        cur = self.tabs.currentWidget()
+        if isinstance(cur, _MailRuTab):
+            cur.action_btn.setEnabled((not busy) and bool(cur.items))
 
-    def open_url(self, url: str):
+    def open_url(self, url: str, title_hint: str = ""):
         self.url_input.setText(url)
-        self._on_fetch()
+        self._on_fetch(title_hint=title_hint)
 
-    def _on_fetch(self):
+    def _on_fetch(self, title_hint: str = ""):
         if self._busy:
             return
-        url = self.url_input.text().strip()
-        if not url:
+        raw = self.url_input.text().strip()
+        if not raw:
             return
-        from mailru_download import is_mailru_url, _fetch_tracks
-        if not is_mailru_url(url):
-            QMessageBox.information(self, "Mail.ru", "Укажите ссылку вида https://my.mail.ru/music/...")
-            return
+        from mailru_download import is_mailru_url, _fetch_tracks, search_mailru_tracks, search_mailru_playlists
+
+        raw_cnt = self.count_combo.currentText().strip()
+        max_res = 0 if raw_cnt.lower() == "все" else int(raw_cnt)
+        want_playlists = (self.kind_combo.currentText() == "Плейлисты") and not is_mailru_url(raw)
+        kind = "playlists" if want_playlists else "tracks"
+
+        tab = self._cur_tab()
+        if tab.items and tab.query != raw:
+            tab = self._new_tab(raw, kind=kind)
+        tab.query = raw
+        tab.kind = kind
+        self._update_tab_title(tab, title_hint)
+
         self._sig.busy.emit(True)
-        self._sig.status.emit("Загружаю список треков Mail.ru...")
+        self._sig.progress.emit(0)
+        if is_mailru_url(raw):
+            self._sig.status.emit("Загружаю плейлист Mail.ru...")
+        elif want_playlists:
+            self._sig.status.emit(f"Ищу плейлисты «{raw}» на Mail.ru...")
+        else:
+            self._sig.status.emit(f"Ищу треки «{raw}» на Mail.ru...")
 
         def _worker():
             try:
-                tracks, owner = _fetch_tracks(url)
-                self._sig.tracks_ready.emit(tracks, owner or "")
-                self._sig.status.emit(f"Найдено треков: {len(tracks)}" + (f" ({owner})" if owner else ""))
+                if is_mailru_url(raw):
+                    items, owner = _fetch_tracks(raw)
+                    hint = title_hint or owner or "Плейлист"
+                    self._sig.results_ready.emit(tab, items, "tracks", hint)
+                    self._sig.status.emit(f"Найдено треков: {len(items)}" + (f" ({owner})" if owner else ""))
+                elif want_playlists:
+                    items = search_mailru_playlists(raw, max_results=max_res)
+                    self._sig.results_ready.emit(tab, items, "playlists", raw)
+                    self._sig.status.emit(f"Найдено плейлистов: {len(items)}")
+                else:
+                    items = search_mailru_tracks(raw, max_results=max_res)
+                    self._sig.results_ready.emit(tab, items, "tracks", raw)
+                    self._sig.status.emit(f"Найдено треков: {len(items)}")
             except Exception as e:
                 log_message(f"ERROR MailRuPage fetch: {e}")
-                self._sig.error.emit(f"Не удалось загрузить плейлист:\n{e}")
-                self._sig.status.emit("Ошибка загрузки списка")
+                self._sig.error.emit(f"Ошибка Mail.ru:\n{e}")
+                self._sig.status.emit("Ошибка поиска Mail.ru")
             finally:
+                self._sig.progress.emit(100)
                 self._sig.busy.emit(False)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _populate(self, tracks: list, owner: str):
-        self._tracks = tracks
-        self._owner = owner
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(tracks))
-        for i, t in enumerate(tracks):
-            it_a = QTableWidgetItem(t.get("artist", ""))
-            it_a.setData(Qt.ItemDataRole.UserRole, t)
-            self.table.setItem(i, 0, it_a)
-            self.table.setItem(i, 1, QTableWidgetItem(t.get("title", "")))
-            self.table.setItem(i, 2, QTableWidgetItem(t.get("duration", "")))
-        self.table.setSortingEnabled(True)
+    def _on_results_ready(self, tab: _MailRuTab, items: list, kind: str, title_hint: str):
+        if self.tabs.indexOf(tab) < 0:
+            return
+        tab.populate(items, kind)
+        self._update_tab_title(tab, title_hint)
+        self._save_tabs()
 
-    def _apply_filter(self, text: str):
-        q = text.strip().lower()
-        for r in range(self.table.rowCount()):
-            a = (self.table.item(r, 0).text() if self.table.item(r, 0) else "").lower()
-            t = (self.table.item(r, 1).text() if self.table.item(r, 1) else "").lower()
-            self.table.setRowHidden(r, bool(q) and (q not in a and q not in t))
+    def _on_tab_action(self):
+        tab = self._cur_tab()
+        if tab.kind == "playlists":
+            rows = sorted({idx.row() for idx in tab.table.selectedIndexes()})
+            if not rows:
+                return
+            it = tab.table.item(rows[0], 0)
+            data = it.data(Qt.ItemDataRole.UserRole) if it else None
+            if data and data.get("url"):
+                self.open_url(data["url"], title_hint=data.get("title", ""))
+            return
+        self._on_download()
+
+    def _show_ctx_menu(self, pos):
+        tab = self._cur_tab()
+        if tab.table.rowCount() == 0:
+            return
+        menu = QMenu(self)
+        act_main = menu.addAction("📋 Открыть плейлист" if tab.kind == "playlists" else "⬇ Скачать выбранные")
+        act_copy_name = menu.addAction("Копировать название")
+        act_copy_url = menu.addAction("Копировать ссылку")
+        act = menu.exec(tab.table.viewport().mapToGlobal(pos))
+        if act == act_main:
+            self._on_tab_action()
+        elif act in (act_copy_name, act_copy_url):
+            from PyQt6.QtWidgets import QApplication
+            rows = sorted({idx.row() for idx in tab.table.selectedIndexes()})
+            lines = []
+            for r in rows:
+                it = tab.table.item(r, 0)
+                d = it.data(Qt.ItemDataRole.UserRole) if it else None
+                if not isinstance(d, dict):
+                    continue
+                if act == act_copy_url and d.get("url"):
+                    lines.append(d["url"])
+                elif act == act_copy_name:
+                    s = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —")
+                    if s:
+                        lines.append(s)
+            if lines:
+                QApplication.clipboard().setText("\n".join(lines))
+                self.status_label_set(f"Скопировано: {len(lines)}")
 
     def _on_download(self):
         if self._busy:
             return
-        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        tab = self._cur_tab()
+        rows = sorted({idx.row() for idx in tab.table.selectedIndexes()})
         if not rows:
             QMessageBox.information(self, "Mail.ru", "Выберите треки для скачивания.")
             return
         picked = []
         for r in rows:
-            it = self.table.item(r, 0)
+            it = tab.table.item(r, 0)
             if it:
                 d = it.data(Qt.ItemDataRole.UserRole)
-                if d:
+                if isinstance(d, dict) and d.get("url"):
                     picked.append(d)
         if not picked:
             return
@@ -214,8 +437,6 @@ class MailRuPage(QWidget):
                 url = t.get("url", "")
                 self._sig.status.emit(f"Скачиваю {idx}/{total}: {artist} - {title}")
                 self._sig.progress.emit(int((idx - 1) / max(total, 1) * 100))
-                if not url:
-                    continue
                 base = _utils.safe_filename(f"{artist} - {title}".strip(" -"), default="track")
                 path = os.path.join(folder, f"{base}.mp3")
                 k = 2
@@ -243,6 +464,57 @@ class MailRuPage(QWidget):
             self._sig.busy.emit(False)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _save_tabs(self):
+        try:
+            from config import atomic_write_json
+            cur_idx = self.tabs.currentIndex()
+            data = []
+            for i in range(self.tabs.count()):
+                t = self.tabs.widget(i)
+                if not isinstance(t, _MailRuTab) or not t.items:
+                    continue
+                data.append({
+                    "query": t.query,
+                    "kind": t.kind,
+                    "title": self.tabs.tabText(i),
+                    "items": t.items,
+                    "active": i == cur_idx,
+                })
+            atomic_write_json(_MAILRU_TABS_FILE, data, indent=2)
+        except Exception as e:
+            log_message(f"WARNING Mail.ru save tabs: {e}")
+
+    def _restore_tabs(self):
+        if not os.path.exists(_MAILRU_TABS_FILE):
+            return
+        try:
+            import json
+            with open(_MAILRU_TABS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not data:
+                return
+            if self.tabs.count() == 1:
+                w0 = self.tabs.widget(0)
+                if isinstance(w0, _MailRuTab) and not w0.items:
+                    self.tabs.removeTab(0)
+                    w0.deleteLater()
+            active_idx = 0
+            for td in data:
+                items = td.get("items") or []
+                if not items:
+                    continue
+                tab = self._new_tab(td.get("query", ""), kind=td.get("kind", "tracks"))
+                tab.populate(items, td.get("kind", "tracks"))
+                self._update_tab_title(tab)
+                if td.get("active"):
+                    active_idx = self.tabs.indexOf(tab)
+            if self.tabs.count() == 0:
+                self._new_tab("")
+            self.tabs.setCurrentIndex(active_idx)
+            self.url_input.setText(self._cur_tab().query)
+        except Exception as e:
+            log_message(f"WARNING Mail.ru restore tabs: {e}")
 
 
 # ── Раздел: По ссылкам (1 ссылка или пачка, умная маршрутизация) ─────────────
@@ -862,6 +1134,8 @@ class MainWindow(QMainWindow):
             self.vk_page._new_tab("")
         elif idx == self.IDX_OK and self.ok_page and hasattr(self.ok_page, "_new_tab"):
             self.ok_page._new_tab("")
+        elif idx == self.IDX_MAILRU and self.mailru_page:
+            self.mailru_page._new_tab("")
 
     def _shortcut_close_tab(self):
         idx = self.stack.currentIndex()
@@ -871,6 +1145,8 @@ class MainWindow(QMainWindow):
             self.vk_page._close_tab(self.vk_page.tabs.currentIndex())
         elif idx == self.IDX_OK and self.ok_page and hasattr(self.ok_page, "tabs") and self.ok_page.tabs.count() > 1:
             self.ok_page._close_tab(self.ok_page.tabs.currentIndex())
+        elif idx == self.IDX_MAILRU and self.mailru_page and self.mailru_page.tabs.count() > 1:
+            self.mailru_page._close_tab(self.mailru_page.tabs.currentIndex())
 
     def _ensure_page(self, idx: int) -> QWidget:
         """Лениво создаёт страницу раздела при первом обращении."""

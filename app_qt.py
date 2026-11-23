@@ -557,6 +557,12 @@ class YouTubeDownloaderApp(QApplication):
                 ow._save_state()
             except Exception as e:
                 log_message(f"WARNING autosave ok state: {e}")
+        # Вкладки Mail.ru
+        if self.main_window is not None and self.main_window.mailru_page is not None:
+            try:
+                self.main_window.mailru_page._save_tabs()
+            except Exception as e:
+                log_message(f"WARNING autosave mailru tabs: {e}")
 
     def show_vk_search_window(self):
         """Открывает раздел ВКонтакте в главном окне"""
