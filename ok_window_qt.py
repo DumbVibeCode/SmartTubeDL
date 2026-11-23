@@ -375,8 +375,12 @@ class _OKTab(QWidget):
         self.table.setSortingEnabled(True)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 75)
+        self.table.setColumnWidth(2, 220)
+        from styles import bind_table_column_widths
+        bind_table_column_widths(self.table, "ok_table")
         lay.addWidget(self.table, 1)
 
         # Единая нижняя панель под таблицей: слева фильтр, справа счётчик + «Скачать выбранные»
@@ -560,6 +564,10 @@ class OKSearchWindow(QWidget):
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
 
+        from styles import attach_search_history
+        self._search_hist = attach_search_history(self.query_input, "ok_search_history", self._on_search)
+        row.addWidget(self._search_hist.button)
+
         self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
         self.search_btn.clicked.connect(self._on_search)
@@ -661,6 +669,7 @@ class OKSearchWindow(QWidget):
         raw = self.query_input.text().strip()
         if not raw:
             return
+        self._search_hist.add(raw)
         low = raw.lower()
         is_url = low.startswith("http") or re.search(r'(?:www\.|m\.)?ok\.ru/|odnoklassniki\.ru/', low)
 

@@ -231,11 +231,16 @@ class _VKResultTab(QWidget):
         self.table.setAlternatingRowColors(True)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 200)
+        self.table.setColumnWidth(2, 65)
+        self.table.setColumnWidth(3, 150)
         hdr.setHighlightSections(False)
+        from styles import bind_table_column_widths
+        bind_table_column_widths(self.table, "vk_audio")
 
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(24)
@@ -412,6 +417,10 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         self.query_input.setPlaceholderText("Исполнитель / название, ссылка vk.com/..., my.mail.ru/music/...")
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
+
+        from styles import attach_search_history
+        self._search_hist = attach_search_history(self.query_input, "vk_search_history", self._on_search)
+        row.addWidget(self._search_hist.button)
 
         row.addWidget(QLabel("Кол-во:"))
         self.count_combo = QComboBox()
@@ -1329,6 +1338,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         if not query:
             self._sig.status.emit("Введите запрос!")
             return
+        self._search_hist.add(query)
         try:
             raw_cnt = self.count_combo.currentText().strip()
             count = 0 if raw_cnt.lower() == "все" else max(0, min(500, int(raw_cnt)))

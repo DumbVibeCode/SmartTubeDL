@@ -120,6 +120,7 @@ class _MailRuTab(QWidget):
                 self.table.setColumnWidth(1, 160)
                 self.table.setColumnWidth(2, 70)
                 self.table.setColumnWidth(3, 220)
+                _styles.bind_table_column_widths(self.table, "mailru_playlists")
                 self.table.setRowCount(len(items))
                 for i, p in enumerate(items):
                     it0 = QTableWidgetItem(p.get("title", "Плейлист"))
@@ -144,6 +145,7 @@ class _MailRuTab(QWidget):
                 self.table.setColumnWidth(2, 65)
                 self.table.setColumnWidth(3, 80)
                 self.table.setColumnWidth(4, 150)
+                _styles.bind_table_column_widths(self.table, "mailru_tracks")
                 self.table.setRowCount(len(items))
                 for i, t in enumerate(items):
                     it0 = QTableWidgetItem(t.get("artist", ""))
@@ -200,6 +202,9 @@ class MailRuPage(QWidget):
         self.url_input.setPlaceholderText("Поиск музыки / плейлистов или вставьте ссылку my.mail.ru/music/...")
         self.url_input.returnPressed.connect(self._on_fetch)
         row.addWidget(self.url_input, 1)
+
+        self._search_hist = _styles.attach_search_history(self.url_input, "mailru_search_history", self._on_fetch)
+        row.addWidget(self._search_hist.button)
 
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(["Треки", "Плейлисты"])
@@ -313,6 +318,7 @@ class MailRuPage(QWidget):
         raw = self.url_input.text().strip()
         if not raw:
             return
+        self._search_hist.add(raw)
         from mailru_download import is_mailru_url, _fetch_tracks, search_mailru_tracks, search_mailru_playlists
 
         raw_cnt = self.count_combo.currentText().strip()
@@ -716,6 +722,7 @@ class HistoryPage(QWidget):
         self.table.setColumnWidth(0, 145)
         self.table.setColumnWidth(2, 70)
         self.table.setColumnWidth(3, 95)
+        _styles.bind_table_column_widths(self.table, "history_table")
         lay.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -1013,10 +1020,10 @@ class MainWindow(QMainWindow):
 
         # ── Левая боковая панель ─────────────────────────────────────────────
         sidebar_wrap = QFrame()
-        sidebar_wrap.setFixedWidth(182)
+        sidebar_wrap.setFixedWidth(186)
         sidebar_wrap.setStyleSheet(
             f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
-            f"border-right: 1px solid {COLORS['border']}; }}"
+            f"border-right: 1px solid {COLORS['border_strong']}; }}"
         )
         sb_lay = QVBoxLayout(sidebar_wrap)
         sb_lay.setContentsMargins(8, 12, 8, 10)
@@ -1031,6 +1038,7 @@ class MainWindow(QMainWindow):
         sb_lay.addWidget(brand)
 
         self.nav = QListWidget()
+        self.nav.setCursor(Qt.CursorShape.PointingHandCursor)
         self.nav.setStyleSheet(f"""
             QListWidget {{
                 background: transparent;
@@ -1039,18 +1047,20 @@ class MainWindow(QMainWindow):
                 font-size: 13px;
             }}
             QListWidget::item {{
-                padding: 9px 10px;
+                padding: 8px 10px;
                 border-radius: 6px;
+                border-left: 3px solid transparent;
                 margin-bottom: 2px;
                 color: {COLORS['text_primary']};
             }}
-            QListWidget::item:hover {{
+            QListWidget::item:hover:!selected {{
                 background-color: {COLORS['bg_primary']};
             }}
             QListWidget::item:selected {{
-                background-color: {COLORS['accent']};
-                color: #ffffff;
-                font-weight: bold;
+                background-color: {COLORS['accent_light']};
+                color: {COLORS['accent']};
+                border-left: 3px solid {COLORS['accent']};
+                font-weight: 600;
             }}
         """)
         self._nav_items = [
@@ -1081,40 +1091,40 @@ class MainWindow(QMainWindow):
 
         # ── Постоянная нижняя панель (Footer Bar) ────────────────────────────
         footer = QFrame()
-        footer.setFixedHeight(40)
+        footer.setFixedHeight(42)
         footer.setStyleSheet(
             f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
-            f"border-top: 1px solid {COLORS['border']}; }}"
+            f"border-top: 1px solid {COLORS['border_strong']}; }}"
         )
         fl = QHBoxLayout(footer)
         fl.setContentsMargins(12, 4, 12, 4)
-        fl.setSpacing(10)
+        fl.setSpacing(8)
 
         self.footer_status = QLabel("Ожидание...")
-        self.footer_status.setStyleSheet("border: none;")
+        self.footer_status.setStyleSheet(f"border: none; color: {COLORS['text_secondary']};")
         fl.addWidget(self.footer_status, 1)
 
         self.footer_progress = QProgressBar()
         self.footer_progress.setFixedWidth(150)
-        self.footer_progress.setFixedHeight(14)
+        self.footer_progress.setFixedHeight(16)
         self.footer_progress.setVisible(False)
         fl.addWidget(self.footer_progress)
 
         self.btn_pause = QPushButton("⏸ Пауза")
         self.btn_pause.setProperty("secondary", True)
-        self.btn_pause.setFixedHeight(26)
+        self.btn_pause.setFixedHeight(28)
         self.btn_pause.clicked.connect(self._toggle_pause)
         fl.addWidget(self.btn_pause)
 
         self.quick_fmt = QComboBox()
         self.quick_fmt.addItems(["MP4 1080p", "MP4 720p", "MP4 480p", "MP3"])
-        self.quick_fmt.setFixedHeight(26)
+        self.quick_fmt.setFixedHeight(28)
         self.quick_fmt.currentTextChanged.connect(self._on_quick_fmt_changed)
         fl.addWidget(self.quick_fmt)
 
         self.btn_folder = QPushButton()
         self.btn_folder.setProperty("secondary", True)
-        self.btn_folder.setFixedHeight(26)
+        self.btn_folder.setFixedHeight(28)
         self.btn_folder.setToolTip("Открыть папку загрузок в Проводнике")
         self.btn_folder.clicked.connect(self._open_download_folder)
         fl.addWidget(self.btn_folder)

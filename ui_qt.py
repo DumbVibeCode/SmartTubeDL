@@ -433,9 +433,12 @@ class _ResultTab(QWidget):
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 190)
+        self.table.setColumnWidth(2, 90)
         hdr.setHighlightSections(False)
+        _styles.bind_table_column_widths(self.table, "yt_results")
 
         layout.addWidget(self.table, 1)
 
@@ -970,6 +973,7 @@ class SearchWindow(QMainWindow):
     def _clear_history(self):
         settings["search_history"] = []
         self._history_model.setStringList([])
+        save_settings(settings)
 
     def _on_search(self):
         """Запускает поиск (или открывает вкладку канала/плейлиста, если вставлена ссылка)."""
