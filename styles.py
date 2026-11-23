@@ -401,14 +401,14 @@ def _ensure_svg_icons(c: dict) -> dict:
         ),
         "tab_close": (
             f"tab_close_{tag}.svg",
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">'
-            f'<path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" fill="none" stroke="{sec}" '
-            f'stroke-width="1.4" stroke-linecap="round"/></svg>'
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 10 10">'
+            f'<path d="M2 2L8 8M8 2L2 8" fill="none" stroke="{sec}" '
+            f'stroke-width="1.5" stroke-linecap="round"/></svg>'
         ),
         "tab_close_hover": (
             "tab_close_hover.svg",
-            '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">'
-            '<path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" fill="none" stroke="#dc2626" '
+            '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 10 10">'
+            '<path d="M2 2L8 8M8 2L2 8" fill="none" stroke="#dc2626" '
             'stroke-width="1.6" stroke-linecap="round"/></svg>'
         ),
     }
@@ -417,9 +417,8 @@ def _ensure_svg_icons(c: dict) -> dict:
     for key, (fname, svg) in specs.items():
         fpath = os.path.join(icon_dir, fname)
         try:
-            if not os.path.exists(fpath):
-                with open(fpath, "w", encoding="utf-8") as f:
-                    f.write(svg)
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(svg)
             paths[key] = fpath.replace("\\", "/")
         except OSError:
             paths[key] = ""
@@ -625,7 +624,8 @@ QTabBar::tab {{
     border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    padding: 5px 12px;
+    padding: 5px 10px;
+    min-height: 20px;
     margin-right: 3px;
     margin-top: 3px;
 }}
@@ -643,14 +643,33 @@ QTabBar::tab:selected {{
 QTabBar::close-button {{
     {tab_close_svg}
     subcontrol-position: right;
-    width: 14px;
-    height: 14px;
+    width: 8px;
+    height: 8px;
+    padding: 3px;
     margin-left: 4px;
     border-radius: 3px;
 }}
 QTabBar::close-button:hover {{
     {tab_close_hover_svg}
-    background-color: rgba(220, 38, 38, 0.10);
+    background-color: rgba(220, 38, 38, 0.12);
+}}
+#newTabBtn {{
+    background-color: transparent;
+    color: {c["text_secondary"]};
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 400;
+    padding: 0px 0px 2px 0px;
+    min-height: 0px;
+}}
+#newTabBtn:hover {{
+    background-color: {c["border"]};
+    color: {c["text_primary"]};
+}}
+#newTabBtn:pressed {{
+    background-color: {c["accent_light"]};
+    color: {c["accent"]};
 }}
 
 /* === ТАБЛИЦА === */
@@ -867,3 +886,70 @@ def set_dark_mode(dark: bool) -> None:
     COLORS_MINIMAL.clear()
     COLORS_MINIMAL.update(src)
     STYLESHEET_MINIMAL = _build_stylesheet(src)
+
+
+def attach_new_tab_button(tabs, on_click, tooltip: str = "Новая вкладка (Ctrl+T)"):
+    """Размещает кнопку «+» сразу справа от последней открытой вкладки (как в браузере)."""
+    from PyQt6.QtWidgets import QPushButton, QWidget
+    from PyQt6.QtCore import Qt, QObject, QEvent, QTimer
+
+    btn = QPushButton("+", tabs)
+    btn.setObjectName("newTabBtn")
+    btn.setFixedSize(26, 24)
+    btn.setToolTip(tooltip)
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    btn.clicked.connect(on_click)
+
+    # Невидимый отступ в правом углу, чтобы при множестве вкладок кнопка не перекрывала скролл
+    spacer = QWidget()
+    spacer.setFixedSize(34, 24)
+    spacer.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    spacer.setStyleSheet("background: transparent;")
+    tabs.setCornerWidget(spacer, Qt.Corner.TopRightCorner)
+
+    tb = tabs.tabBar()
+
+    def _reposition():
+        try:
+            count = tb.count()
+            if count > 0:
+                last_rect = tb.tabRect(count - 1)
+                x = tb.pos().x() + last_rect.right() + 4
+                y = tb.pos().y() + last_rect.top() + max(0, (last_rect.height() - btn.height()) // 2)
+            else:
+                x = tb.pos().x() + 6
+                y = tb.pos().y() + 3
+            max_x = max(4, tabs.width() - btn.width() - 4)
+            nx = min(x, max_x)
+            ny = max(2, y)
+            if btn.pos().x() != nx or btn.pos().y() != ny:
+                btn.move(nx, ny)
+            btn.raise_()
+        except RuntimeError:
+            pass
+
+    def _schedule():
+        QTimer.singleShot(0, _reposition)
+
+    class _TabBtnFilter(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() in (
+                QEvent.Type.Resize,
+                QEvent.Type.Move,
+                QEvent.Type.LayoutRequest,
+                QEvent.Type.Show,
+                QEvent.Type.Paint,
+            ):
+                _schedule()
+            return False
+
+    flt = _TabBtnFilter(tabs)
+    tabs.installEventFilter(flt)
+    tb.installEventFilter(flt)
+    tabs.currentChanged.connect(lambda _i: _schedule())
+    tb.tabMoved.connect(lambda _a, _b: _schedule())
+    # Сохраняем ссылку, чтобы фильтр не собрался GC
+    tabs._new_tab_btn_filter = flt
+    tabs._new_tab_btn = btn
+    _schedule()
+    return btn

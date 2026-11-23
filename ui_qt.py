@@ -666,12 +666,11 @@ class SearchWindow(QMainWindow):
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(lambda _i: _save_state_soon())
 
-        new_tab_btn = QPushButton("+")
-        new_tab_btn.setFixedWidth(28)
-        new_tab_btn.setToolTip("Новая вкладка")
-        new_tab_btn.setProperty("secondary", True)
-        new_tab_btn.clicked.connect(lambda: self._new_tab("Новая вкладка"))
-        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+        _styles.attach_new_tab_button(
+            self.tabs,
+            lambda: self._new_tab("Новая вкладка"),
+            tooltip="Новая вкладка (Ctrl+T)",
+        )
 
         # Начальная вкладка
         self._new_tab("Поиск")

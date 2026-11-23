@@ -580,11 +580,12 @@ class OKSearchWindow(QWidget):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        new_tab_btn = QPushButton("+")
-        new_tab_btn.setFixedSize(26, 24)
-        new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
-        new_tab_btn.clicked.connect(lambda: self._new_tab(""))
-        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+        from styles import attach_new_tab_button
+        attach_new_tab_button(
+            self.tabs,
+            lambda: self._new_tab(""),
+            tooltip="Новая вкладка (Ctrl+T)",
+        )
         root.addWidget(self.tabs, 1)
 
         self._new_tab("")
