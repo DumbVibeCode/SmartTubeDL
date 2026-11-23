@@ -423,11 +423,13 @@ class OKSearchWindow(QWidget):
         self.driver = None
         self._sig = _Sig()
         self._busy = False        # идёт поиск или загрузка
-        self._restoring = False   # True во время восстановления (не сохранять)
-
-        self._build_ui()
-        self._connect_signals()
-        self._restore_state()
+        self._restoring = True    # Не сохраняем пустое состояние, пока не завершится _restore_state
+        try:
+            self._build_ui()
+            self._connect_signals()
+            self._restore_state()
+        finally:
+            self._restoring = False
 
         if not SELENIUM_OK:
             QMessageBox.critical(
