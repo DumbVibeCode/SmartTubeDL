@@ -399,6 +399,18 @@ def _ensure_svg_icons(c: dict) -> dict:
             '<path d="M2.3 6.2L4.9 8.8L9.7 3.4" fill="none" stroke="#ffffff" '
             'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         ),
+        "tab_close": (
+            f"tab_close_{tag}.svg",
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">'
+            f'<path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" fill="none" stroke="{sec}" '
+            f'stroke-width="1.4" stroke-linecap="round"/></svg>'
+        ),
+        "tab_close_hover": (
+            "tab_close_hover.svg",
+            '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">'
+            '<path d="M2.5 2.5L7.5 7.5M7.5 2.5L2.5 7.5" fill="none" stroke="#dc2626" '
+            'stroke-width="1.6" stroke-linecap="round"/></svg>'
+        ),
     }
 
     paths = {}
@@ -421,6 +433,8 @@ def _build_stylesheet(c: dict) -> str:
     chev_hover = f'image: url("{icons["chevron_down_hover"]}");' if icons["chevron_down_hover"] else "image: none;"
     chev_up = f'image: url("{icons["chevron_up"]}");' if icons["chevron_up"] else "image: none;"
     chk_svg = f'image: url("{icons["checkmark"]}");' if icons["checkmark"] else ""
+    tab_close_svg = f'image: url("{icons["tab_close"]}");' if icons["tab_close"] else ""
+    tab_close_hover_svg = f'image: url("{icons["tab_close_hover"]}");' if icons["tab_close_hover"] else ""
 
     return f"""
 /* === ГЛОБАЛЬНЫЕ СТИЛИ === */
@@ -592,6 +606,51 @@ QCheckBox::indicator:checked {{
 QCheckBox::indicator:checked:hover {{
     background-color: {c["accent_hover"]};
     border-color: {c["accent_hover"]};
+}}
+
+/* === ВКЛАДКИ === */
+QTabWidget::pane {{
+    background-color: {c["bg_secondary"]};
+    border: 1px solid {c["border"]};
+    border-radius: 6px;
+    top: -1px;
+}}
+QTabWidget::tab-bar {{
+    left: 6px;
+}}
+QTabBar::tab {{
+    background-color: transparent;
+    color: {c["text_secondary"]};
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 5px 12px;
+    margin-right: 3px;
+    margin-top: 3px;
+}}
+QTabBar::tab:hover:!selected {{
+    background-color: {c["border"]};
+    color: {c["text_primary"]};
+}}
+QTabBar::tab:selected {{
+    background-color: {c["bg_secondary"]};
+    color: {c["text_primary"]};
+    border: 1px solid {c["border"]};
+    border-bottom: 1px solid {c["bg_secondary"]};
+    font-weight: 600;
+}}
+QTabBar::close-button {{
+    {tab_close_svg}
+    subcontrol-position: right;
+    width: 14px;
+    height: 14px;
+    margin-left: 4px;
+    border-radius: 3px;
+}}
+QTabBar::close-button:hover {{
+    {tab_close_hover_svg}
+    background-color: rgba(220, 38, 38, 0.10);
 }}
 
 /* === ТАБЛИЦА === */
