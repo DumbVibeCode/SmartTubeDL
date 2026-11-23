@@ -211,16 +211,15 @@ class MailRuPage(QWidget):
         self.kind_combo.setFixedWidth(105)
         row.addWidget(self.kind_combo)
 
-        row.addWidget(QLabel("Кол-во:"))
-        self.count_combo = QComboBox()
-        self.count_combo.addItems(["100", "200", "500", "Все"])
-        self.count_combo.setCurrentText("200")
-        self.count_combo.setFixedWidth(74)
-        row.addWidget(self.count_combo)
-
         self.btn_fetch = QPushButton("Найти")
         self.btn_fetch.clicked.connect(self._on_fetch)
         row.addWidget(self.btn_fetch)
+
+        hist_btn = QPushButton("История")
+        hist_btn.setProperty("secondary", True)
+        hist_btn.setToolTip("Открыть историю загрузок")
+        hist_btn.clicked.connect(self._open_history)
+        row.addWidget(hist_btn)
         lay.addLayout(row)
 
         self.pbar = QProgressBar()
@@ -248,6 +247,11 @@ class MailRuPage(QWidget):
         self.status_lbl.setProperty("secondary", True)
         foot.addWidget(self.status_lbl, 1)
         lay.addLayout(foot)
+
+    def _open_history(self):
+        w = self.window()
+        if hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
+            w.switch_to(w.IDX_HISTORY)
 
     def _cur_tab(self) -> _MailRuTab:
         w = self.tabs.currentWidget()
@@ -321,8 +325,7 @@ class MailRuPage(QWidget):
         self._search_hist.add(raw)
         from mailru_download import is_mailru_url, _fetch_tracks, search_mailru_tracks, search_mailru_playlists
 
-        raw_cnt = self.count_combo.currentText().strip()
-        max_res = 0 if raw_cnt.lower() == "все" else int(raw_cnt)
+        max_res = 0
         want_playlists = (self.kind_combo.currentText() == "Плейлисты") and not is_mailru_url(raw)
         kind = "playlists" if want_playlists else "tracks"
 
@@ -488,6 +491,11 @@ class MailRuPage(QWidget):
                                 f.write(chunk)
                     ok_cnt += 1
                     log_message(f"SUCCESS Mail.ru: {os.path.basename(path)}")
+                    try:
+                        from download_history import add_to_history
+                        add_to_history(url=url, title=f"[Mail.ru] {base}", format_type="MP3")
+                    except Exception:
+                        pass
                 except Exception as e:
                     log_message(f"ERROR Mail.ru download '{base}': {e}")
             self._sig.progress.emit(100)

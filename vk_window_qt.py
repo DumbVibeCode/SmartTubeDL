@@ -143,6 +143,12 @@ def _add_vk_history(artist, title, path):
         "path": path,
     })
     _save_vk_history(records[:500])
+    try:
+        from download_history import add_to_history
+        label = f"{artist} - {title}".strip(" -") or os.path.basename(path)
+        add_to_history(url=path, title=f"[VK] {label}", format_type="MP3")
+    except Exception:
+        pass
 
 
 class VKHistoryWindow(QWidget):
@@ -421,13 +427,6 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         from styles import attach_search_history
         self._search_hist = attach_search_history(self.query_input, "vk_search_history", self._on_search)
         row.addWidget(self._search_hist.button)
-
-        row.addWidget(QLabel("Кол-во:"))
-        self.count_combo = QComboBox()
-        self.count_combo.addItems(["Все", "50", "100", "200", "500"])
-        self.count_combo.setCurrentText("Все")
-        self.count_combo.setFixedWidth(74)
-        row.addWidget(self.count_combo)
 
         self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
@@ -1339,11 +1338,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
             self._sig.status.emit("Введите запрос!")
             return
         self._search_hist.add(query)
-        try:
-            raw_cnt = self.count_combo.currentText().strip()
-            count = 0 if raw_cnt.lower() == "все" else max(0, min(500, int(raw_cnt)))
-        except ValueError:
-            count = 0
+        count = 0
 
         self._pending_vk_query = query
         self.search_btn.setEnabled(False)

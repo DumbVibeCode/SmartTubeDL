@@ -521,8 +521,9 @@ class SearchWindow(QMainWindow):
         self.search_input.setCompleter(self._completer)
 
         self.history_btn = QPushButton("▾")
+        self.history_btn.setObjectName("historyBtn")
         self.history_btn.setProperty("secondary", True)
-        self.history_btn.setFixedWidth(24)
+        self.history_btn.setFixedWidth(26)
         self.history_btn.setToolTip("История запросов")
         self.history_btn.clicked.connect(self._show_history_menu)
         search_row.addWidget(self.history_btn)
@@ -956,9 +957,12 @@ class SearchWindow(QMainWindow):
     def _show_history_menu(self):
         """Показывает меню с историей поисковых запросов"""
         history = settings.get("search_history", [])
-        if not history:
-            return
         menu = QMenu(self)
+        if not history:
+            empty = menu.addAction("История запросов пуста")
+            empty.setEnabled(False)
+            menu.exec(self.history_btn.mapToGlobal(self.history_btn.rect().bottomLeft()))
+            return
         for query in history[:20]:
             action = menu.addAction(query)
             action.triggered.connect(lambda _, q=query: (

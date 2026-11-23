@@ -573,6 +573,12 @@ class OKSearchWindow(QWidget):
         self.search_btn.clicked.connect(self._on_search)
         row.addWidget(self.search_btn)
 
+        hist_btn = QPushButton("История")
+        hist_btn.setProperty("secondary", True)
+        hist_btn.setToolTip("Открыть историю загрузок")
+        hist_btn.clicked.connect(self._open_history)
+        row.addWidget(hist_btn)
+
         root.addLayout(row)
 
         # Тонкий прогресс-бар
@@ -613,6 +619,11 @@ class OKSearchWindow(QWidget):
         self._sig.results_ready.connect(self._populate_table)
         self._sig.search_done.connect(self._on_search_done)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
+
+    def _open_history(self):
+        w = self.window()
+        if hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
+            w.switch_to(w.IDX_HISTORY)
 
     def _on_search_done(self):
         self.search_btn.setEnabled(True)
@@ -1137,6 +1148,12 @@ class OKSearchWindow(QWidget):
                         break
                     f.write(chunk)
             log_message(f"SUCCESS OK музыка: {os.path.basename(path)}")
+            try:
+                from download_history import add_to_history
+                label = f"{artist} - {title}".strip(" -") or os.path.basename(path)
+                add_to_history(url=url, title=f"[OK] {label}", format_type="MP3")
+            except Exception:
+                pass
             return True
         except Exception as e:
             log_message(f"ERROR OK скачивание «{artist} - {title}»: {e}")

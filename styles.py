@@ -673,6 +673,12 @@ QTabBar::close-button:hover {{
     background-color: {c["accent_light"]};
     color: {c["accent"]};
 }}
+#historyBtn {{
+    padding: 0px;
+    min-width: 26px;
+    max-width: 26px;
+    font-size: 13px;
+}}
 
 /* === ТАБЛИЦА === */
 QTableWidget, QTableView, QTreeView {{
@@ -981,6 +987,7 @@ class SearchHistoryHelper:
         line_edit.setCompleter(self._completer)
 
         self.button = QPushButton("▾")
+        self.button.setObjectName("historyBtn")
         self.button.setProperty("secondary", True)
         self.button.setFixedWidth(26)
         self.button.setToolTip("История запросов")
@@ -1012,9 +1019,12 @@ class SearchHistoryHelper:
 
     def show_menu(self) -> None:
         history = self._settings.get(self._key, [])
-        if not history:
-            return
         menu = self._QMenu(self._line_edit)
+        if not history:
+            empty = menu.addAction("История запросов пуста")
+            empty.setEnabled(False)
+            menu.exec(self.button.mapToGlobal(self.button.rect().bottomLeft()))
+            return
         for q in history[:20]:
             label = (q[:70] + "…") if len(q) > 70 else q
             act = menu.addAction(label)
