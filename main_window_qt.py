@@ -229,11 +229,11 @@ class MailRuPage(QWidget):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        new_btn = QPushButton("+")
-        new_btn.setFixedSize(26, 24)
-        new_btn.setToolTip("Новая вкладка (Ctrl+T)")
-        new_btn.clicked.connect(lambda: self._new_tab(""))
-        self.tabs.setCornerWidget(new_btn, Qt.Corner.TopRightCorner)
+        _styles.attach_new_tab_button(
+            self.tabs,
+            lambda: self._new_tab(""),
+            tooltip="Новая вкладка (Ctrl+T)",
+        )
         lay.addWidget(self.tabs, 1)
 
         self._new_tab("")

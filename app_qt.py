@@ -310,7 +310,8 @@ class YouTubeDownloaderApp(QApplication):
         # Загружаем настройки
         settings.update(load_settings())
 
-        # Применяем тему (тёмную/светлую) из настроек
+        # Применяем стиль Fusion и тему (тёмную/светлую) из настроек
+        self.setStyle("Fusion")
         _styles.set_dark_mode(settings.get("dark_theme", False))
         self.setStyleSheet(_styles.STYLESHEET_MINIMAL)
 

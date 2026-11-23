@@ -445,12 +445,12 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
 
-        new_tab_btn = QPushButton("+")
-        new_tab_btn.setFixedWidth(28)
-        new_tab_btn.setToolTip("Новая вкладка (Ctrl+T)")
-        new_tab_btn.setProperty("secondary", True)
-        new_tab_btn.clicked.connect(lambda: self._new_tab("", "Новая вкладка"))
-        self.tabs.setCornerWidget(new_tab_btn, Qt.Corner.TopRightCorner)
+        from styles import attach_new_tab_button
+        attach_new_tab_button(
+            self.tabs,
+            lambda: self._new_tab("", "Новая вкладка"),
+            tooltip="Новая вкладка (Ctrl+T)",
+        )
 
         self._new_tab("", "Поиск")
         root.addWidget(self.tabs, 1)
