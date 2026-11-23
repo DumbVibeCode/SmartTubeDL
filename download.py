@@ -384,8 +384,20 @@ def download_video(url, from_queue=False):
     if settings["download_format"] == "mp3":
         # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
         ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        if settings.get("conversion_enabled", True):
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
     else:
         ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
+        if settings.get("conversion_enabled", True):
+            ydl_opts['merge_output_format'] = 'mp4'
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegVideoRemuxer',
+                'preferedformat': 'mp4',
+            }]
 
     _paused_by_user = False
     try:
@@ -399,7 +411,17 @@ def download_video(url, from_queue=False):
             opts.update(extra_opts)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 dl_info = ydl.extract_info(url, download=True)
-                return dl_info, ydl.prepare_filename(dl_info)
+                # После постпроцессоров yt-dlp итоговый путь лежит в requested_downloads[0]['filepath']
+                req_dls = dl_info.get("requested_downloads") or []
+                final_p = req_dls[0].get("filepath") if req_dls else None
+                if not final_p or not os.path.exists(final_p):
+                    final_p = ydl.prepare_filename(dl_info)
+                    if settings.get("conversion_enabled", True):
+                        base_no_ext = os.path.splitext(final_p)[0]
+                        cand = f"{base_no_ext}.{settings['download_format']}"
+                        if os.path.exists(cand):
+                            final_p = cand
+                return dl_info, final_p
 
         try:
             info, downloaded_file = _do_download({})

@@ -830,7 +830,10 @@ class TrayIcon(QSystemTrayIcon):
 
         menu.addSeparator()
 
-        # === Выход ===
+        # === Перезапуск и Выход ===
+        action_restart = menu.addAction("Перезапустить")
+        action_restart.triggered.connect(self._restart_app)
+
         action_exit = menu.addAction("Выход")
         action_exit.triggered.connect(self._exit_app)
 
@@ -882,12 +885,13 @@ class TrayIcon(QSystemTrayIcon):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.app.show_search_window()
 
-    def _exit_app(self):
+    def _prepare_shutdown(self):
+        """Сохраняет состояние и корректно закрывает фоновые потоки и браузеры."""
         if settings.get("save_settings_on_exit", False):
             save_settings(settings)
             log_message("INFO Настройки сохранены при выходе")
 
-        # Сохраняем состояние открытых окон каналов/плейлистов и вкладок
+        # Сохраняем состояние открытых окон и вкладок
         self.app._save_all_state()
 
         for w in self.app.video_list_windows:
@@ -901,35 +905,58 @@ class TrayIcon(QSystemTrayIcon):
                 t = getattr(sw, attr, None)
                 if t is not None and t.isRunning():
                     t.quit()
-                    t.wait(500)   # ждём не более 0.5 сек
+                    t.wait(500)
                     if t.isRunning():
                         t.terminate()
 
-        # Закрываем браузер VK (Selenium) если он был открыт
-        if self.app.vk_window is not None:
+        # Закрываем браузеры VK и OK (Selenium), если они были открыты
+        for win in (self.app.vk_window, self.app.ok_window):
+            if win is not None and hasattr(win, "quit_browser"):
+                try:
+                    win.quit_browser()
+                except Exception:
+                    pass
+
+    def _restart_app(self):
+        """Безопасный перезапуск: сохраняет все вкладки, освобождает мьютекс и стартует новый процесс."""
+        import subprocess
+        global _APP_MUTEX_HANDLE
+        self._prepare_shutdown()
+        log_message("INFO Перезапуск приложения...")
+        self.hide()
+
+        # Освобождаем single-instance мьютекс ДО запуска нового процесса
+        if _APP_MUTEX_HANDLE is not None and sys.platform == "win32":
             try:
-                self.app.vk_window.quit_browser()
+                import ctypes
+                ctypes.windll.kernel32.CloseHandle(_APP_MUTEX_HANDLE)
+                _APP_MUTEX_HANDLE = None
             except Exception:
                 pass
 
-        # Закрываем браузер OK (Selenium) если он был открыт
-        if self.app.ok_window is not None and hasattr(self.app.ok_window, "quit_browser"):
-            try:
-                self.app.ok_window.quit_browser()
-            except Exception:
-                pass
+        py = sys.executable
+        if os.path.basename(py).lower() == "python.exe":
+            cand = os.path.join(os.path.dirname(py), "pythonw.exe")
+            if os.path.exists(cand):
+                py = cand
+        flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        try:
+            subprocess.Popen(
+                [py, os.path.abspath(__file__)],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                creationflags=flags,
+                close_fds=True,
+            )
+        except Exception as e:
+            log_message(f"ERROR Ошибка перезапуска: {e}")
+        QApplication.quit()
+        os._exit(0)
 
-        # Закрываем браузер OK (Selenium) если он был открыт
-        if self.app.ok_window is not None:
-            try:
-                self.app.ok_window.quit_browser()
-            except Exception:
-                pass
-
+    def _exit_app(self):
+        self._prepare_shutdown()
         log_message("INFO Приложение завершено")
         self.hide()
         QApplication.quit()
-        import os
         os._exit(0)
 
     def update_status(self, status: str, progress: int = None):
