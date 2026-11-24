@@ -300,12 +300,21 @@ class VKDownloadMixin:
                         if (txt.indexOf('Показать текст') !== -1 || txt.indexOf('Микс по треку') !== -1) {
                             topBar = true; break;
                         }
-                        if (row.querySelector('[aria-label*="рослуш"]') && row.querySelectorAll('a[href]').length <= 8) {
+                        if ((row.querySelector('[aria-label*="рослуш"]') || row.querySelector('[aria-label*="Приостан"]') || row.querySelector('[aria-label*="Слушать"]')) && row.querySelectorAll('a[href]').length <= 8) {
                             matchedRow = row;
                             break;
                         }
                     }
                     if (!topBar && matchedRow) return matchedRow;
+                }
+                // Если открыта индивидуальная страница трека /audio<fid> — берём главную кнопку Play
+                if ((location.pathname || '').indexOf('/audio' + fid) === 0) {
+                    var btn = document.querySelector('[data-testid="AudioTrackPage_PlayButton"]')
+                           || document.querySelector('main [aria-label*="рослуш"]')
+                           || document.querySelector('main [aria-label*="Слушать"]')
+                           || document.querySelector('main [aria-label*="Воспроизв"]')
+                           || document.querySelector('[aria-label*="рослуш"]');
+                    if (btn) return btn;
                 }
                 return null;
             """, full_id)
