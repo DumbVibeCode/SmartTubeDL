@@ -998,20 +998,20 @@ class OKSearchWindow(QWidget):
                     log_message(f"DEBUG OK store.api.post(play, {tid}): {err}")
                 # Если плеер ОК ещё не загружен (например, сохранённая вкладка после перезапуска) —
                 # открываем ok.ru/music один раз и повторяем попытку
-                if attempt == 0 and err in ("no_store", "no_player", ""):
+                if attempt == 0 and (not err or "not found" in str(err).lower() or err in ("no_store", "no_player")):
                     cur_url = (self.driver.current_url or "").lower()
                     if "/music" not in cur_url:
                         log_message("INFO OK: открываю ok.ru/music для инициализации плеера")
                         self.driver.get("https://ok.ru/music")
-                        for _ in range(20):
-                            time.sleep(0.25)
-                            ready = self.driver.execute_script(
-                                "return !!(document.querySelector('wm-player') || document.querySelector('wm-app'));"
-                            )
-                            if ready:
-                                time.sleep(0.6)
-                                break
-                        continue
+                    for _ in range(24):
+                        time.sleep(0.25)
+                        ready = self.driver.execute_script(
+                            "var el = document.querySelector('wm-app') || document.querySelector('wm-player');"
+                            "return !!(el && el.store && el.store.player);"
+                        )
+                        if ready:
+                            break
+                    continue
             except Exception as e:
                 log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
             break
