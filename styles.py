@@ -557,27 +557,33 @@ QComboBox::down-arrow:hover {{
 QComboBox::down-arrow:on {{
     {chev_up}
 }}
-QComboBox QAbstractItemView {{
+QComboBox QFrame {{
     background-color: {c["bg_secondary"]};
     border: 1px solid {c["border_strong"]};
-    border-radius: 6px;
-    padding: 4px;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {c["bg_secondary"]};
+    border: none;
+    padding: 3px;
     selection-background-color: {c["accent_light"]};
-    selection-color: {c["text_primary"]};
+    selection-color: {c["accent"]};
     outline: none;
 }}
 QComboBox QAbstractItemView::item {{
     padding: 5px 10px;
     min-height: 20px;
+    border: none;
     border-radius: 4px;
     color: {c["text_primary"]};
 }}
 QComboBox QAbstractItemView::item:hover {{
     background-color: {c["row_hover"]};
+    border: none;
 }}
 QComboBox QAbstractItemView::item:selected {{
     background-color: {c["accent_light"]};
     color: {c["accent"]};
+    border: none;
     font-weight: 500;
 }}
 
@@ -672,6 +678,12 @@ QTabBar::close-button:hover {{
 #newTabBtn:pressed {{
     background-color: {c["accent_light"]};
     color: {c["accent"]};
+}}
+#historyBtn {{
+    padding: 0px;
+    min-width: 26px;
+    max-width: 26px;
+    font-size: 13px;
 }}
 
 /* === ТАБЛИЦА === */
@@ -955,3 +967,154 @@ def attach_new_tab_button(tabs, on_click, tooltip: str = "Новая вклад�
     tabs._new_tab_btn = btn
     _schedule()
     return btn
+
+
+class SearchHistoryHelper:
+    """Единая история поисковых запросов (QCompleter + выпадающее меню «▾») с сохранением в settings.json."""
+
+    def __init__(self, line_edit, settings_key: str, on_select, max_items: int = 50):
+        from PyQt6.QtWidgets import QCompleter, QPushButton, QMenu
+        from PyQt6.QtCore import Qt, QStringListModel
+        from config import settings, save_settings
+
+        self._line_edit = line_edit
+        self._key = settings_key
+        self._on_select = on_select
+        self._max_items = max_items
+        self._settings = settings
+        self._save_settings = save_settings
+        self._QMenu = QMenu
+
+        items = list(settings.get(settings_key, []))
+        self._model = QStringListModel(items, line_edit)
+        self._completer = QCompleter(self._model, line_edit)
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        line_edit.setCompleter(self._completer)
+
+        self.button = QPushButton("▾")
+        self.button.setObjectName("historyBtn")
+        self.button.setProperty("secondary", True)
+        self.button.setFixedWidth(26)
+        self.button.setToolTip("История запросов")
+        self.button.clicked.connect(self.show_menu)
+
+    def add(self, query: str) -> None:
+        q = (query or "").strip()
+        if not q:
+            return
+        history = list(self._settings.get(self._key, []))
+        if q in history:
+            history.remove(q)
+        history.insert(0, q)
+        history = history[: self._max_items]
+        self._settings[self._key] = history
+        self._model.setStringList(history)
+        try:
+            self._save_settings(self._settings)
+        except Exception:
+            pass
+
+    def clear(self) -> None:
+        self._settings[self._key] = []
+        self._model.setStringList([])
+        try:
+            self._save_settings(self._settings)
+        except Exception:
+            pass
+
+    def show_menu(self) -> None:
+        history = self._settings.get(self._key, [])
+        menu = self._QMenu(self._line_edit)
+        if not history:
+            empty = menu.addAction("История запросов пуста")
+            empty.setEnabled(False)
+            menu.exec(self.button.mapToGlobal(self.button.rect().bottomLeft()))
+            return
+        for q in history[:20]:
+            label = (q[:70] + "…") if len(q) > 70 else q
+            act = menu.addAction(label)
+            act.triggered.connect(lambda _=False, val=q: self._pick(val))
+        menu.addSeparator()
+        clr = menu.addAction("Очистить историю")
+        clr.triggered.connect(self.clear)
+        menu.exec(self.button.mapToGlobal(self.button.rect().bottomLeft()))
+
+    def _pick(self, query: str) -> None:
+        self._line_edit.setText(query)
+        if callable(self._on_select):
+            self._on_select()
+
+
+def attach_search_history(line_edit, settings_key: str, on_select, max_items: int = 50) -> SearchHistoryHelper:
+    """Подключает автодополнение и кнопку «▾» с историей запросов к QLineEdit."""
+    helper = SearchHistoryHelper(line_edit, settings_key, on_select, max_items=max_items)
+    line_edit._search_history_helper = helper
+    return helper
+
+
+def bind_table_column_widths(table, table_key: str) -> None:
+    """Восстанавливает и автосохраняет ширины колонок QTableWidget в settings.json."""
+    from PyQt6.QtWidgets import QHeaderView
+    from PyQt6.QtCore import QTimer
+    from config import settings, save_settings
+
+    header = table.horizontalHeader()
+    if header is None:
+        return
+
+    state = getattr(table, "_col_width_state", None)
+    if state is None:
+        state = {"applying": False, "key": table_key}
+        table._col_width_state = state
+
+        save_timer = QTimer(table)
+        save_timer.setSingleShot(True)
+
+        def _flush():
+            try:
+                col_count = table.columnCount()
+                widths = {}
+                for i in range(col_count):
+                    if header.sectionResizeMode(i) != QHeaderView.ResizeMode.Stretch:
+                        w = table.columnWidth(i)
+                        if w >= 20:
+                            widths[str(i)] = w
+                if not widths:
+                    return
+                all_cols = settings.get("table_columns")
+                if not isinstance(all_cols, dict):
+                    all_cols = {}
+                    settings["table_columns"] = all_cols
+                all_cols[state["key"]] = widths
+                save_settings(settings)
+            except Exception:
+                pass
+
+        save_timer.timeout.connect(_flush)
+
+        def _on_resized(_idx, _old, _new):
+            if state["applying"]:
+                return
+            save_timer.start(600)
+
+        header.sectionResized.connect(_on_resized)
+        table._col_width_timer = save_timer
+
+    state["key"] = table_key
+    state["applying"] = True
+    try:
+        saved = (settings.get("table_columns") or {}).get(table_key)
+        if isinstance(saved, dict):
+            col_count = table.columnCount()
+            for idx_str, width in saved.items():
+                try:
+                    idx = int(idx_str)
+                    w = int(width)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= idx < col_count and w >= 20:
+                    if header.sectionResizeMode(idx) != QHeaderView.ResizeMode.Stretch:
+                        table.setColumnWidth(idx, w)
+    finally:
+        state["applying"] = False

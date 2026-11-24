@@ -143,6 +143,12 @@ def _add_vk_history(artist, title, path):
         "path": path,
     })
     _save_vk_history(records[:500])
+    try:
+        from download_history import add_to_history
+        label = f"{artist} - {title}".strip(" -") or os.path.basename(path)
+        add_to_history(url=path, title=f"[VK] {label}", format_type="MP3")
+    except Exception:
+        pass
 
 
 class VKHistoryWindow(QWidget):
@@ -231,11 +237,16 @@ class _VKResultTab(QWidget):
         self.table.setAlternatingRowColors(True)
 
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 200)
+        self.table.setColumnWidth(2, 65)
+        self.table.setColumnWidth(3, 150)
         hdr.setHighlightSections(False)
+        from styles import bind_table_column_widths
+        bind_table_column_widths(self.table, "vk_audio")
 
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(24)
@@ -413,12 +424,9 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
 
-        row.addWidget(QLabel("Кол-во:"))
-        self.count_combo = QComboBox()
-        self.count_combo.addItems(["Все", "50", "100", "200", "500"])
-        self.count_combo.setCurrentText("Все")
-        self.count_combo.setFixedWidth(74)
-        row.addWidget(self.count_combo)
+        from styles import attach_search_history
+        self._search_hist = attach_search_history(self.query_input, "vk_search_history", self._on_search)
+        row.addWidget(self._search_hist.button)
 
         self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
@@ -996,10 +1004,12 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
     # ── История ───────────────────────────────────────────────────────────────
 
     def _show_history(self):
+        w = self.window()
+        if w is not None and hasattr(w, "open_history"):
+            w.open_history("ВКонтакте")
+            return
         if self._history_window is None:
             self._history_window = VKHistoryWindow()
-            import styles as _styles
-            self._history_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         else:
             self._history_window._load()
         self._history_window.show()
@@ -1329,11 +1339,8 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         if not query:
             self._sig.status.emit("Введите запрос!")
             return
-        try:
-            raw_cnt = self.count_combo.currentText().strip()
-            count = 0 if raw_cnt.lower() == "все" else max(0, min(500, int(raw_cnt)))
-        except ValueError:
-            count = 0
+        self._search_hist.add(query)
+        count = 0
 
         self._pending_vk_query = query
         self.search_btn.setEnabled(False)

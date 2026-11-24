@@ -433,9 +433,12 @@ class _ResultTab(QWidget):
 
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hdr.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 190)
+        self.table.setColumnWidth(2, 90)
         hdr.setHighlightSections(False)
+        _styles.bind_table_column_widths(self.table, "yt_results")
 
         layout.addWidget(self.table, 1)
 
@@ -518,8 +521,9 @@ class SearchWindow(QMainWindow):
         self.search_input.setCompleter(self._completer)
 
         self.history_btn = QPushButton("▾")
+        self.history_btn.setObjectName("historyBtn")
         self.history_btn.setProperty("secondary", True)
-        self.history_btn.setFixedWidth(24)
+        self.history_btn.setFixedWidth(26)
         self.history_btn.setToolTip("История запросов")
         self.history_btn.clicked.connect(self._show_history_menu)
         search_row.addWidget(self.history_btn)
@@ -537,8 +541,9 @@ class SearchWindow(QMainWindow):
 
         dark_now = settings.get("dark_theme", False)
         self.theme_btn = QPushButton("☾" if dark_now else "☀")
+        self.theme_btn.setObjectName("historyBtn")
         self.theme_btn.setProperty("secondary", True)
-        self.theme_btn.setFixedWidth(32)
+        self.theme_btn.setFixedWidth(28)
         self.theme_btn.setToolTip("Переключить тёмную/светлую тему")
         self.theme_btn.clicked.connect(self._toggle_theme)
         search_row.addWidget(self.theme_btn)
@@ -883,8 +888,14 @@ class SearchWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         dark = not settings.get("dark_theme", False)
         settings["dark_theme"] = dark
+        save_settings(settings)
         _styles.set_dark_mode(dark)
-        QApplication.instance().setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        w = self.window()
+        if w is not None and hasattr(w, "apply_theme"):
+            w.apply_theme()
         self.theme_btn.setText("☾" if dark else "☀")
         # Обновляем inline-стили статус-метки под новую тему
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
@@ -953,9 +964,12 @@ class SearchWindow(QMainWindow):
     def _show_history_menu(self):
         """Показывает меню с историей поисковых запросов"""
         history = settings.get("search_history", [])
-        if not history:
-            return
         menu = QMenu(self)
+        if not history:
+            empty = menu.addAction("История запросов пуста")
+            empty.setEnabled(False)
+            menu.exec(self.history_btn.mapToGlobal(self.history_btn.rect().bottomLeft()))
+            return
         for query in history[:20]:
             action = menu.addAction(query)
             action.triggered.connect(lambda _, q=query: (
@@ -970,6 +984,7 @@ class SearchWindow(QMainWindow):
     def _clear_history(self):
         settings["search_history"] = []
         self._history_model.setStringList([])
+        save_settings(settings)
 
     def _on_search(self):
         """Запускает поиск (или открывает вкладку канала/плейлиста, если вставлена ссылка)."""

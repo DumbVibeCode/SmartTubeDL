@@ -375,8 +375,12 @@ class _OKTab(QWidget):
         self.table.setSortingEnabled(True)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 75)
+        self.table.setColumnWidth(2, 220)
+        from styles import bind_table_column_widths
+        bind_table_column_widths(self.table, "ok_table")
         lay.addWidget(self.table, 1)
 
         # Единая нижняя панель под таблицей: слева фильтр, справа счётчик + «Скачать выбранные»
@@ -560,10 +564,20 @@ class OKSearchWindow(QWidget):
         self.query_input.returnPressed.connect(self._on_search)
         row.addWidget(self.query_input, 1)
 
+        from styles import attach_search_history
+        self._search_hist = attach_search_history(self.query_input, "ok_search_history", self._on_search)
+        row.addWidget(self._search_hist.button)
+
         self.search_btn = QPushButton("Найти")
         self.search_btn.setEnabled(False)
         self.search_btn.clicked.connect(self._on_search)
         row.addWidget(self.search_btn)
+
+        hist_btn = QPushButton("История")
+        hist_btn.setProperty("secondary", True)
+        hist_btn.setToolTip("Открыть историю загрузок")
+        hist_btn.clicked.connect(self._open_history)
+        row.addWidget(hist_btn)
 
         root.addLayout(row)
 
@@ -605,6 +619,13 @@ class OKSearchWindow(QWidget):
         self._sig.results_ready.connect(self._populate_table)
         self._sig.search_done.connect(self._on_search_done)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
+
+    def _open_history(self):
+        w = self.window()
+        if w is not None and hasattr(w, "open_history"):
+            w.open_history("Одноклассники")
+        elif w is not None and hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
+            w.switch_to(w.IDX_HISTORY)
 
     def _on_search_done(self):
         self.search_btn.setEnabled(True)
@@ -661,6 +682,7 @@ class OKSearchWindow(QWidget):
         raw = self.query_input.text().strip()
         if not raw:
             return
+        self._search_hist.add(raw)
         low = raw.lower()
         is_url = low.startswith("http") or re.search(r'(?:www\.|m\.)?ok\.ru/|odnoklassniki\.ru/', low)
 
@@ -1128,6 +1150,12 @@ class OKSearchWindow(QWidget):
                         break
                     f.write(chunk)
             log_message(f"SUCCESS OK музыка: {os.path.basename(path)}")
+            try:
+                from download_history import add_to_history
+                label = f"{artist} - {title}".strip(" -") or os.path.basename(path)
+                add_to_history(url=url, title=f"[OK] {label}", format_type="MP3")
+            except Exception:
+                pass
             return True
         except Exception as e:
             log_message(f"ERROR OK скачивание «{artist} - {title}»: {e}")

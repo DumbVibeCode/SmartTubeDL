@@ -120,6 +120,7 @@ class _MailRuTab(QWidget):
                 self.table.setColumnWidth(1, 160)
                 self.table.setColumnWidth(2, 70)
                 self.table.setColumnWidth(3, 220)
+                _styles.bind_table_column_widths(self.table, "mailru_playlists")
                 self.table.setRowCount(len(items))
                 for i, p in enumerate(items):
                     it0 = QTableWidgetItem(p.get("title", "Плейлист"))
@@ -144,6 +145,7 @@ class _MailRuTab(QWidget):
                 self.table.setColumnWidth(2, 65)
                 self.table.setColumnWidth(3, 80)
                 self.table.setColumnWidth(4, 150)
+                _styles.bind_table_column_widths(self.table, "mailru_tracks")
                 self.table.setRowCount(len(items))
                 for i, t in enumerate(items):
                     it0 = QTableWidgetItem(t.get("artist", ""))
@@ -201,21 +203,23 @@ class MailRuPage(QWidget):
         self.url_input.returnPressed.connect(self._on_fetch)
         row.addWidget(self.url_input, 1)
 
+        self._search_hist = _styles.attach_search_history(self.url_input, "mailru_search_history", self._on_fetch)
+        row.addWidget(self._search_hist.button)
+
         self.kind_combo = QComboBox()
         self.kind_combo.addItems(["Треки", "Плейлисты"])
         self.kind_combo.setFixedWidth(105)
         row.addWidget(self.kind_combo)
 
-        row.addWidget(QLabel("Кол-во:"))
-        self.count_combo = QComboBox()
-        self.count_combo.addItems(["100", "200", "500", "Все"])
-        self.count_combo.setCurrentText("200")
-        self.count_combo.setFixedWidth(74)
-        row.addWidget(self.count_combo)
-
         self.btn_fetch = QPushButton("Найти")
         self.btn_fetch.clicked.connect(self._on_fetch)
         row.addWidget(self.btn_fetch)
+
+        hist_btn = QPushButton("История")
+        hist_btn.setProperty("secondary", True)
+        hist_btn.setToolTip("Открыть историю загрузок")
+        hist_btn.clicked.connect(self._open_history)
+        row.addWidget(hist_btn)
         lay.addLayout(row)
 
         self.pbar = QProgressBar()
@@ -243,6 +247,13 @@ class MailRuPage(QWidget):
         self.status_lbl.setProperty("secondary", True)
         foot.addWidget(self.status_lbl, 1)
         lay.addLayout(foot)
+
+    def _open_history(self):
+        w = self.window()
+        if w is not None and hasattr(w, "open_history"):
+            w.open_history("Mail.ru")
+        elif w is not None and hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
+            w.switch_to(w.IDX_HISTORY)
 
     def _cur_tab(self) -> _MailRuTab:
         w = self.tabs.currentWidget()
@@ -313,10 +324,10 @@ class MailRuPage(QWidget):
         raw = self.url_input.text().strip()
         if not raw:
             return
+        self._search_hist.add(raw)
         from mailru_download import is_mailru_url, _fetch_tracks, search_mailru_tracks, search_mailru_playlists
 
-        raw_cnt = self.count_combo.currentText().strip()
-        max_res = 0 if raw_cnt.lower() == "все" else int(raw_cnt)
+        max_res = 0
         want_playlists = (self.kind_combo.currentText() == "Плейлисты") and not is_mailru_url(raw)
         kind = "playlists" if want_playlists else "tracks"
 
@@ -482,6 +493,11 @@ class MailRuPage(QWidget):
                                 f.write(chunk)
                     ok_cnt += 1
                     log_message(f"SUCCESS Mail.ru: {os.path.basename(path)}")
+                    try:
+                        from download_history import add_to_history
+                        add_to_history(url=url, title=f"[Mail.ru] {base}", format_type="MP3")
+                    except Exception:
+                        pass
                 except Exception as e:
                     log_message(f"ERROR Mail.ru download '{base}': {e}")
             self._sig.progress.emit(100)
@@ -683,9 +699,14 @@ class HistoryPage(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск по названию...")
-        self.search_input.setMaximumWidth(280)
+        self.search_input.setMaximumWidth(260)
         self.search_input.textChanged.connect(self._apply_filter)
         top.addWidget(self.search_input)
+
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["Все источники", "YouTube", "ВКонтакте", "Одноклассники", "Mail.ru"])
+        self.source_combo.currentTextChanged.connect(self._apply_filter)
+        top.addWidget(self.source_combo)
 
         self.fmt_combo = QComboBox()
         self.fmt_combo.addItems(["Все форматы", "MP4", "MP3"])
@@ -698,8 +719,8 @@ class HistoryPage(QWidget):
         top.addWidget(btn_refresh)
         lay.addLayout(top)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Дата", "Название", "Формат", "Длительность"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Дата", "Источник", "Название", "Формат", "Длительность"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -710,12 +731,15 @@ class HistoryPage(QWidget):
         # Фиксированные/интерактивные ширины вместо ResizeToContents —
         # иначе на 1000+ строк Qt пересчитывает ширину O(N^2) и зависает!
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        self.table.setColumnWidth(0, 145)
-        self.table.setColumnWidth(2, 70)
-        self.table.setColumnWidth(3, 95)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(0, 140)
+        self.table.setColumnWidth(1, 105)
+        self.table.setColumnWidth(3, 68)
+        self.table.setColumnWidth(4, 90)
+        _styles.bind_table_column_widths(self.table, "history_table_v2")
         lay.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
@@ -733,46 +757,107 @@ class HistoryPage(QWidget):
         btns.addWidget(self.count_lbl)
         lay.addLayout(btns)
 
+    @staticmethod
+    def _detect_source(entry: dict) -> str:
+        src = entry.get("source")
+        if src:
+            return src
+        title = str(entry.get("title", ""))
+        url = str(entry.get("url", "")).lower()
+        if title.startswith("[VK]") or "vk.com" in url or "vkvideo.ru" in url:
+            return "ВКонтакте"
+        if title.startswith("[OK]") or "ok.ru" in url or "odnoklassniki.ru" in url:
+            return "Одноклассники"
+        if title.startswith("[Mail.ru]") or "mail.ru" in url:
+            return "Mail.ru"
+        return "YouTube"
+
+    @staticmethod
+    def _clean_title(title: str) -> str:
+        for pref in ("[VK] ", "[OK] ", "[Mail.ru] "):
+            if title.startswith(pref):
+                return title[len(pref):]
+        return title
+
+    def set_source_filter(self, source_name: str):
+        idx = self.source_combo.findText(source_name)
+        if idx >= 0:
+            self.source_combo.setCurrentIndex(idx)
+
     def reload(self, force: bool = False):
         from download_history import DOWNLOAD_HISTORY_FILE
+        vk_hist_file = os.path.join(os.getcwd(), "vk_history.json")
         try:
-            mtime = os.path.getmtime(DOWNLOAD_HISTORY_FILE) if os.path.exists(DOWNLOAD_HISTORY_FILE) else 0.0
+            m1 = os.path.getmtime(DOWNLOAD_HISTORY_FILE) if os.path.exists(DOWNLOAD_HISTORY_FILE) else 0.0
+            m2 = os.path.getmtime(vk_hist_file) if os.path.exists(vk_hist_file) else 0.0
+            mtime = m1 + m2
         except OSError:
             mtime = 0.0
         if not force and mtime == self._last_mtime and self._entries:
             return
         self._last_mtime = mtime
-        self._entries = load_download_history()
+        entries = list(load_download_history())
+        seen = {(e.get("date", "")[:16], self._clean_title(str(e.get("title", "")))) for e in entries}
+        # Подхватываем старые записи из vk_history.json, чтобы они не терялись
+        if os.path.exists(vk_hist_file):
+            try:
+                import json
+                with open(vk_hist_file, "r", encoding="utf-8") as f:
+                    vk_recs = json.load(f) or []
+                for r in vk_recs:
+                    artist = r.get("artist", "")
+                    title = r.get("title", "")
+                    label = f"{artist} - {title}".strip(" -") or os.path.basename(r.get("path", ""))
+                    dt = r.get("date", "")
+                    key = (dt[:16], label)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    entries.append({
+                        "date": dt,
+                        "title": label,
+                        "format": "MP3",
+                        "duration": 0,
+                        "url": r.get("path", ""),
+                        "source": "ВКонтакте",
+                    })
+            except Exception:
+                pass
+        entries.sort(key=lambda e: str(e.get("date", "")), reverse=True)
+        self._entries = entries
         self._apply_filter()
 
     def _apply_filter(self):
         q = self.search_input.text().strip().lower()
+        src_filter = self.source_combo.currentText()
         fmt = self.fmt_combo.currentText()
         filtered = []
         for entry in self._entries:
-            title = entry.get("title", "Без названия")
+            title = self._clean_title(str(entry.get("title", "Без названия")))
+            src = self._detect_source(entry)
             rfmt = str(entry.get("format", "N/A")).upper()
             if q and q not in title.lower():
                 continue
+            if src_filter != "Все источники" and src != src_filter:
+                continue
             if fmt in ("MP4", "MP3") and rfmt != fmt:
                 continue
-            filtered.append(entry)
+            filtered.append((entry, src, title, rfmt))
 
         self.table.setUpdatesEnabled(False)
         try:
             self.table.setRowCount(len(filtered))
-            for row, entry in enumerate(filtered):
+            for row, (entry, src, title, rfmt) in enumerate(filtered):
                 date = entry.get("date", "N/A")
-                title = entry.get("title", "Без названия")
-                rfmt = str(entry.get("format", "N/A")).upper()
                 dur_s = entry.get("duration", 0)
                 dur = format_invidious_duration(dur_s) if dur_s else "—"
                 it0 = QTableWidgetItem(date)
                 it0.setData(Qt.ItemDataRole.UserRole, entry.get("url", ""))
                 self.table.setItem(row, 0, it0)
-                self.table.setItem(row, 1, QTableWidgetItem(title))
-                self.table.setItem(row, 2, QTableWidgetItem(rfmt))
-                self.table.setItem(row, 3, QTableWidgetItem(dur))
+                self.table.setItem(row, 1, QTableWidgetItem(src))
+                self.table.setItem(row, 2, QTableWidgetItem(title))
+                self.table.setItem(row, 3, QTableWidgetItem(rfmt))
+                self.table.setItem(row, 4, QTableWidgetItem(dur))
         finally:
             self.table.setUpdatesEnabled(True)
         self.count_lbl.setText(f"Показано: {len(filtered)} из {len(self._entries)}")
@@ -1012,47 +1097,21 @@ class MainWindow(QMainWindow):
         body.setSpacing(0)
 
         # ── Левая боковая панель ─────────────────────────────────────────────
-        sidebar_wrap = QFrame()
-        sidebar_wrap.setFixedWidth(182)
-        sidebar_wrap.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
-            f"border-right: 1px solid {COLORS['border']}; }}"
-        )
-        sb_lay = QVBoxLayout(sidebar_wrap)
+        self._sidebar_wrap = QFrame()
+        self._sidebar_wrap.setFixedWidth(186)
+        sb_lay = QVBoxLayout(self._sidebar_wrap)
         sb_lay.setContentsMargins(8, 12, 8, 10)
         sb_lay.setSpacing(6)
 
-        brand = QLabel("  SmartTubeDL")
+        self._brand_lbl = QLabel("  SmartTubeDL")
         bf = QFont()
         bf.setPointSize(11)
         bf.setBold(True)
-        brand.setFont(bf)
-        brand.setStyleSheet(f"color: {COLORS['accent']}; border: none; padding-bottom: 6px;")
-        sb_lay.addWidget(brand)
+        self._brand_lbl.setFont(bf)
+        sb_lay.addWidget(self._brand_lbl)
 
         self.nav = QListWidget()
-        self.nav.setStyleSheet(f"""
-            QListWidget {{
-                background: transparent;
-                border: none;
-                outline: none;
-                font-size: 13px;
-            }}
-            QListWidget::item {{
-                padding: 9px 10px;
-                border-radius: 6px;
-                margin-bottom: 2px;
-                color: {COLORS['text_primary']};
-            }}
-            QListWidget::item:hover {{
-                background-color: {COLORS['bg_primary']};
-            }}
-            QListWidget::item:selected {{
-                background-color: {COLORS['accent']};
-                color: #ffffff;
-                font-weight: bold;
-            }}
-        """)
+        self.nav.setCursor(Qt.CursorShape.PointingHandCursor)
         self._nav_items = [
             "▶  YouTube",
             "🎵  ВКонтакте",
@@ -1069,7 +1128,7 @@ class MainWindow(QMainWindow):
         self.nav.currentRowChanged.connect(self._on_nav_changed)
         sb_lay.addWidget(self.nav, 1)
 
-        body.addWidget(sidebar_wrap)
+        body.addWidget(self._sidebar_wrap)
 
         # ── Стек разделов ────────────────────────────────────────────────────
         self.stack = QStackedWidget()
@@ -1080,50 +1139,87 @@ class MainWindow(QMainWindow):
         outer.addLayout(body, 1)
 
         # ── Постоянная нижняя панель (Footer Bar) ────────────────────────────
-        footer = QFrame()
-        footer.setFixedHeight(40)
-        footer.setStyleSheet(
-            f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
-            f"border-top: 1px solid {COLORS['border']}; }}"
-        )
-        fl = QHBoxLayout(footer)
+        self._footer = QFrame()
+        self._footer.setFixedHeight(42)
+        fl = QHBoxLayout(self._footer)
         fl.setContentsMargins(12, 4, 12, 4)
-        fl.setSpacing(10)
+        fl.setSpacing(8)
 
         self.footer_status = QLabel("Ожидание...")
-        self.footer_status.setStyleSheet("border: none;")
         fl.addWidget(self.footer_status, 1)
 
         self.footer_progress = QProgressBar()
         self.footer_progress.setFixedWidth(150)
-        self.footer_progress.setFixedHeight(14)
+        self.footer_progress.setFixedHeight(16)
         self.footer_progress.setVisible(False)
         fl.addWidget(self.footer_progress)
 
         self.btn_pause = QPushButton("⏸ Пауза")
         self.btn_pause.setProperty("secondary", True)
-        self.btn_pause.setFixedHeight(26)
+        self.btn_pause.setFixedHeight(28)
         self.btn_pause.clicked.connect(self._toggle_pause)
         fl.addWidget(self.btn_pause)
 
         self.quick_fmt = QComboBox()
         self.quick_fmt.addItems(["MP4 1080p", "MP4 720p", "MP4 480p", "MP3"])
-        self.quick_fmt.setFixedHeight(26)
+        self.quick_fmt.setFixedHeight(28)
         self.quick_fmt.currentTextChanged.connect(self._on_quick_fmt_changed)
         fl.addWidget(self.quick_fmt)
 
         self.btn_folder = QPushButton()
         self.btn_folder.setProperty("secondary", True)
-        self.btn_folder.setFixedHeight(26)
+        self.btn_folder.setFixedHeight(28)
         self.btn_folder.setToolTip("Открыть папку загрузок в Проводнике")
         self.btn_folder.clicked.connect(self._open_download_folder)
         fl.addWidget(self.btn_folder)
 
-        outer.addWidget(footer)
+        outer.addWidget(self._footer)
 
+        self.apply_theme()
         self.sync_footer_settings()
         # По умолчанию открываем YouTube
         self.nav.setCurrentRow(self.IDX_YOUTUBE)
+
+    def apply_theme(self):
+        """Обновляет inline-стили боковой панели и футера под текущую палитру COLORS."""
+        self._sidebar_wrap.setStyleSheet(
+            f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
+            f"border-right: 1px solid {COLORS['border_strong']}; }}"
+        )
+        self._brand_lbl.setStyleSheet(
+            f"color: {COLORS['accent']}; border: none; padding-bottom: 6px;"
+        )
+        self.nav.setStyleSheet(f"""
+            QListWidget {{
+                background: transparent;
+                border: none;
+                outline: none;
+                font-size: 13px;
+            }}
+            QListWidget::item {{
+                padding: 8px 10px;
+                border-radius: 6px;
+                border-left: 3px solid transparent;
+                margin-bottom: 2px;
+                color: {COLORS['text_primary']};
+            }}
+            QListWidget::item:hover:!selected {{
+                background-color: {COLORS['bg_primary']};
+            }}
+            QListWidget::item:selected {{
+                background-color: {COLORS['accent_light']};
+                color: {COLORS['accent']};
+                border-left: 3px solid {COLORS['accent']};
+                font-weight: 600;
+            }}
+        """)
+        self._footer.setStyleSheet(
+            f"QFrame {{ background-color: {COLORS['bg_secondary']}; "
+            f"border-top: 1px solid {COLORS['border_strong']}; }}"
+        )
+        self.footer_status.setStyleSheet(
+            f"border: none; color: {COLORS['text_secondary']};"
+        )
 
         # Единые горячие клавиши для всех разделов: Ctrl+F (фильтр), Ctrl+T (новая вкладка), Ctrl+W (закрыть вкладку)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._shortcut_focus_filter)
@@ -1253,6 +1349,17 @@ class MainWindow(QMainWindow):
     def switch_to(self, idx: int):
         """Открывает главное окно и переключает на указанный раздел."""
         self.nav.setCurrentRow(idx)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def open_history(self, source: str = "Все источники"):
+        """Открывает раздел «История» и при необходимости выставляет фильтр по источнику."""
+        self._ensure_page(self.IDX_HISTORY)
+        self.nav.setCurrentRow(self.IDX_HISTORY)
+        if self.history_page is not None:
+            self.history_page.reload(force=True)
+            self.history_page.set_source_filter(source)
         self.show()
         self.raise_()
         self.activateWindow()
