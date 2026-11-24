@@ -1071,6 +1071,7 @@ class AudioPreviewBar(QFrame):
         self._cur_url = ""
         self._cur_headers = None
         self._used_fallback = False
+        self._pending_play = False
         self._player = None
         self._audio = None
         self._fallback_ready.connect(self._on_fallback_ready)
@@ -1156,11 +1157,22 @@ class AudioPreviewBar(QFrame):
             self._player.positionChanged.connect(self._on_pos_changed)
             self._player.durationChanged.connect(self._on_dur_changed)
             self._player.playbackStateChanged.connect(self._on_state_changed)
+            self._player.mediaStatusChanged.connect(self._on_media_status_changed)
             self._player.errorOccurred.connect(self._on_error)
             return True
         except Exception as e:
             log_message(f"ERROR AudioPreviewBar init: {e}")
             return False
+
+    def _on_media_status_changed(self, status):
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if self._pending_play and status in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        ):
+            self._pending_play = False
+            if self._player is not None and self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                self._player.play()
 
     @staticmethod
     def _fmt_ms(ms: int) -> str:
@@ -1170,6 +1182,9 @@ class AudioPreviewBar(QFrame):
     def show_loading(self, title: str):
         """Показывает полосу плеера в состоянии подготовки потока."""
         self._req_id += 1
+        self._pending_play = False
+        if self._player is not None:
+            self._player.stop()
         short = (title[:55] + "…") if len(title) > 55 else title
         self.title_lbl.setText(f"🎵 {short}")
         self.title_lbl.setToolTip(title)
@@ -1197,11 +1212,11 @@ class AudioPreviewBar(QFrame):
         self.seek_slider.setRange(0, 0)
         self.setVisible(True)
 
+        self._pending_play = True
         self._player.stop()
-        if os.path.isfile(url):
-            self._player.setSource(QUrl.fromLocalFile(url))
-        else:
-            self._player.setSource(QUrl(url))
+        self._player.setSource(QUrl())
+        qurl = QUrl.fromLocalFile(url) if os.path.isfile(url) else QUrl(url)
+        self._player.setSource(qurl)
         self._player.play()
 
     def _on_error(self, _err, err_str: str):
@@ -1244,6 +1259,9 @@ class AudioPreviewBar(QFrame):
             log_message(f"ERROR AudioPreviewBar fallback: {err_msg}")
             return
         if self._player is not None:
+            self._pending_play = True
+            self._player.stop()
+            self._player.setSource(QUrl())
             self._player.setSource(QUrl.fromLocalFile(local_path))
             self._player.play()
 
@@ -1252,12 +1270,14 @@ class AudioPreviewBar(QFrame):
             return
         from PyQt6.QtMultimedia import QMediaPlayer
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._pending_play = False
             self._player.pause()
         else:
             self._player.play()
 
     def stop(self):
         self._req_id += 1
+        self._pending_play = False
         if self._player is not None:
             self._player.stop()
         self.btn_play.setText("▶")
