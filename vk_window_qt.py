@@ -983,9 +983,27 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
             self._sig.status.emit("Браузер не готов или у трека нет ID")
             return
         req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
+        tab = self._current_tab()
+        vk_query = getattr(tab, "query", "") if tab else ""
+        pl_url = getattr(tab, "playlist_url", None) if tab else None
 
         def _worker():
             url = self._get_audio_url(fid) or ""
+            # Если трек из сохранённой вкладки не найден на текущей странице Chrome —
+            # открываем страницу этой вкладки в браузере и пробуем ещё раз
+            if not url and self.driver and (pl_url or vk_query):
+                try:
+                    self._sig.status.emit("Открываю список треков ВК в браузере...")
+                    nav = (pl_url or vk_query).strip()
+                    if nav.startswith("http") or "vk.com" in nav or "vk.ru" in nav:
+                        self.driver.get(nav if nav.startswith("http") else "https://" + nav)
+                    else:
+                        self._worker_search_navigate(nav)
+                    WebDriverWait(self.driver, 15).until(lambda _d: self._rows_present())
+                    time.sleep(0.5)
+                    url = self._get_audio_url(fid) or ""
+                except Exception as e:
+                    log_message(f"WARNING VK preview navigate: {e}")
             # Глушим плеер внутри Chrome, чтобы звук шёл только из нашего мини-плеера
             try:
                 if self.driver:
