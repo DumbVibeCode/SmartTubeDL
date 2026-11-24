@@ -423,7 +423,6 @@ class YouTubeDownloaderApp(QApplication):
         if self.main_window is None:
             from main_window_qt import MainWindow
             self.main_window = MainWindow(self)
-            self.main_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         return self.main_window
 
     def _sync_window_refs(self):

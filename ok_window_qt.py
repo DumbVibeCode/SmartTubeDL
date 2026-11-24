@@ -622,7 +622,9 @@ class OKSearchWindow(QWidget):
 
     def _open_history(self):
         w = self.window()
-        if hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
+        if w is not None and hasattr(w, "open_history"):
+            w.open_history("Одноклассники")
+        elif w is not None and hasattr(w, "switch_to") and hasattr(w, "IDX_HISTORY"):
             w.switch_to(w.IDX_HISTORY)
 
     def _on_search_done(self):

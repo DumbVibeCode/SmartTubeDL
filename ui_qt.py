@@ -541,8 +541,9 @@ class SearchWindow(QMainWindow):
 
         dark_now = settings.get("dark_theme", False)
         self.theme_btn = QPushButton("☾" if dark_now else "☀")
+        self.theme_btn.setObjectName("historyBtn")
         self.theme_btn.setProperty("secondary", True)
-        self.theme_btn.setFixedWidth(32)
+        self.theme_btn.setFixedWidth(28)
         self.theme_btn.setToolTip("Переключить тёмную/светлую тему")
         self.theme_btn.clicked.connect(self._toggle_theme)
         search_row.addWidget(self.theme_btn)
@@ -887,8 +888,14 @@ class SearchWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         dark = not settings.get("dark_theme", False)
         settings["dark_theme"] = dark
+        save_settings(settings)
         _styles.set_dark_mode(dark)
-        QApplication.instance().setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(_styles.STYLESHEET_MINIMAL)
+        w = self.window()
+        if w is not None and hasattr(w, "apply_theme"):
+            w.apply_theme()
         self.theme_btn.setText("☾" if dark else "☀")
         # Обновляем inline-стили статус-метки под новую тему
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")

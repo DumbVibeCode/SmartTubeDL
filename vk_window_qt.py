@@ -1004,10 +1004,12 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
     # ── История ───────────────────────────────────────────────────────────────
 
     def _show_history(self):
+        w = self.window()
+        if w is not None and hasattr(w, "open_history"):
+            w.open_history("ВКонтакте")
+            return
         if self._history_window is None:
             self._history_window = VKHistoryWindow()
-            import styles as _styles
-            self._history_window.setStyleSheet(_styles.STYLESHEET_MINIMAL)
         else:
             self._history_window._load()
         self._history_window.show()
