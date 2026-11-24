@@ -983,29 +983,66 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
             self._sig.status.emit("Браузер не готов или у трека нет ID")
             return
         req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
+        tab = self._current_tab()
+        vk_query = getattr(tab, "query", "") if tab else ""
+        pl_url = getattr(tab, "playlist_url", None) if tab else None
+
+        def _has_track_in_dom(target_fid: str) -> bool:
+            try:
+                return bool(self.driver.execute_script(
+                    "var f = arguments[0];"
+                    "return !!(document.querySelector('a[href^=\"/audio' + f + '\"]') "
+                    "|| document.querySelector('[data-testid=\"MusicTrackRow_Title\"][href^=\"/audio' + f + '\"]'));",
+                    target_fid
+                ))
+            except Exception:
+                return False
+
+        def _scroll_until_track(target_fid: str, max_steps: int = 35) -> bool:
+            if _has_track_in_dom(target_fid):
+                return True
+            same_h = 0
+            last_h = 0
+            for _ in range(max_steps):
+                try:
+                    self.driver.execute_script("window.scrollBy(0, 1600);")
+                    time.sleep(0.45)
+                    if _has_track_in_dom(target_fid):
+                        return True
+                    h = self.driver.execute_script("return document.body.scrollHeight;") or 0
+                    if h == last_h:
+                        same_h += 1
+                        if same_h >= 3:
+                            break
+                    else:
+                        same_h = 0
+                        last_h = h
+                except Exception:
+                    break
+            return _has_track_in_dom(target_fid)
 
         def _worker():
-            url = self._get_audio_url(fid) or ""
-            # Если трек не найден в текущем DOM Chrome (сохранённая вкладка или трек далеко внизу списка) —
-            # открываем прямую страницу этого трека vk.ru/audio<fid> и получаем поток без перезапуска поиска
-            if not url and self.driver:
+            url = ""
+            # 1) Если трек уже есть в текущем DOM (или ниже по скроллу на открытой странице)
+            if self.driver and _has_track_in_dom(fid):
+                url = self._get_audio_url(fid) or ""
+
+            # 2) Если не нашли — перезапускаем поиск / открываем страницу вкладки и крутим до трека
+            if not url and self.driver and (pl_url or vk_query):
                 try:
-                    self._sig.status.emit(f"Открываю трек в браузере ({label})...")
-                    self.driver.get(f"https://vk.ru/audio{fid}")
-                    for _ in range(20):
-                        time.sleep(0.25)
-                        ready = self.driver.execute_script(
-                            "return !!(document.querySelector('[aria-label*=\"рослуш\"]') "
-                            "|| document.querySelector('[aria-label*=\"Слушать\"]') "
-                            "|| document.querySelector('[data-testid=\"AudioTrackPage_PlayButton\"]') "
-                            "|| document.querySelector('a[href^=\"/audio\"]'));"
-                        )
-                        if ready:
-                            time.sleep(0.3)
-                            break
-                    url = self._get_audio_url(fid) or ""
+                    self._sig.status.emit("Открываю поиск ВК в браузере...")
+                    nav = (pl_url or vk_query).strip()
+                    if nav.startswith("http") or "vk.com" in nav or "vk.ru" in nav:
+                        self.driver.get(nav if nav.startswith("http") else "https://" + nav)
+                    else:
+                        self._worker_search_navigate(nav)
+                    WebDriverWait(self.driver, 15).until(lambda _d: self._rows_present())
+                    time.sleep(0.5)
+                    if _scroll_until_track(fid):
+                        url = self._get_audio_url(fid) or ""
                 except Exception as e:
                     log_message(f"WARNING VK preview navigate: {e}")
+
             # Глушим плеер внутри Chrome, чтобы звук шёл только из нашего мини-плеера
             try:
                 if self.driver:
