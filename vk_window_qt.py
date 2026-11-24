@@ -103,6 +103,7 @@ class _Sig(QObject):
     progress            = pyqtSignal(float)   # 0-100
     speed               = pyqtSignal(str)
     batch               = pyqtSignal(str)
+    preview_ready       = pyqtSignal(str, str, int)  # (title, url, req_id)
     show_progress       = pyqtSignal(bool)
     results_ready       = pyqtSignal(list)
     video_results_ready      = pyqtSignal(list)          # видео: [(title,dur,views,thumb_url,video_url)]
@@ -494,6 +495,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
 
     def _connect_signals(self):
         self._sig.status.connect(self.status_lbl.setText)
+        self._sig.preview_ready.connect(self._on_preview_ready)
         self._sig.speed.connect(self.speed_lbl.setText)
         self._sig.batch.connect(self.batch_lbl.setText)
         self._sig.show_progress.connect(self._on_show_progress)
@@ -954,6 +956,48 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
 
     # ── Контекстное меню ──────────────────────────────────────────────────────
 
+    def _on_preview_ready(self, title: str, url: str, req_id: int):
+        w = self.window()
+        if not url:
+            self._sig.status.emit(f"Не удалось получить поток для «{title}»")
+            if w is not None and hasattr(w, "preview_bar"):
+                w.preview_bar.time_lbl.setText("Ошибка")
+            return
+        if w is not None and hasattr(w, "play_audio_preview"):
+            w.play_audio_preview(title, url, headers={"Referer": "https://vk.com/"}, req_id=req_id)
+
+    def _preview_one(self):
+        rows = self._selected_rows_data()
+        if not rows:
+            return
+        d = rows[0]
+        label = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —") or "ВКонтакте"
+        w = self.window()
+        direct = d.get("url") or ""
+        if direct.startswith(("http://", "https://")):
+            if w is not None and hasattr(w, "play_audio_preview"):
+                w.play_audio_preview(label, direct, headers={"Referer": "https://vk.com/"})
+            return
+        fid = d.get("full_id") or ""
+        if not fid or not self.driver:
+            self._sig.status.emit("Браузер не готов или у трека нет ID")
+            return
+        req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
+
+        def _worker():
+            url = self._get_audio_url(fid) or ""
+            # Глушим плеер внутри Chrome, чтобы звук шёл только из нашего мини-плеера
+            try:
+                if self.driver:
+                    self.driver.execute_script(
+                        "document.querySelectorAll('audio,video').forEach(e=>{try{e.pause();}catch(_){}});"
+                    )
+            except Exception:
+                pass
+            self._sig.preview_ready.emit(label, url, req_id)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _show_ctx_menu(self, pos):
         t = self._t()
         if not t:
@@ -962,6 +1006,8 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         if row < 0:
             return
         menu = QMenu(self)
+        menu.addAction("▶ Прослушать", self._preview_one)
+        menu.addSeparator()
         menu.addAction("Копировать «Исполнитель — Название»", self._copy_artist_title)
         menu.addAction("Копировать ссылку на владельца",      self._copy_owner_link)
         menu.addSeparator()
