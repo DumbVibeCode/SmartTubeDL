@@ -1183,8 +1183,10 @@ class AudioPreviewBar(QFrame):
         """Показывает полосу плеера в состоянии подготовки потока."""
         self._req_id += 1
         self._pending_play = False
+        self._cur_url = ""
         if self._player is not None:
             self._player.stop()
+            self._player.setSource(QUrl())
         short = (title[:55] + "…") if len(title) > 55 else title
         self.title_lbl.setText(f"🎵 {short}")
         self.title_lbl.setToolTip(title)
@@ -1266,7 +1268,7 @@ class AudioPreviewBar(QFrame):
             self._player.play()
 
     def _toggle_play(self):
-        if self._player is None:
+        if self._player is None or self._player.source().isEmpty():
             return
         from PyQt6.QtMultimedia import QMediaPlayer
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:

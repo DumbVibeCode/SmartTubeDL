@@ -984,18 +984,37 @@ class OKSearchWindow(QWidget):
         return None
 
     def _fetch_stream_by_tid(self, tid: str) -> str | None:
-        """Мгновенно получает URL MP3 через внутренний store.api.post('play', {tid})."""
+        """Мгновенно получает URL MP3 через внутренний store.player.playTrack(tid)."""
         if not tid or not self.driver:
             return None
-        try:
-            self.driver.set_script_timeout(15)
-            res = self.driver.execute_async_script(_FETCH_STREAM_BY_TID_JS, tid)
-            if isinstance(res, dict) and res.get("ok") and res.get("play"):
-                return res["play"]
-            if isinstance(res, dict) and res.get("err"):
-                log_message(f"DEBUG OK store.api.post(play, {tid}): {res['err']}")
-        except Exception as e:
-            log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
+        for attempt in range(2):
+            try:
+                self.driver.set_script_timeout(15)
+                res = self.driver.execute_async_script(_FETCH_STREAM_BY_TID_JS, tid)
+                if isinstance(res, dict) and res.get("ok") and res.get("play"):
+                    return res["play"]
+                err = res.get("err") if isinstance(res, dict) else ""
+                if err:
+                    log_message(f"DEBUG OK store.api.post(play, {tid}): {err}")
+                # Если плеер ОК ещё не загружен (например, сохранённая вкладка после перезапуска) —
+                # открываем ok.ru/music один раз и повторяем попытку
+                if attempt == 0 and err in ("no_store", "no_player", ""):
+                    cur_url = (self.driver.current_url or "").lower()
+                    if "/music" not in cur_url:
+                        log_message("INFO OK: открываю ok.ru/music для инициализации плеера")
+                        self.driver.get("https://ok.ru/music")
+                        for _ in range(20):
+                            time.sleep(0.25)
+                            ready = self.driver.execute_script(
+                                "return !!(document.querySelector('wm-player') || document.querySelector('wm-app'));"
+                            )
+                            if ready:
+                                time.sleep(0.6)
+                                break
+                        continue
+            except Exception as e:
+                log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
+            break
         return None
 
     def _worker_music_download(self, tracks: list):
