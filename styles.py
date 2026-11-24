@@ -557,27 +557,33 @@ QComboBox::down-arrow:hover {{
 QComboBox::down-arrow:on {{
     {chev_up}
 }}
-QComboBox QAbstractItemView {{
+QComboBox QFrame {{
     background-color: {c["bg_secondary"]};
     border: 1px solid {c["border_strong"]};
-    border-radius: 6px;
-    padding: 4px;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {c["bg_secondary"]};
+    border: none;
+    padding: 3px;
     selection-background-color: {c["accent_light"]};
-    selection-color: {c["text_primary"]};
+    selection-color: {c["accent"]};
     outline: none;
 }}
 QComboBox QAbstractItemView::item {{
     padding: 5px 10px;
     min-height: 20px;
+    border: none;
     border-radius: 4px;
     color: {c["text_primary"]};
 }}
 QComboBox QAbstractItemView::item:hover {{
     background-color: {c["row_hover"]};
+    border: none;
 }}
 QComboBox QAbstractItemView::item:selected {{
     background-color: {c["accent_light"]};
     color: {c["accent"]};
+    border: none;
     font-weight: 500;
 }}
 
