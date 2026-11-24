@@ -1149,8 +1149,11 @@ class AudioPreviewBar(QFrame):
         if self._player is not None:
             return True
         try:
-            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
-            self._audio = QAudioOutput(self)
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaDevices
+            self._media_devices = QMediaDevices(self)
+            self._media_devices.audioOutputsChanged.connect(self._sync_audio_device)
+            self._audio = QAudioOutput(QMediaDevices.defaultAudioOutput(), self)
+            self._audio.setMuted(False)
             self._audio.setVolume(self.vol_slider.value() / 100.0)
             self._player = QMediaPlayer(self)
             self._player.setAudioOutput(self._audio)
@@ -1163,6 +1166,21 @@ class AudioPreviewBar(QFrame):
         except Exception as e:
             log_message(f"ERROR AudioPreviewBar init: {e}")
             return False
+
+    def _sync_audio_device(self):
+        """Синхронизирует QAudioOutput с текущим устройством вывода Windows по умолчанию."""
+        if self._audio is None:
+            return
+        try:
+            from PyQt6.QtMultimedia import QMediaDevices
+            default_dev = QMediaDevices.defaultAudioOutput()
+            if not default_dev.isNull() and self._audio.device() != default_dev:
+                self._audio.setDevice(default_dev)
+                log_message(f"INFO AudioPreviewBar: переключено устройство вывода на {default_dev.description()}")
+            self._audio.setMuted(False)
+            self._audio.setVolume(self.vol_slider.value() / 100.0)
+        except Exception as e:
+            log_message(f"WARNING AudioPreviewBar _sync_audio_device: {e}")
 
     def _on_media_status_changed(self, status):
         from PyQt6.QtMultimedia import QMediaPlayer
@@ -1214,6 +1232,15 @@ class AudioPreviewBar(QFrame):
         self.seek_slider.setRange(0, 0)
         self.setVisible(True)
 
+        self._sync_audio_device()
+        try:
+            dev_name = self._audio.device().description() if self._audio else "none"
+            log_message(
+                f"DEBUG AudioPreviewBar play: device='{dev_name}', "
+                f"vol={self.vol_slider.value()}%, url={url[:90]}"
+            )
+        except Exception:
+            pass
         self._pending_play = True
         self._player.stop()
         self._player.setSource(QUrl())
