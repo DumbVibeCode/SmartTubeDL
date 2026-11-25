@@ -686,6 +686,28 @@ QTabBar::close-button:hover {{
     font-size: 13px;
 }}
 
+/* === ПОЛЗУНКИ (МИНИ-ПЛЕЕР) === */
+QSlider::groove:horizontal {{
+    height: 4px;
+    background: {c["border_strong"]};
+    border-radius: 2px;
+}}
+QSlider::sub-page:horizontal {{
+    background: {c["accent"]};
+    border-radius: 2px;
+}}
+QSlider::handle:horizontal {{
+    background: {c["accent"]};
+    border: 2px solid {c["bg_secondary"]};
+    width: 12px;
+    height: 12px;
+    margin: -5px 0;
+    border-radius: 7px;
+}}
+QSlider::handle:horizontal:hover {{
+    background: {c["accent_hover"]};
+}}
+
 /* === ТАБЛИЦА === */
 QTableWidget, QTableView, QTreeView {{
     background-color: {c["bg_secondary"]};

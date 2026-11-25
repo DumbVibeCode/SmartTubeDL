@@ -103,6 +103,7 @@ class _Sig(QObject):
     progress            = pyqtSignal(float)   # 0-100
     speed               = pyqtSignal(str)
     batch               = pyqtSignal(str)
+    preview_ready       = pyqtSignal(str, str, int)  # (title, url, req_id)
     show_progress       = pyqtSignal(bool)
     results_ready       = pyqtSignal(list)
     video_results_ready      = pyqtSignal(list)          # видео: [(title,dur,views,thumb_url,video_url)]
@@ -494,6 +495,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
 
     def _connect_signals(self):
         self._sig.status.connect(self.status_lbl.setText)
+        self._sig.preview_ready.connect(self._on_preview_ready)
         self._sig.speed.connect(self.speed_lbl.setText)
         self._sig.batch.connect(self.batch_lbl.setText)
         self._sig.show_progress.connect(self._on_show_progress)
@@ -954,6 +956,143 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
 
     # ── Контекстное меню ──────────────────────────────────────────────────────
 
+    def _on_preview_ready(self, title: str, url: str, req_id: int):
+        w = self.window()
+        if not url:
+            self._sig.status.emit(f"Не удалось получить поток для «{title}»")
+            if w is not None and hasattr(w, "preview_bar"):
+                w.preview_bar.time_lbl.setText("Ошибка")
+            return
+        if w is not None and hasattr(w, "play_audio_preview"):
+            w.play_audio_preview(title, url, headers={"Referer": "https://vk.com/"}, req_id=req_id)
+
+    def _preview_one(self):
+        rows = self._selected_rows_data()
+        if not rows:
+            return
+        d = rows[0]
+        label = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —") or "ВКонтакте"
+        w = self.window()
+        direct = d.get("url") or ""
+        if direct.startswith(("http://", "https://")):
+            if w is not None and hasattr(w, "play_audio_preview"):
+                w.play_audio_preview(label, direct, headers={"Referer": "https://vk.com/"})
+            return
+        fid = d.get("full_id") or ""
+        if not fid or not self.driver:
+            self._sig.status.emit("Браузер не готов или у трека нет ID")
+            return
+        req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
+        tab = self._current_tab()
+        vk_query = getattr(tab, "query", "") if tab else ""
+        pl_url = getattr(tab, "playlist_url", None) if tab else None
+        cur_nav = (pl_url or vk_query or "").strip()
+        sample_fids = []
+        t_cur = self._t()
+        if t_cur is not None:
+            for r in range(min(10, t_cur.rowCount())):
+                it0 = t_cur.item(r, 0)
+                rd = it0.data(Qt.ItemDataRole.UserRole) if it0 else None
+                if isinstance(rd, dict) and rd.get("full_id"):
+                    sample_fids.append(rd["full_id"])
+
+        def _has_track_in_dom(target_fid: str) -> bool:
+            try:
+                return bool(self.driver.execute_script(
+                    "var f = arguments[0];"
+                    "return !!(document.querySelector('a[href^=\"/audio' + f + '\"]') "
+                    "|| document.querySelector('[data-testid=\"MusicTrackRow_Title\"][href^=\"/audio' + f + '\"]'));",
+                    target_fid
+                ))
+            except Exception:
+                return False
+
+        def _any_in_dom(fids: list) -> bool:
+            if not fids:
+                return False
+            try:
+                return bool(self.driver.execute_script(
+                    "var arr = arguments[0];"
+                    "for (var i = 0; i < arr.length; i++) {"
+                    "  var f = arr[i];"
+                    "  if (document.querySelector('a[href^=\"/audio' + f + '\"]') "
+                    "      || document.querySelector('[data-testid=\"MusicTrackRow_Title\"][href^=\"/audio' + f + '\"]')) return true;"
+                    "}"
+                    "return false;",
+                    fids
+                ))
+            except Exception:
+                return False
+
+        def _scroll_until_track(target_fid: str, max_steps: int = 35) -> bool:
+            if _has_track_in_dom(target_fid):
+                return True
+            same_h = 0
+            last_h = 0
+            for _ in range(max_steps):
+                try:
+                    self.driver.execute_script("window.scrollBy(0, 1600);")
+                    time.sleep(0.45)
+                    if _has_track_in_dom(target_fid):
+                        return True
+                    h = self.driver.execute_script("return document.body.scrollHeight;") or 0
+                    if h == last_h:
+                        same_h += 1
+                        if same_h >= 3:
+                            break
+                    else:
+                        same_h = 0
+                        last_h = h
+                except Exception:
+                    break
+            return _has_track_in_dom(target_fid)
+
+        def _worker():
+            url = ""
+            # 1) Если трек уже есть в текущем DOM — играем мгновенно
+            if self.driver and _has_track_in_dom(fid):
+                url = self._get_audio_url(fid) or ""
+
+            # 2) Если в браузере УЖЕ открыт этот же список (совпадает ключ вкладки или видны её треки) —
+            # просто прокручиваем текущую страницу до нужного трека БЕЗ перезапуска поиска
+            if not url and self.driver:
+                same_list = (
+                    (bool(cur_nav) and getattr(self, "_browser_loaded_key", None) == cur_nav and self._rows_present())
+                    or _any_in_dom(sample_fids)
+                )
+                if same_list:
+                    self._browser_loaded_key = cur_nav
+                    if _scroll_until_track(fid):
+                        url = self._get_audio_url(fid) or ""
+
+            # 3) Перезапускаем поиск ТОЛЬКО если в браузере открыт другой список/страница
+            if not url and self.driver and cur_nav:
+                try:
+                    self._sig.status.emit("Открываю поиск ВК в браузере...")
+                    if cur_nav.startswith("http") or "vk.com" in cur_nav or "vk.ru" in cur_nav:
+                        self.driver.get(cur_nav if cur_nav.startswith("http") else "https://" + cur_nav)
+                    else:
+                        self._worker_search_navigate(cur_nav)
+                    WebDriverWait(self.driver, 15).until(lambda _d: self._rows_present())
+                    self._browser_loaded_key = cur_nav
+                    time.sleep(0.5)
+                    if _scroll_until_track(fid):
+                        url = self._get_audio_url(fid) or ""
+                except Exception as e:
+                    log_message(f"WARNING VK preview navigate: {e}")
+
+            # Глушим плеер внутри Chrome, чтобы звук шёл только из нашего мини-плеера
+            try:
+                if self.driver:
+                    self.driver.execute_script(
+                        "document.querySelectorAll('audio,video').forEach(e=>{try{e.pause();}catch(_){}});"
+                    )
+            except Exception:
+                pass
+            self._sig.preview_ready.emit(label, url, req_id)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _show_ctx_menu(self, pos):
         t = self._t()
         if not t:
@@ -962,6 +1101,8 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         if row < 0:
             return
         menu = QMenu(self)
+        menu.addAction("▶ Прослушать", self._preview_one)
+        menu.addSeparator()
         menu.addAction("Копировать «Исполнитель — Название»", self._copy_artist_title)
         menu.addAction("Копировать ссылку на владельца",      self._copy_owner_link)
         menu.addSeparator()
@@ -1215,7 +1356,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
                     yandex_exe,
                     f"--remote-debugging-port={debug_port}",
                     f"--user-data-dir={profile_dir}",
-                    "--no-first-run", "--start-maximized",
+                    "--no-first-run", "--start-maximized", "--mute-audio",
                 ])
                 time.sleep(4)  # ждём запуска DevTools
 
@@ -1243,6 +1384,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
                     o.add_argument("--restore-last-session=false")
                     o.add_argument("--no-first-run")
                     o.add_argument("--no-default-browser-check")
+                    o.add_argument("--mute-audio")
                     o.add_argument(
                         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

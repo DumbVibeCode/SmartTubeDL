@@ -8,13 +8,14 @@ import os
 import re
 import threading
 
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QObject, QUrl, pyqtSignal
 from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QCheckBox,
-    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QFrame, QTabWidget, QMenu
+    QProgressBar, QTextEdit, QFileDialog, QMessageBox, QFrame, QTabWidget, QMenu,
+    QSlider
 )
 
 import styles as _styles
@@ -405,6 +406,10 @@ class MailRuPage(QWidget):
         has_owner_url = isinstance(first_data, dict) and bool(first_data.get("owner_url"))
 
         menu = QMenu(self)
+        act_play = None
+        if tab.kind != "playlists":
+            act_play = menu.addAction("▶ Прослушать")
+            act_play.setEnabled(isinstance(first_data, dict) and bool(first_data.get("url")))
         act_main = menu.addAction("📋 Открыть плейлист" if tab.kind == "playlists" else "⬇ Скачать выбранные")
         act_copy_name = menu.addAction("Копировать название")
         act_copy_url = menu.addAction("Копировать ссылку")
@@ -415,7 +420,12 @@ class MailRuPage(QWidget):
         act_copy_owner.setEnabled(has_owner_url)
 
         act = menu.exec(tab.table.viewport().mapToGlobal(pos))
-        if act == act_main:
+        if act_play is not None and act == act_play and isinstance(first_data, dict) and first_data.get("url"):
+            title = f"{first_data.get('artist', '')} — {first_data.get('title', '')}".strip(" —") or "Mail.ru"
+            w = self.window()
+            if w is not None and hasattr(w, "play_audio_preview"):
+                w.play_audio_preview(title, first_data["url"], headers={"Referer": "https://my.mail.ru/"})
+        elif act == act_main:
             self._on_tab_action()
         elif act == act_open_owner and has_owner_url:
             import webbrowser
@@ -1045,6 +1055,297 @@ class SettingsPage(QWidget):
         self.settings_changed.emit()
 
 
+# ── Встроенный мини-плеер для предпрослушивания аудио ────────────────────────
+
+class AudioPreviewBar(QFrame):
+    """Компактная полоса предпрослушивания треков на базе PyQt6.QtMultimedia."""
+
+    _fallback_ready = pyqtSignal(int, str, str)  # (req_id, local_path, error_msg)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(38)
+        self.setVisible(False)
+        self._seeking = False
+        self._req_id = 0
+        self._cur_url = ""
+        self._cur_headers = None
+        self._used_fallback = False
+        self._pending_play = False
+        self._player = None
+        self._audio = None
+        self._fallback_ready.connect(self._on_fallback_ready)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 3, 12, 3)
+        lay.setSpacing(8)
+
+        self.btn_play = QPushButton("▶")
+        self.btn_play.setObjectName("historyBtn")
+        self.btn_play.setProperty("secondary", True)
+        self.btn_play.setFixedSize(26, 26)
+        self.btn_play.setToolTip("Воспроизвести / Пауза")
+        self.btn_play.clicked.connect(self._toggle_play)
+        lay.addWidget(self.btn_play)
+
+        self.btn_stop = QPushButton("⏹")
+        self.btn_stop.setObjectName("historyBtn")
+        self.btn_stop.setProperty("secondary", True)
+        self.btn_stop.setFixedSize(26, 26)
+        self.btn_stop.setToolTip("Остановить")
+        self.btn_stop.clicked.connect(self.stop)
+        lay.addWidget(self.btn_stop)
+
+        self.title_lbl = QLabel("")
+        self.title_lbl.setMinimumWidth(120)
+        self.title_lbl.setMaximumWidth(320)
+        lay.addWidget(self.title_lbl)
+
+        self.seek_slider = QSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setRange(0, 0)
+        self.seek_slider.sliderPressed.connect(self._on_seek_press)
+        self.seek_slider.sliderReleased.connect(self._on_seek_release)
+        self.seek_slider.sliderMoved.connect(self._on_seek_moved)
+        lay.addWidget(self.seek_slider, 1)
+
+        self.time_lbl = QLabel("00:00 / 00:00")
+        self.time_lbl.setProperty("secondary", True)
+        self.time_lbl.setFixedWidth(86)
+        self.time_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.time_lbl)
+
+        vol_icon = QLabel("🔊")
+        vol_icon.setStyleSheet("border: none;")
+        lay.addWidget(vol_icon)
+
+        self.vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vol_slider.setRange(0, 100)
+        self.vol_slider.setFixedWidth(72)
+        self.vol_slider.setValue(int(settings.get("preview_volume", 70)))
+        self.vol_slider.setToolTip("Громкость предпрослушивания")
+        self.vol_slider.valueChanged.connect(self._on_volume_changed)
+        lay.addWidget(self.vol_slider)
+
+        self.btn_close = QPushButton("×")
+        self.btn_close.setObjectName("historyBtn")
+        self.btn_close.setProperty("secondary", True)
+        self.btn_close.setFixedSize(24, 24)
+        self.btn_close.setToolTip("Закрыть мини-плеер")
+        self.btn_close.clicked.connect(self.close_bar)
+        lay.addWidget(self.btn_close)
+
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(
+            f"AudioPreviewBar {{ background-color: {COLORS['bg_secondary']}; "
+            f"border-top: 1px solid {COLORS['border_strong']}; }}"
+        )
+        self.title_lbl.setStyleSheet(
+            f"border: none; font-weight: 600; color: {COLORS['text_primary']};"
+        )
+
+    def _ensure_player(self) -> bool:
+        if self._player is not None:
+            return True
+        try:
+            from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaDevices
+            self._media_devices = QMediaDevices(self)
+            self._media_devices.audioOutputsChanged.connect(self._sync_audio_device)
+            self._audio = QAudioOutput(QMediaDevices.defaultAudioOutput(), self)
+            self._audio.setMuted(False)
+            self._audio.setVolume(self.vol_slider.value() / 100.0)
+            self._player = QMediaPlayer(self)
+            self._player.setAudioOutput(self._audio)
+            self._player.positionChanged.connect(self._on_pos_changed)
+            self._player.durationChanged.connect(self._on_dur_changed)
+            self._player.playbackStateChanged.connect(self._on_state_changed)
+            self._player.mediaStatusChanged.connect(self._on_media_status_changed)
+            self._player.errorOccurred.connect(self._on_error)
+            return True
+        except Exception as e:
+            log_message(f"ERROR AudioPreviewBar init: {e}")
+            return False
+
+    def _sync_audio_device(self):
+        """Синхронизирует QAudioOutput с текущим устройством вывода Windows по умолчанию."""
+        if self._audio is None:
+            return
+        try:
+            from PyQt6.QtMultimedia import QMediaDevices
+            default_dev = QMediaDevices.defaultAudioOutput()
+            if not default_dev.isNull() and self._audio.device() != default_dev:
+                self._audio.setDevice(default_dev)
+                log_message(f"INFO AudioPreviewBar: переключено устройство вывода на {default_dev.description()}")
+            self._audio.setMuted(False)
+            self._audio.setVolume(self.vol_slider.value() / 100.0)
+        except Exception as e:
+            log_message(f"WARNING AudioPreviewBar _sync_audio_device: {e}")
+
+    def _on_media_status_changed(self, status):
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if self._pending_play and status in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        ):
+            self._pending_play = False
+            if self._player is not None and self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                self._player.play()
+
+    @staticmethod
+    def _fmt_ms(ms: int) -> str:
+        s = max(0, int(ms // 1000))
+        return f"{s // 60:02d}:{s % 60:02d}"
+
+    def show_loading(self, title: str):
+        """Показывает полосу плеера в состоянии подготовки потока."""
+        self._req_id += 1
+        self._pending_play = False
+        self._cur_url = ""
+        if self._player is not None:
+            self._player.stop()
+            self._player.setSource(QUrl())
+        short = (title[:55] + "…") if len(title) > 55 else title
+        self.title_lbl.setText(f"🎵 {short}")
+        self.title_lbl.setToolTip(title)
+        self.time_lbl.setText("Загрузка...")
+        self.seek_slider.setRange(0, 0)
+        self.setVisible(True)
+        return self._req_id
+
+    def play_url(self, title: str, url: str, headers: dict | None = None, req_id: int | None = None):
+        """Запускает воспроизведение HTTP-потока или локального файла."""
+        if req_id is not None and req_id != self._req_id:
+            return
+        if not url or not self._ensure_player():
+            return
+        if req_id is None:
+            self._req_id += 1
+        self._cur_url = url
+        self._cur_headers = headers
+        self._used_fallback = False
+
+        short = (title[:55] + "…") if len(title) > 55 else title
+        self.title_lbl.setText(f"🎵 {short}")
+        self.title_lbl.setToolTip(title)
+        self.time_lbl.setText("Загрузка...")
+        self.seek_slider.setRange(0, 0)
+        self.setVisible(True)
+
+        self._sync_audio_device()
+        try:
+            dev_name = self._audio.device().description() if self._audio else "none"
+            log_message(
+                f"DEBUG AudioPreviewBar play: device='{dev_name}', "
+                f"vol={self.vol_slider.value()}%, url={url[:90]}"
+            )
+        except Exception:
+            pass
+        self._pending_play = True
+        self._player.stop()
+        self._player.setSource(QUrl())
+        qurl = QUrl.fromLocalFile(url) if os.path.isfile(url) else QUrl(url)
+        self._player.setSource(qurl)
+        self._player.play()
+
+    def _on_error(self, _err, err_str: str):
+        log_message(f"WARNING AudioPreviewBar stream error: {err_str}")
+        # Если прямой поток не открылся (например, нужен Referer), пробуем скачать во временный файл
+        if (not self._used_fallback) and self._cur_url.startswith(("http://", "https://")) and ".m3u8" not in self._cur_url:
+            self._used_fallback = True
+            rid = self._req_id
+            url = self._cur_url
+            headers = dict(self._cur_headers or {})
+            headers.setdefault("User-Agent", "Mozilla/5.0")
+            self.time_lbl.setText("Буфер...")
+
+            def _dl():
+                import tempfile
+                import requests
+                tmp_path = os.path.join(tempfile.gettempdir(), f"smarttubedl_preview_{rid}.mp3")
+                try:
+                    r = requests.get(url, headers=headers, timeout=20, stream=True)
+                    r.raise_for_status()
+                    with open(tmp_path, "wb") as f:
+                        for chunk in r.iter_content(65536):
+                            if rid != self._req_id:
+                                return
+                            if chunk:
+                                f.write(chunk)
+                    self._fallback_ready.emit(rid, tmp_path, "")
+                except Exception as e:
+                    self._fallback_ready.emit(rid, "", str(e))
+
+            threading.Thread(target=_dl, daemon=True).start()
+            return
+        self.time_lbl.setText("Ошибка")
+
+    def _on_fallback_ready(self, rid: int, local_path: str, err_msg: str):
+        if rid != self._req_id:
+            return
+        if err_msg or not local_path:
+            self.time_lbl.setText("Ошибка")
+            log_message(f"ERROR AudioPreviewBar fallback: {err_msg}")
+            return
+        if self._player is not None:
+            self._pending_play = True
+            self._player.stop()
+            self._player.setSource(QUrl())
+            self._player.setSource(QUrl.fromLocalFile(local_path))
+            self._player.play()
+
+    def _toggle_play(self):
+        if self._player is None or self._player.source().isEmpty():
+            return
+        from PyQt6.QtMultimedia import QMediaPlayer
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._pending_play = False
+            self._player.pause()
+        else:
+            self._player.play()
+
+    def stop(self):
+        self._req_id += 1
+        self._pending_play = False
+        if self._player is not None:
+            self._player.stop()
+        self.btn_play.setText("▶")
+
+    def close_bar(self):
+        self.stop()
+        self.setVisible(False)
+
+    def _on_state_changed(self, state):
+        from PyQt6.QtMultimedia import QMediaPlayer
+        self.btn_play.setText("⏸" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
+
+    def _on_dur_changed(self, dur_ms: int):
+        self.seek_slider.setRange(0, max(0, dur_ms))
+        self.time_lbl.setText(f"{self._fmt_ms(self.seek_slider.value())} / {self._fmt_ms(dur_ms)}")
+
+    def _on_pos_changed(self, pos_ms: int):
+        if not self._seeking:
+            self.seek_slider.setValue(pos_ms)
+            dur = self.seek_slider.maximum()
+            self.time_lbl.setText(f"{self._fmt_ms(pos_ms)} / {self._fmt_ms(dur)}")
+
+    def _on_seek_press(self):
+        self._seeking = True
+
+    def _on_seek_moved(self, val: int):
+        self.time_lbl.setText(f"{self._fmt_ms(val)} / {self._fmt_ms(self.seek_slider.maximum())}")
+
+    def _on_seek_release(self):
+        self._seeking = False
+        if self._player is not None:
+            self._player.setPosition(self.seek_slider.value())
+
+    def _on_volume_changed(self, val: int):
+        if self._audio is not None:
+            self._audio.setVolume(val / 100.0)
+        settings["preview_volume"] = val
+
+
 # ── Единое главное окно SmartTubeDL ──────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -1138,6 +1439,10 @@ class MainWindow(QMainWindow):
 
         outer.addLayout(body, 1)
 
+        # ── Встроенный мини-плеер предпрослушивания (скрыт, пока не играет) ──
+        self.preview_bar = AudioPreviewBar(self)
+        outer.addWidget(self.preview_bar)
+
         # ── Постоянная нижняя панель (Footer Bar) ────────────────────────────
         self._footer = QFrame()
         self._footer.setFixedHeight(42)
@@ -1220,6 +1525,8 @@ class MainWindow(QMainWindow):
         self.footer_status.setStyleSheet(
             f"border: none; color: {COLORS['text_secondary']};"
         )
+        if hasattr(self, "preview_bar"):
+            self.preview_bar.apply_theme()
 
         # Единые горячие клавиши для всех разделов: Ctrl+F (фильтр), Ctrl+T (новая вкладка), Ctrl+W (закрыть вкладку)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._shortcut_focus_filter)
@@ -1363,6 +1670,14 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def show_preview_loading(self, title: str) -> int:
+        """Показывает мини-плеер в состоянии загрузки и возвращает ID запроса."""
+        return self.preview_bar.show_loading(title)
+
+    def play_audio_preview(self, title: str, url: str, headers: dict | None = None, req_id: int | None = None):
+        """Воспроизводит аудиопоток или локальный файл во встроенном мини-плеере."""
+        self.preview_bar.play_url(title, url, headers=headers, req_id=req_id)
 
     def open_youtube_video_list(self, url: str, mode: str = "channel", state: dict = None):
         """Открывает канал/плейлист как вкладку прямо внутри раздела YouTube."""

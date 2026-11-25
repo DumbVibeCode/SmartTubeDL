@@ -97,6 +97,7 @@ def make_chrome_options(profile_dir: str, perf_logging: bool = True):
     opts.add_argument("--restore-last-session=false")
     opts.add_argument("--no-first-run")
     opts.add_argument("--no-default-browser-check")
+    opts.add_argument("--mute-audio")
     opts.add_argument(f"user-agent={DEFAULT_USER_AGENT}")
     if perf_logging:
         opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})

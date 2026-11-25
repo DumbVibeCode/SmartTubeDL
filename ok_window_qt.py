@@ -54,6 +54,7 @@ class _Sig(QObject):
     results_ready = pyqtSignal(list)    # [{href, title}] видео со страницы
     search_done   = pyqtSignal()        # разблокировать кнопку
     error         = pyqtSignal(str)
+    preview_ready = pyqtSignal(str, str, int)  # (title, url, req_id)
 
 
 # JS: собрать все ссылки на видео на странице и выбрать для каждой осмысленный
@@ -619,6 +620,7 @@ class OKSearchWindow(QWidget):
         self._sig.results_ready.connect(self._populate_table)
         self._sig.search_done.connect(self._on_search_done)
         self._sig.error.connect(lambda m: QMessageBox.critical(self, "Ошибка", m))
+        self._sig.preview_ready.connect(self._on_preview_ready)
 
     def _open_history(self):
         w = self.window()
@@ -982,18 +984,37 @@ class OKSearchWindow(QWidget):
         return None
 
     def _fetch_stream_by_tid(self, tid: str) -> str | None:
-        """Мгновенно получает URL MP3 через внутренний store.api.post('play', {tid})."""
+        """Мгновенно получает URL MP3 через внутренний store.player.playTrack(tid)."""
         if not tid or not self.driver:
             return None
-        try:
-            self.driver.set_script_timeout(15)
-            res = self.driver.execute_async_script(_FETCH_STREAM_BY_TID_JS, tid)
-            if isinstance(res, dict) and res.get("ok") and res.get("play"):
-                return res["play"]
-            if isinstance(res, dict) and res.get("err"):
-                log_message(f"DEBUG OK store.api.post(play, {tid}): {res['err']}")
-        except Exception as e:
-            log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
+        for attempt in range(2):
+            try:
+                self.driver.set_script_timeout(15)
+                res = self.driver.execute_async_script(_FETCH_STREAM_BY_TID_JS, tid)
+                if isinstance(res, dict) and res.get("ok") and res.get("play"):
+                    return res["play"]
+                err = res.get("err") if isinstance(res, dict) else ""
+                if err:
+                    log_message(f"DEBUG OK store.api.post(play, {tid}): {err}")
+                # Если плеер ОК ещё не загружен (например, сохранённая вкладка после перезапуска) —
+                # открываем ok.ru/music один раз и повторяем попытку
+                if attempt == 0 and (not err or "not found" in str(err).lower() or err in ("no_store", "no_player")):
+                    cur_url = (self.driver.current_url or "").lower()
+                    if "/music" not in cur_url:
+                        log_message("INFO OK: открываю ok.ru/music для инициализации плеера")
+                        self.driver.get("https://ok.ru/music")
+                    for _ in range(24):
+                        time.sleep(0.25)
+                        ready = self.driver.execute_script(
+                            "var el = document.querySelector('wm-app') || document.querySelector('wm-player');"
+                            "return !!(el && el.store && el.store.player);"
+                        )
+                        if ready:
+                            break
+                    continue
+            except Exception as e:
+                log_message(f"WARNING OK _fetch_stream_by_tid({tid}): {e}")
+            break
         return None
 
     def _worker_music_download(self, tracks: list):
@@ -1166,10 +1187,47 @@ class OKSearchWindow(QWidget):
                 pass
             return False
 
+    def _on_preview_ready(self, title: str, url: str, req_id: int):
+        w = self.window()
+        if not url:
+            self._sig.status.emit(f"Не удалось получить поток для «{title}»")
+            if w is not None and hasattr(w, "preview_bar"):
+                w.preview_bar.time_lbl.setText("Ошибка")
+            return
+        if w is not None and hasattr(w, "play_audio_preview"):
+            w.play_audio_preview(title, url, headers={"Referer": "https://ok.ru/"}, req_id=req_id)
+
+    def _preview_selected(self):
+        if self._mode == "video":
+            return
+        if not self.driver:
+            self._sig.status.emit("Браузер ещё не готов")
+            return
+        tracks = self._selected_tracks()
+        if not tracks:
+            return
+        t = tracks[0]
+        tid = t.get("tid") or ""
+        label = f"{t.get('artist', '')} — {t.get('title', '')}".strip(" —") or "OK.ru"
+        if not tid:
+            self._sig.status.emit("Для этого трека нет ID потока — обновите поиск")
+            return
+        w = self.window()
+        req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
+
+        def _worker():
+            url = self._fetch_stream_by_tid(tid) or ""
+            self._sig.preview_ready.emit(label, url, req_id)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _show_ctx_menu(self, pos):
         if self.table.rowCount() == 0:
             return
         menu = QMenu(self)
+        act_play = None
+        if self._mode != "video":
+            act_play = menu.addAction("▶ Прослушать")
         act_dl = menu.addAction("⬇ Скачать выбранные")
         act_copy = None
         act_copy_track = None
@@ -1178,7 +1236,9 @@ class OKSearchWindow(QWidget):
         else:
             act_copy_track = menu.addAction("Скопировать исполнителя и название")
         act = menu.exec(self.table.viewport().mapToGlobal(pos))
-        if act == act_dl:
+        if act_play is not None and act == act_play:
+            self._preview_selected()
+        elif act == act_dl:
             self._download_selected()
         elif act_copy is not None and act == act_copy:
             urls = self._selected_urls()
