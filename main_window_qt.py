@@ -2106,11 +2106,18 @@ class MainWindow(QMainWindow):
     def _on_settings_page_changed(self):
         self.sync_footer_settings()
         if self.app_ref and hasattr(self.app_ref, "tray"):
-            self.app_ref.tray._set_format(settings.get("download_format", "mp4"))
-            self.app_ref.tray._set_quality(settings.get("video_quality", "1080p"))
-            self.app_ref.tray.action_auto.setChecked(settings.get("auto_capture_enabled", True))
-            self.app_ref.tray.action_convert.setChecked(settings.get("conversion_enabled", True))
-            self.app_ref.tray.action_desc.setChecked(settings.get("download_with_description", False))
+            tray = self.app_ref.tray
+            fmt = settings.get("download_format", "mp4")
+            qual = settings.get("video_quality", "1080p")
+            cur_fmt_checked = any(a.isChecked() and fmt in a.text().lower() for a in tray.format_actions)
+            if not cur_fmt_checked:
+                tray._set_format(fmt)
+            cur_qual_checked = any(a.isChecked() and qual in a.text() for a in tray.quality_actions)
+            if not cur_qual_checked:
+                tray._set_quality(qual)
+            tray.action_auto.setChecked(settings.get("auto_capture_enabled", True))
+            tray.action_convert.setChecked(settings.get("conversion_enabled", True))
+            tray.action_desc.setChecked(settings.get("download_with_description", False))
 
     def _toggle_pause(self):
         if _utils.is_paused:
