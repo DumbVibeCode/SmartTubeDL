@@ -432,7 +432,7 @@ class UnifiedMusicSearchPage(QWidget):
         try:
             if src == "mailru":
                 from mailru_download import search_mailru_tracks
-                raw = search_mailru_tracks(query, max_results=100)
+                raw = search_mailru_tracks(query, max_results=0)
                 for t in raw:
                     items.append({
                         "source": "mailru",
@@ -447,6 +447,10 @@ class UnifiedMusicSearchPage(QWidget):
 
             elif src == "youtube":
                 import yt_dlp
+                try:
+                    yt_limit = max(10, min(500, int(str(settings.get("max_results", "100")).strip())))
+                except (TypeError, ValueError):
+                    yt_limit = 100
                 opts = {
                     "quiet": True,
                     "no_warnings": True,
@@ -455,7 +459,7 @@ class UnifiedMusicSearchPage(QWidget):
                     "noplaylist": True,
                 }
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch100:{query}", download=False)
+                    info = ydl.extract_info(f"ytsearch{yt_limit}:{query}", download=False)
                 entries = (info or {}).get("entries") or []
                 for e in entries:
                     if not isinstance(e, dict):
@@ -493,7 +497,7 @@ class UnifiedMusicSearchPage(QWidget):
                 else:
                     vk_page._worker_search_navigate(query)
                     time.sleep(1.5)
-                    raw = vk_page._parse_audio_rows(limit=100) if hasattr(vk_page, "_parse_audio_rows") else []
+                    raw = vk_page._scroll_and_parse(0)
                     for t in raw:
                         items.append({
                             "source": "vk",
@@ -517,18 +521,41 @@ class UnifiedMusicSearchPage(QWidget):
                 if ok_page is None or not getattr(ok_page, "driver", None):
                     note = "ОК: браузер не успел запуститься"
                 else:
-                    from ok_window_qt import _LIST_TRACKS_JS
+                    from ok_window_qt import _LIST_TRACKS_JS, _SCROLL_MUSIC_STEP_JS
                     ok_page.driver.get("https://ok.ru/music/search/" + quote(query))
+                    seen_ok = set()
                     raw = []
                     for _ in range(20):
                         time.sleep(0.35)
                         try:
-                            raw = ok_page.driver.execute_script(_LIST_TRACKS_JS) or []
+                            batch = ok_page.driver.execute_script(_LIST_TRACKS_JS) or []
                         except Exception:
-                            raw = []
-                        if raw:
+                            batch = []
+                        if batch:
                             break
-                    for t in raw[:100]:
+                    end_hits = 0
+                    for _ in range(180):
+                        try:
+                            batch = ok_page.driver.execute_script(_LIST_TRACKS_JS) or []
+                        except Exception:
+                            batch = []
+                        for t in batch:
+                            k = (t.get("tid") or "", t.get("artist", ""), t.get("title", ""))
+                            if k not in seen_ok:
+                                seen_ok.add(k)
+                                raw.append(t)
+                        try:
+                            info = ok_page.driver.execute_script(_SCROLL_MUSIC_STEP_JS) or {}
+                        except Exception:
+                            info = {}
+                        time.sleep(0.25)
+                        if not info.get("moved", False) and info.get("atEnd", False):
+                            end_hits += 1
+                            if end_hits >= 3:
+                                break
+                        else:
+                            end_hits = 0
+                    for t in raw:
                         items.append({
                             "source": "ok",
                             "artist": t.get("artist", ""),
@@ -807,7 +834,7 @@ class UnifiedMusicSearchPage(QWidget):
                 data.append({
                     "query": t.query,
                     "title": self.tabs.tabText(i),
-                    "items": t.items[:300],
+                    "items": t.items[:2000],
                     "active": i == cur_idx,
                 })
             atomic_write_json(_TABS_FILE, data, indent=2)
