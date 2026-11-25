@@ -110,6 +110,28 @@ def clear_queue_file():
             log_message(f"ERROR Ошибка при очистке файла очереди: {e}")
 
 
+def move_in_queue(url: str, delta: int) -> bool:
+    """Сдвигает URL в очереди на delta (-1 вверх, +1 вниз), не трогая активную загрузку."""
+    import utils as _u
+    cur = _u.current_download_url
+    with _queue_lock:
+        urls = _read_queue_unlocked()
+        if url not in urls or url == cur:
+            return False
+        idx = urls.index(url)
+        new_idx = idx + (-1 if delta < 0 else 1)
+        min_idx = 1 if (cur and urls and urls[0] == cur) else 0
+        if new_idx < min_idx or new_idx >= len(urls):
+            return False
+        urls[idx], urls[new_idx] = urls[new_idx], urls[idx]
+        try:
+            _write_queue_unlocked(urls)
+            return True
+        except Exception as e:
+            log_message(f"ERROR move_in_queue: {e}")
+            return False
+
+
 def get_next_url():
     """Возвращает следующий URL из очереди"""
     with _queue_lock:

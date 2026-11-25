@@ -737,6 +737,8 @@ class HistoryPage(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setDefaultSectionSize(24)
+        self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_ctx_menu)
         self.table.doubleClicked.connect(lambda _idx: self._download_selected())
         hh = self.table.horizontalHeader()
         # Фиксированные/интерактивные ширины вместо ResizeToContents —
@@ -762,6 +764,17 @@ class HistoryPage(QWidget):
         btn_folder.setProperty("secondary", True)
         btn_folder.clicked.connect(self._open_folder)
         btns.addWidget(btn_folder)
+
+        btn_export = QPushButton("Экспорт (.txt)")
+        btn_export.setProperty("secondary", True)
+        btn_export.setToolTip("Сохранить ссылки выбранных (или всех отфильтрованных) записей в .txt")
+        btn_export.clicked.connect(self._export_links)
+        btns.addWidget(btn_export)
+
+        btn_del = QPushButton("Удалить выбранные")
+        btn_del.setProperty("secondary", True)
+        btn_del.clicked.connect(self._delete_selected)
+        btns.addWidget(btn_del)
 
         btns.addStretch()
         self.count_lbl = QLabel("")
@@ -873,21 +886,159 @@ class HistoryPage(QWidget):
             self.table.setUpdatesEnabled(True)
         self.count_lbl.setText(f"Показано: {len(filtered)} из {len(self._entries)}")
 
+    def _selected_rows(self) -> list[int]:
+        return sorted({idx.row() for idx in self.table.selectedIndexes()})
+
+    def _show_ctx_menu(self, pos):
+        rows = self._selected_rows()
+        if not rows:
+            return
+        first_url = ""
+        it0 = self.table.item(rows[0], 0)
+        if it0:
+            first_url = str(it0.data(Qt.ItemDataRole.UserRole) or "")
+        has_http = any(
+            str((self.table.item(r, 0).data(Qt.ItemDataRole.UserRole) if self.table.item(r, 0) else "") or "").startswith(("http://", "https://"))
+            for r in rows
+        )
+        has_local = bool(first_url) and os.path.isfile(first_url)
+
+        menu = QMenu(self)
+        act_dl = menu.addAction("⬇ Скачать выбранные заново")
+        act_dl.setEnabled(has_http)
+        act_reveal = menu.addAction("📂 Показать файл в Проводнике")
+        act_reveal.setEnabled(has_local)
+        menu.addSeparator()
+        act_copy_url = menu.addAction("Копировать ссылки / пути")
+        act_copy_title = menu.addAction("Копировать названия")
+        menu.addSeparator()
+        act_del = menu.addAction("🗑 Удалить выбранные из истории")
+
+        act = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if act == act_dl and has_http:
+            self._download_selected()
+        elif act == act_reveal and has_local:
+            import subprocess
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(first_url)])
+        elif act == act_copy_url:
+            from PyQt6.QtWidgets import QApplication
+            vals = []
+            for r in rows:
+                it = self.table.item(r, 0)
+                u = str(it.data(Qt.ItemDataRole.UserRole) or "") if it else ""
+                if u:
+                    vals.append(u)
+            if vals:
+                QApplication.clipboard().setText("\n".join(vals))
+        elif act == act_copy_title:
+            from PyQt6.QtWidgets import QApplication
+            vals = [self.table.item(r, 2).text() for r in rows if self.table.item(r, 2)]
+            if vals:
+                QApplication.clipboard().setText("\n".join(vals))
+        elif act == act_del:
+            self._delete_selected()
+
+    def _delete_selected(self):
+        rows = self._selected_rows()
+        if not rows:
+            QMessageBox.information(self, "История", "Выберите записи для удаления.")
+            return
+        reply = QMessageBox.question(
+            self, "Удаление из истории",
+            f"Удалить выбранные записи ({len(rows)} шт.) из истории?\n(Скачанные файлы на диске не затрагиваются.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        to_remove = set()
+        for r in rows:
+            it_d = self.table.item(r, 0)
+            it_t = self.table.item(r, 2)
+            dt = it_d.text() if it_d else ""
+            title = it_t.text() if it_t else ""
+            url = str(it_d.data(Qt.ItemDataRole.UserRole) or "") if it_d else ""
+            to_remove.add((dt[:16], title, url))
+
+        # 1) Чистим download_history.json
+        from download_history import save_download_history
+        dh = load_download_history()
+        new_dh = []
+        for e in dh:
+            key = (str(e.get("date", ""))[:16], self._clean_title(str(e.get("title", ""))), str(e.get("url", "")))
+            if key not in to_remove:
+                new_dh.append(e)
+        if len(new_dh) != len(dh):
+            save_download_history(new_dh)
+
+        # 2) Чистим vk_history.json, если есть совпадения
+        vk_hist_file = os.path.join(os.getcwd(), "vk_history.json")
+        if os.path.exists(vk_hist_file):
+            try:
+                import json
+                from config import atomic_write_json
+                with open(vk_hist_file, "r", encoding="utf-8") as f:
+                    vk_recs = json.load(f) or []
+                new_vk = []
+                for r in vk_recs:
+                    lbl = f"{r.get('artist', '')} - {r.get('title', '')}".strip(" -") or os.path.basename(r.get("path", ""))
+                    key = (str(r.get("date", ""))[:16], lbl, str(r.get("path", "")))
+                    if key not in to_remove:
+                        new_vk.append(r)
+                if len(new_vk) != len(vk_recs):
+                    atomic_write_json(vk_hist_file, new_vk, indent=2)
+            except Exception as e:
+                log_message(f"WARNING Не удалось обновить vk_history.json: {e}")
+
+        self.reload(force=True)
+
+    def _export_links(self):
+        rows = self._selected_rows()
+        if not rows:
+            rows = list(range(self.table.rowCount()))
+        links = []
+        seen = set()
+        for r in rows:
+            it = self.table.item(r, 0)
+            u = str(it.data(Qt.ItemDataRole.UserRole) or "").strip() if it else ""
+            if u and u not in seen:
+                seen.add(u)
+                links.append(u)
+        if not links:
+            QMessageBox.information(self, "Экспорт", "Нет ссылок для экспорта.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт ссылок из истории",
+            os.path.join(settings.get("download_folder") or os.path.expanduser("~"), "history_links.txt"),
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(links) + "\n")
+            log_message(f"INFO Экспортировано ссылок из истории: {len(links)} -> {path}")
+            QMessageBox.information(self, "Экспорт", f"Сохранено ссылок: {len(links)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка экспорта", str(e))
+
     def _download_selected(self):
-        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        rows = self._selected_rows()
         if not rows:
             QMessageBox.information(self, "История", "Выберите хотя бы одно видео.")
             return
         added = 0
         for r in rows:
             it = self.table.item(r, 0)
-            url = it.data(Qt.ItemDataRole.UserRole) if it else ""
-            if url and add_to_queue(url):
+            url = str(it.data(Qt.ItemDataRole.UserRole) or "") if it else ""
+            if url.startswith(("http://", "https://")) and add_to_queue(url):
                 added += 1
         if added > 0:
             if not _utils.is_download_active():
                 threading.Thread(target=process_queue, daemon=True).start()
             QMessageBox.information(self, "Очередь", f"Добавлено в очередь: {added}")
+        else:
+            QMessageBox.information(self, "История", "Среди выбранных нет HTTP-ссылок для повторной загрузки.")
 
     def _open_folder(self):
         folder = settings.get("download_folder") or os.path.expanduser("~")
