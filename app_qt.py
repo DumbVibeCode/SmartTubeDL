@@ -195,7 +195,9 @@ class HistoryWindow(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
 
         # Растягиваем колонку "Название"
         table_header = self.table.horizontalHeader()

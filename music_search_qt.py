@@ -74,7 +74,9 @@ class _UnifiedMusicTab(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setSortingEnabled(True)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -254,14 +256,14 @@ class UnifiedMusicSearchPage(QWidget):
         self.chk_youtube.toggled.connect(self._save_sources)
         src_row.addWidget(self.chk_youtube)
 
-        self.chk_vk = QCheckBox("ВКонтакте (если открыт браузер)")
+        self.chk_vk = QCheckBox("ВКонтакте")
         self.chk_vk.setChecked(bool(saved_src.get("vk", False)))
-        self.chk_vk.toggled.connect(self._save_sources)
+        self.chk_vk.toggled.connect(self._on_vk_toggled)
         src_row.addWidget(self.chk_vk)
 
-        self.chk_ok = QCheckBox("Одноклассники (если открыт браузер)")
+        self.chk_ok = QCheckBox("Одноклассники")
         self.chk_ok.setChecked(bool(saved_src.get("ok", False)))
-        self.chk_ok.toggled.connect(self._save_sources)
+        self.chk_ok.toggled.connect(self._on_ok_toggled)
         src_row.addWidget(self.chk_ok)
 
         src_row.addStretch()
@@ -292,6 +294,18 @@ class UnifiedMusicSearchPage(QWidget):
         self.status_lbl.setProperty("secondary", True)
         foot.addWidget(self.status_lbl, 1)
         lay.addLayout(foot)
+
+    def _on_vk_toggled(self, checked: bool):
+        self._save_sources()
+        if checked and not self._restoring and self._mw is not None:
+            if getattr(self._mw, "vk_page", None) is None:
+                self._mw._ensure_page(self._mw.IDX_VK)
+
+    def _on_ok_toggled(self, checked: bool):
+        self._save_sources()
+        if checked and not self._restoring and self._mw is not None:
+            if getattr(self._mw, "ok_page", None) is None:
+                self._mw._ensure_page(self._mw.IDX_OK)
 
     def _save_sources(self):
         settings["unified_sources"] = {
@@ -376,8 +390,12 @@ class UnifiedMusicSearchPage(QWidget):
             sources.append("youtube")
         if self.chk_vk.isChecked():
             sources.append("vk")
+            if self._mw is not None and getattr(self._mw, "vk_page", None) is None:
+                self._mw._ensure_page(self._mw.IDX_VK)
         if self.chk_ok.isChecked():
             sources.append("ok")
+            if self._mw is not None and getattr(self._mw, "ok_page", None) is None:
+                self._mw._ensure_page(self._mw.IDX_OK)
         if not sources:
             QMessageBox.information(self, "Поиск музыки", "Отметьте хотя бы один источник поиска.")
             return
@@ -437,7 +455,7 @@ class UnifiedMusicSearchPage(QWidget):
                     "noplaylist": True,
                 }
                 with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch25:{query}", download=False)
+                    info = ydl.extract_info(f"ytsearch100:{query}", download=False)
                 entries = (info or {}).get("entries") or []
                 for e in entries:
                     if not isinstance(e, dict):
@@ -464,12 +482,18 @@ class UnifiedMusicSearchPage(QWidget):
 
             elif src == "vk":
                 vk_page = getattr(self._mw, "vk_page", None)
+                if vk_page is not None and not getattr(vk_page, "driver", None):
+                    self._sig.status.emit("ВК: ожидаю запуск браузера...")
+                    for _ in range(90):
+                        if getattr(vk_page, "driver", None):
+                            break
+                        time.sleep(0.5)
                 if vk_page is None or not getattr(vk_page, "driver", None):
-                    note = "ВК: браузер не запущен (откройте раздел ВКонтакте)"
+                    note = "ВК: браузер не успел запуститься"
                 else:
                     vk_page._worker_search_navigate(query)
                     time.sleep(1.5)
-                    raw = vk_page._parse_audio_rows(limit=80) if hasattr(vk_page, "_parse_audio_rows") else []
+                    raw = vk_page._parse_audio_rows(limit=100) if hasattr(vk_page, "_parse_audio_rows") else []
                     for t in raw:
                         items.append({
                             "source": "vk",
@@ -484,8 +508,14 @@ class UnifiedMusicSearchPage(QWidget):
 
             elif src == "ok":
                 ok_page = getattr(self._mw, "ok_page", None)
+                if ok_page is not None and not getattr(ok_page, "driver", None):
+                    self._sig.status.emit("ОК: ожидаю запуск браузера...")
+                    for _ in range(90):
+                        if getattr(ok_page, "driver", None):
+                            break
+                        time.sleep(0.5)
                 if ok_page is None or not getattr(ok_page, "driver", None):
-                    note = "ОК: браузер не запущен (откройте раздел Одноклассники)"
+                    note = "ОК: браузер не успел запуститься"
                 else:
                     from ok_window_qt import _LIST_TRACKS_JS
                     ok_page.driver.get("https://ok.ru/music/search/" + quote(query))
@@ -498,7 +528,7 @@ class UnifiedMusicSearchPage(QWidget):
                             raw = []
                         if raw:
                             break
-                    for t in raw[:80]:
+                    for t in raw[:100]:
                         items.append({
                             "source": "ok",
                             "artist": t.get("artist", ""),
