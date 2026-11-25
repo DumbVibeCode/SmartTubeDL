@@ -1318,7 +1318,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
                     yandex_exe,
                     f"--remote-debugging-port={debug_port}",
                     f"--user-data-dir={profile_dir}",
-                    "--no-first-run", "--start-maximized",
+                    "--no-first-run", "--start-maximized", "--mute-audio",
                 ])
                 time.sleep(4)  # ждём запуска DevTools
 
@@ -1346,6 +1346,7 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
                     o.add_argument("--restore-last-session=false")
                     o.add_argument("--no-first-run")
                     o.add_argument("--no-default-browser-check")
+                    o.add_argument("--mute-audio")
                     o.add_argument(
                         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
