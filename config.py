@@ -33,6 +33,9 @@ DEFAULT_SETTINGS = {
     "last_update_check": 0,
     "subfolder_mode": "none",
     "filename_template": "default",
+    "fix_mp3_tags": True,
+    "rate_limit_mbps": 0.0,
+    "download_retries": 3,
 }
 
 def format_size(size_bytes):

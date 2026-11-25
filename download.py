@@ -372,15 +372,21 @@ def download_video(url, from_queue=False):
 
     # В outtmpl литеральный '%' надо экранировать как '%%'
     _outtmpl_base = unique_base.replace('%', '%%')
+    _retries = int(settings.get("download_retries", 3) or 0)
+    _rate_mbps = float(settings.get("rate_limit_mbps", 0) or 0)
     ydl_opts = {
         'outtmpl': os.path.join(save_path, f'{_outtmpl_base}.%(ext)s'),
         'restrict_filenames': False,
         'windowsfilenames': False,
         'noplaylist': True,
+        'retries': _retries,
+        'fragment_retries': _retries,
         'logger': _YtdlpLogger(),
         'js_runtimes': {'node': {}},
         'remote_components': ['ejs:github'],
     }
+    if _rate_mbps > 0:
+        ydl_opts['ratelimit'] = int(_rate_mbps * 1024 * 1024)
     if _is_yt:
         ydl_opts.update(_yt_cookie_opts())
     elif _has_cookies:
@@ -476,6 +482,10 @@ def download_video(url, from_queue=False):
                 final_file = converted_file
         else:
             log_message("SUCCESS Файл сохранен в исходном формате")
+
+        # Умное прописывание ID3v2.3-тегов для MP3 (если пустые или битые)
+        if final_file and final_file.lower().endswith(".mp3"):
+            _dl_utils.ensure_mp3_tags(final_file, artist=author, title=video_title)
 
         # Опция «Скачивать с описаниями»: описание в отдельный .txt с именем видео
         if settings.get("download_with_description", False):

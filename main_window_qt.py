@@ -525,6 +525,7 @@ class MailRuPage(QWidget):
                         for chunk in r.iter_content(65536):
                             if chunk:
                                 f.write(chunk)
+                    _utils.ensure_mp3_tags(path, artist=artist, title=title)
                     ok_cnt += 1
                     log_message(f"SUCCESS Mail.ru: {os.path.basename(path)}")
                     try:
@@ -1131,6 +1132,33 @@ class SettingsPage(QWidget):
         r_fmt.addStretch()
         gl.addLayout(r_fmt)
 
+        # Лимит скорости и авто-повторы при обрыве
+        r_net = QHBoxLayout()
+        r_net.addWidget(QLabel("Лимит скорости (YouTube):"))
+        self.rate_combo = QComboBox()
+        for val, lbl in [
+            (0.0, "Без ограничений"),
+            (0.5, "0.5 МБ/с"),
+            (1.0, "1 МБ/с"),
+            (2.0, "2 МБ/с"),
+            (5.0, "5 МБ/с"),
+            (10.0, "10 МБ/с"),
+            (20.0, "20 МБ/с"),
+        ]:
+            self.rate_combo.addItem(lbl, val)
+        self.rate_combo.currentIndexChanged.connect(self._save)
+        r_net.addWidget(self.rate_combo)
+
+        r_net.addSpacing(20)
+        r_net.addWidget(QLabel("Повторов при обрыве:"))
+        self.retries_combo = QComboBox()
+        for cnt in (0, 2, 3, 5, 10):
+            self.retries_combo.addItem(str(cnt), cnt)
+        self.retries_combo.currentIndexChanged.connect(self._save)
+        r_net.addWidget(self.retries_combo)
+        r_net.addStretch()
+        gl.addLayout(r_net)
+
         # Чекбоксы поведения
         self.chk_auto = QCheckBox("Автоперехват ссылок YouTube из буфера обмена")
         self.chk_auto.setChecked(settings.get("auto_capture_enabled", True))
@@ -1141,6 +1169,11 @@ class SettingsPage(QWidget):
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
         self.chk_conv.toggled.connect(self._save)
         gl.addWidget(self.chk_conv)
+
+        self.chk_fix_tags = QCheckBox("Дописывать / чинить ID3-теги MP3 (UTF-16, если пустые или битые)")
+        self.chk_fix_tags.setChecked(settings.get("fix_mp3_tags", True))
+        self.chk_fix_tags.toggled.connect(self._save)
+        gl.addWidget(self.chk_fix_tags)
 
         self.chk_desc = QCheckBox("Скачивать с описаниями (сохранять .txt рядом)")
         self.chk_desc.setChecked(settings.get("download_with_description", False))
@@ -1251,26 +1284,35 @@ class SettingsPage(QWidget):
     def sync_from_settings(self):
         self.dir_edit.setText(settings.get("download_folder", ""))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+                  self.rate_combo, self.retries_combo,
                   self.subfolder_combo, self.filename_combo,
-                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
+                  self.chk_auto, self.chk_conv, self.chk_fix_tags,
+                  self.chk_desc, self.chk_save_exit,
                   self.api_key_edit, self.inv_edit):
             w.blockSignals(True)
         self.fmt_combo.setCurrentText(settings.get("download_format", "mp4"))
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
         self.browser_combo.setCurrentText(settings.get("cookies_browser", "firefox"))
+        rate_idx = self.rate_combo.findData(float(settings.get("rate_limit_mbps", 0.0) or 0.0))
+        self.rate_combo.setCurrentIndex(rate_idx if rate_idx >= 0 else 0)
+        ret_idx = self.retries_combo.findData(int(settings.get("download_retries", 3) or 0))
+        self.retries_combo.setCurrentIndex(ret_idx if ret_idx >= 0 else 2)
         sub_idx = self.subfolder_combo.findData(settings.get("subfolder_mode", "none"))
         self.subfolder_combo.setCurrentIndex(sub_idx if sub_idx >= 0 else 0)
         tpl_idx = self.filename_combo.findData(settings.get("filename_template", "default"))
         self.filename_combo.setCurrentIndex(tpl_idx if tpl_idx >= 0 else 0)
         self.chk_auto.setChecked(settings.get("auto_capture_enabled", True))
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
+        self.chk_fix_tags.setChecked(settings.get("fix_mp3_tags", True))
         self.chk_desc.setChecked(settings.get("download_with_description", False))
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
         self.api_key_edit.setText(settings.get("youtube_api_key", ""))
         self.inv_edit.setText(settings.get("invidious_url", "http://localhost:3000"))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+                  self.rate_combo, self.retries_combo,
                   self.subfolder_combo, self.filename_combo,
-                  self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
+                  self.chk_auto, self.chk_conv, self.chk_fix_tags,
+                  self.chk_desc, self.chk_save_exit,
                   self.api_key_edit, self.inv_edit):
             w.blockSignals(False)
         self._update_org_preview()
@@ -1292,10 +1334,13 @@ class SettingsPage(QWidget):
         settings["download_format"] = self.fmt_combo.currentText()
         settings["video_quality"] = self.qual_combo.currentText()
         settings["cookies_browser"] = self.browser_combo.currentText()
+        settings["rate_limit_mbps"] = float(self.rate_combo.currentData() or 0.0)
+        settings["download_retries"] = int(self.retries_combo.currentData() if self.retries_combo.currentData() is not None else 3)
         settings["subfolder_mode"] = self.subfolder_combo.currentData() or "none"
         settings["filename_template"] = self.filename_combo.currentData() or "default"
         settings["auto_capture_enabled"] = self.chk_auto.isChecked()
         settings["conversion_enabled"] = self.chk_conv.isChecked()
+        settings["fix_mp3_tags"] = self.chk_fix_tags.isChecked()
         settings["download_with_description"] = self.chk_desc.isChecked()
         settings["save_settings_on_exit"] = self.chk_save_exit.isChecked()
         settings["youtube_api_key"] = self.api_key_edit.text().strip()
