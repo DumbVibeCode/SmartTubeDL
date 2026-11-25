@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel, QPushButton, QHeaderView, QAbstractItemView, QMessageBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QShortcut, QKeySequence
 
 import utils as _utils
 from config import settings
@@ -62,6 +62,10 @@ class QueueWindow(QWidget):
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
 
         layout.addWidget(self.table)
+
+        del_sc = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table)
+        del_sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        del_sc.activated.connect(self._delete_selected)
 
         btn_layout = QHBoxLayout()
 
