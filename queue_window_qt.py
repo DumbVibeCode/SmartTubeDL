@@ -1,15 +1,20 @@
+import os
 import threading
 import re
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QLabel, QPushButton, QHeaderView, QAbstractItemView, QMessageBox
+    QLabel, QPushButton, QHeaderView, QAbstractItemView, QMessageBox, QFileDialog
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont
 
 import utils as _utils
-from queues import get_queue_urls, remove_from_queue
+from config import settings
+from queues import (
+    get_queue_urls, remove_from_queue, add_to_queue,
+    clear_queue_file, move_in_queue, process_queue
+)
 from logger import log_message
 
 
@@ -69,12 +74,41 @@ class QueueWindow(QWidget):
         self.delete_btn.clicked.connect(self._delete_selected)
         btn_layout.addWidget(self.delete_btn)
 
-        btn_layout.addStretch()
+        self.up_btn = QPushButton("▲")
+        self.up_btn.setObjectName("historyBtn")
+        self.up_btn.setProperty("secondary", True)
+        self.up_btn.setToolTip("Поднять выше в очереди")
+        self.up_btn.clicked.connect(lambda: self._move_selected(-1))
+        btn_layout.addWidget(self.up_btn)
 
-        close_btn = QPushButton("Закрыть")
-        close_btn.setProperty("secondary", True)
-        close_btn.clicked.connect(self.close)
-        btn_layout.addWidget(close_btn)
+        self.down_btn = QPushButton("▼")
+        self.down_btn.setObjectName("historyBtn")
+        self.down_btn.setProperty("secondary", True)
+        self.down_btn.setToolTip("Опустить ниже в очереди")
+        self.down_btn.clicked.connect(lambda: self._move_selected(1))
+        btn_layout.addWidget(self.down_btn)
+
+        btn_layout.addSpacing(8)
+
+        import_btn = QPushButton("Импорт (.txt)")
+        import_btn.setProperty("secondary", True)
+        import_btn.setToolTip("Добавить ссылки из текстового файла в очередь")
+        import_btn.clicked.connect(self._import_queue)
+        btn_layout.addWidget(import_btn)
+
+        export_btn = QPushButton("Экспорт (.txt)")
+        export_btn.setProperty("secondary", True)
+        export_btn.setToolTip("Сохранить ссылки очереди в текстовый файл")
+        export_btn.clicked.connect(self._export_queue)
+        btn_layout.addWidget(export_btn)
+
+        clear_btn = QPushButton("Очистить")
+        clear_btn.setProperty("secondary", True)
+        clear_btn.setToolTip("Очистить ожидающие загрузки")
+        clear_btn.clicked.connect(self._clear_queue)
+        btn_layout.addWidget(clear_btn)
+
+        btn_layout.addStretch()
 
         layout.addLayout(btn_layout)
 
@@ -114,6 +148,8 @@ class QueueWindow(QWidget):
         for item in vk_queue:
             rows.append(("⏳ Ожидание", item["key"]))
 
+        selected_before = set(self._selected_urls())
+
         self.table.setRowCount(len(rows))
         for i, (status, url) in enumerate(rows):
             self.table.setItem(i, 0, QTableWidgetItem(status))
@@ -121,6 +157,8 @@ class QueueWindow(QWidget):
             title_item.setData(Qt.ItemDataRole.UserRole, url)
             title_item.setToolTip(url)
             self.table.setItem(i, 1, title_item)
+            if url in selected_before:
+                self.table.selectRow(i)
 
         if is_paused:
             self.pause_btn.setText("Возобновить")
@@ -214,6 +252,99 @@ class QueueWindow(QWidget):
             else:
                 _utils.update_status_ui("Ожидание...", -1)
 
+        self._refresh()
+
+    def _move_selected(self, delta: int):
+        urls = self._selected_urls()
+        if len(urls) != 1:
+            return
+        url = urls[0]
+        if url.startswith("vk:"):
+            q = _utils.vk_queue
+            idxs = [i for i, item in enumerate(q) if item["key"] == url]
+            if not idxs:
+                return
+            idx = idxs[0]
+            new_idx = idx + (-1 if delta < 0 else 1)
+            if 0 <= new_idx < len(q):
+                q[idx], q[new_idx] = q[new_idx], q[idx]
+                self._refresh()
+        else:
+            if move_in_queue(url, delta):
+                self._refresh()
+
+    def _export_queue(self):
+        urls = [u for u in get_queue_urls() if u.startswith(("http://", "https://"))]
+        if not urls:
+            QMessageBox.information(self, "Экспорт очереди", "В очереди нет HTTP-ссылок.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Экспорт очереди",
+            os.path.join(settings.get("download_folder") or os.path.expanduser("~"), "queue_links.txt"),
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(urls) + "\n")
+            log_message(f"INFO Экспортирована очередь ({len(urls)} ссылок) -> {path}")
+            QMessageBox.information(self, "Экспорт очереди", f"Сохранено ссылок: {len(urls)}")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка экспорта", str(e))
+
+    def _import_queue(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Импорт ссылок в очередь",
+            settings.get("download_folder") or os.path.expanduser("~"),
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = [ln.strip() for ln in f if ln.strip().startswith(("http://", "https://"))]
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка импорта", str(e))
+            return
+        added = 0
+        for u in lines:
+            if add_to_queue(u):
+                added += 1
+        if added > 0:
+            if not _utils.is_download_active():
+                threading.Thread(target=process_queue, daemon=True).start()
+            self._refresh()
+            QMessageBox.information(self, "Импорт очереди", f"Добавлено в очередь: {added}")
+        else:
+            QMessageBox.information(self, "Импорт очереди", "Новых ссылок для добавления не найдено.")
+
+    def _clear_queue(self):
+        cur = _utils.current_download_url
+        waiting_yt = [u for u in get_queue_urls() if u != cur]
+        waiting_vk = list(_utils.vk_queue)
+        if not cur and not waiting_yt and not waiting_vk:
+            return
+        reply = QMessageBox.question(
+            self, "Очистить очередь",
+            "Очистить всю очередь загрузок (включая отмену текущей загрузки, если она идёт)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if cur:
+            _utils.cancel_requested = True
+            _utils.stop_requested = True
+        else:
+            if _utils.is_paused:
+                _utils.is_paused = False
+                _utils.cleanup_download_fragments()
+            _utils.update_status_ui("Ожидание...", -1)
+        clear_queue_file()
+        for item in waiting_vk:
+            _utils.queue_titles.pop(item["key"], None)
+        _utils.vk_queue.clear()
+        log_message("INFO Очередь полностью очищена пользователем")
         self._refresh()
 
     def closeEvent(self, event):
