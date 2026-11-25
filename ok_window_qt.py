@@ -1172,6 +1172,7 @@ class OKSearchWindow(QWidget):
                     if not chunk:
                         break
                     f.write(chunk)
+            _utils.ensure_mp3_tags(path, artist=artist, title=title)
             log_message(f"SUCCESS OK музыка: {os.path.basename(path)}")
             try:
                 from download_history import add_to_history

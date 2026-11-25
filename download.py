@@ -372,11 +372,14 @@ def download_video(url, from_queue=False):
 
     # В outtmpl литеральный '%' надо экранировать как '%%'
     _outtmpl_base = unique_base.replace('%', '%%')
+    _retries = int(settings.get("download_retries", 3) or 0)
     ydl_opts = {
         'outtmpl': os.path.join(save_path, f'{_outtmpl_base}.%(ext)s'),
         'restrict_filenames': False,
         'windowsfilenames': False,
         'noplaylist': True,
+        'retries': _retries,
+        'fragment_retries': _retries,
         'logger': _YtdlpLogger(),
         'js_runtimes': {'node': {}},
         'remote_components': ['ejs:github'],
@@ -477,6 +480,10 @@ def download_video(url, from_queue=False):
         else:
             log_message("SUCCESS Файл сохранен в исходном формате")
 
+        # Умное прописывание ID3v2.3-тегов для MP3 (если пустые или битые)
+        if final_file and final_file.lower().endswith(".mp3"):
+            _dl_utils.ensure_mp3_tags(final_file, artist=author, title=video_title)
+
         # Опция «Скачивать с описаниями»: описание в отдельный .txt с именем видео
         if settings.get("download_with_description", False):
             _save_description(save_path, os.path.basename(final_file),
@@ -529,6 +536,43 @@ def download_video(url, from_queue=False):
             is_downloading = False
             _dl_utils.release_download()
 
+_rl_state = {"time": 0.0, "bytes": 0, "limit": 0.0}
+
+
+def _apply_rate_limit(downloaded_bytes: int):
+    """Динамический лимит скорости на лету (применяется сразу при смене настройки)."""
+    limit_mbps = float(settings.get("rate_limit_mbps", 0.0) or 0.0)
+    now = time.monotonic()
+    if limit_mbps <= 0:
+        _rl_state["limit"] = 0.0
+        _rl_state["time"] = now
+        _rl_state["bytes"] = downloaded_bytes
+        return
+    if _rl_state["limit"] != limit_mbps or downloaded_bytes < _rl_state["bytes"] or _rl_state["time"] == 0.0:
+        _rl_state["limit"] = limit_mbps
+        _rl_state["time"] = now
+        _rl_state["bytes"] = downloaded_bytes
+        return
+    delta_bytes = downloaded_bytes - _rl_state["bytes"]
+    if delta_bytes <= 0:
+        return
+    limit_bps = limit_mbps * 1024.0 * 1024.0
+    expected = delta_bytes / limit_bps
+    elapsed = now - _rl_state["time"]
+    if expected > elapsed:
+        wait = expected - elapsed
+        end_t = now + min(wait, 2.0)
+        while time.monotonic() < end_t:
+            if _dl_utils.cancel_requested or _dl_utils.stop_requested:
+                raise _UserStop()
+            time.sleep(min(0.05, max(0.0, end_t - time.monotonic())))
+    # Сдвигаем окно каждые 2 секунды, чтобы сглаживать рывки
+    now2 = time.monotonic()
+    if now2 - _rl_state["time"] >= 2.0:
+        _rl_state["time"] = now2
+        _rl_state["bytes"] = downloaded_bytes
+
+
 def progress_hook(d):
     try:
         for key in ("tmpfilename", "filename"):
@@ -550,6 +594,7 @@ def progress_hook(d):
 
             if "downloaded_bytes" in d and d["downloaded_bytes"] is not None:
                 _dl_utils.global_downloaded = d["downloaded_bytes"]
+                _apply_rate_limit(_dl_utils.global_downloaded)
                 update_speed(_dl_utils.global_downloaded)
 
             total = _dl_utils.global_file_size
@@ -561,6 +606,8 @@ def progress_hook(d):
             update_download_status("Готово!", 100, 0, 0)
             _dl_utils.reset_progress()
 
+    except _UserStop:
+        raise
     except Exception as e:
         log_message(f"Ошибка в progress_hook: {e}")
 

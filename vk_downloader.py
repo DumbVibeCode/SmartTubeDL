@@ -57,6 +57,7 @@ class VKDownloadMixin:
         self._sig.show_progress.emit(False)
         self._tray_status("Ожидание..." if not ok else "Готово!", -1)
         if ok:
+            _utils.ensure_mp3_tags(path, artist=d.get("artist", ""), title=d.get("title", ""))
             self._sig.status.emit("✓ Трек скачан!")
             _add_vk_history(d["artist"], d["title"], path)
         else:
@@ -176,6 +177,7 @@ class VKDownloadMixin:
                     self._sig.progress.emit(30 + completed / total * 70)
                     self._tray_status("Загрузка...", int(30 + completed / total * 70))
                     if ok:
+                        _utils.ensure_mp3_tags(job["path"], artist=d.get("artist", ""), title=d.get("title", ""))
                         ok_count += 1
                         _add_vk_history(d["artist"], d["title"], job["path"])
                     else:
@@ -201,6 +203,7 @@ class VKDownloadMixin:
                     else:
                         ok = self._dl_direct(job["url"], job["path"])
                 if ok:
+                    _utils.ensure_mp3_tags(job["path"], artist=d.get("artist", ""), title=d.get("title", ""))
                     ok_count += 1
                     fail_count -= 1
                     _add_vk_history(d["artist"], d["title"], job["path"])

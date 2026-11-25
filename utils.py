@@ -310,4 +310,125 @@ def format_download_filename(title: str, author: str = "", date_str: str = "",
 
     return safe_filename(raw, default="media")[:150].strip() or "media"
 
+
+def _is_broken_tag(val: str) -> bool:
+    """Определяет пустые, замещённые () или битые cp1251/latin1 (mojibake) ID3-теги."""
+    s = (val or "").strip()
+    if not s or s in ("?", "Unknown", "Unknown Artist", "Unknown Title"):
+        return True
+    if "\ufffd" in s:
+        return True
+    # Типичный mojibake: cp1251, прочитанный как latin1 (символы 0xC0..0xFF подряд)
+    latin_ext = sum(1 for ch in s if 0x00C0 <= ord(ch) <= 0x00FF)
+    cyr = sum(1 for ch in s if 0x0400 <= ord(ch) <= 0x04FF)
+    if latin_ext >= 3 and cyr == 0:
+        return True
+    # UTF-8, прочитанный как cp1251 (пары «Р...» / «С...»)
+    if ("Ð" in s or "Ñ" in s) and cyr == 0:
+        return True
+    return False
+
+
+def _try_fix_mojibake(val: str) -> str:
+    """Пробует аккуратно восстановить строку из latin1->cp1251 mojibake."""
+    s = (val or "").strip()
+    if not s or "\ufffd" in s:
+        return s
+    try:
+        fixed = s.encode("latin1").decode("cp1251")
+        if sum(1 for ch in fixed if 0x0400 <= ord(ch) <= 0x04FF) >= 2:
+            return fixed
+    except Exception:
+        pass
+    return s
+
+
+def ensure_mp3_tags(path: str, artist: str = "", title: str = "") -> bool:
+    """Умно дописывает/чинит ID3v2.3 (UTF-16) теги в MP3 без перекодирования аудио.
+
+    Если artist и title уже валидные и без кракозябр — файл не трогается.
+    Если пустые или битые — прописывает artist/title через ffmpeg -c copy -id3v2_version 3.
+    """
+    from config import settings
+    if not settings.get("fix_mp3_tags", True):
+        return False
+    if not path or not path.lower().endswith(".mp3") or not os.path.isfile(path):
+        return False
+
+    import json
+    import shutil
+    import subprocess
+
+    ffprobe = shutil.which("ffprobe")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return False
+
+    existing = {}
+    if ffprobe:
+        try:
+            cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            out = subprocess.check_output(
+                [ffprobe, "-v", "quiet", "-print_format", "json", "-show_entries", "format_tags", path],
+                creationflags=cf,
+                timeout=10,
+            )
+            data = json.loads(out.decode("utf-8", errors="replace"))
+            raw_tags = (data.get("format") or {}).get("tags") or {}
+            existing = {k.lower(): str(v) for k, v in raw_tags.items()}
+        except Exception:
+            existing = {}
+
+    cur_artist = existing.get("artist", "")
+    cur_title = existing.get("title", "")
+    cur_album = existing.get("album", "")
+    cur_comment = existing.get("comment", "")
+
+    need_artist = bool(artist and _is_broken_tag(cur_artist))
+    need_title = bool(title and _is_broken_tag(cur_title))
+    fixed_album = _try_fix_mojibake(cur_album) if _is_broken_tag(cur_album) and cur_album else ""
+    fixed_comment = _try_fix_mojibake(cur_comment) if _is_broken_tag(cur_comment) and cur_comment else ""
+    need_album = bool(fixed_album and fixed_album != cur_album)
+    need_comment = bool(fixed_comment and fixed_comment != cur_comment)
+
+    if not (need_artist or need_title or need_album or need_comment):
+        return False
+
+    tmp_path = path + ".tagtmp.mp3"
+    cmd = [
+        ffmpeg, "-y", "-v", "error",
+        "-i", path,
+        "-c", "copy",
+        "-map_metadata", "0",
+        "-id3v2_version", "3",
+        "-write_id3v1", "0",
+    ]
+    if need_artist:
+        cmd.extend(["-metadata", f"artist={artist.strip()}"])
+    if need_title:
+        cmd.extend(["-metadata", f"title={title.strip()}"])
+    if need_album:
+        cmd.extend(["-metadata", f"album={fixed_album}"])
+    if need_comment:
+        cmd.extend(["-metadata", f"comment={fixed_comment}"])
+    cmd.append(tmp_path)
+
+    try:
+        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        res = subprocess.run(cmd, creationflags=cf, timeout=20, capture_output=True)
+        if res.returncode == 0 and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+            os.replace(tmp_path, path)
+            log_message(f"INFO ID3-теги обновлены (ID3v2.3): {os.path.basename(path)}")
+            return True
+    except Exception as e:
+        log_message(f"WARNING ensure_mp3_tags '{os.path.basename(path)}': {e}")
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+    return False
+
+
     

@@ -855,7 +855,8 @@ class TrayIcon(QSystemTrayIcon):
         for action in self.quality_actions:
             action.setEnabled(is_video)
         self._original_icon = self._create_format_icon(fmt)
-        self.setIcon(self._original_icon)
+        if not _utils.is_download_active():
+            self.setIcon(self._original_icon)
         self.update_status(self.download_status)
         if self.app.main_window is not None:
             self.app.main_window.sync_footer_settings()
