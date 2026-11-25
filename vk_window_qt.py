@@ -986,6 +986,15 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         tab = self._current_tab()
         vk_query = getattr(tab, "query", "") if tab else ""
         pl_url = getattr(tab, "playlist_url", None) if tab else None
+        cur_nav = (pl_url or vk_query or "").strip()
+        sample_fids = []
+        t_cur = self._t()
+        if t_cur is not None:
+            for r in range(min(10, t_cur.rowCount())):
+                it0 = t_cur.item(r, 0)
+                rd = it0.data(Qt.ItemDataRole.UserRole) if it0 else None
+                if isinstance(rd, dict) and rd.get("full_id"):
+                    sample_fids.append(rd["full_id"])
 
         def _has_track_in_dom(target_fid: str) -> bool:
             try:
@@ -994,6 +1003,23 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
                     "return !!(document.querySelector('a[href^=\"/audio' + f + '\"]') "
                     "|| document.querySelector('[data-testid=\"MusicTrackRow_Title\"][href^=\"/audio' + f + '\"]'));",
                     target_fid
+                ))
+            except Exception:
+                return False
+
+        def _any_in_dom(fids: list) -> bool:
+            if not fids:
+                return False
+            try:
+                return bool(self.driver.execute_script(
+                    "var arr = arguments[0];"
+                    "for (var i = 0; i < arr.length; i++) {"
+                    "  var f = arr[i];"
+                    "  if (document.querySelector('a[href^=\"/audio' + f + '\"]') "
+                    "      || document.querySelector('[data-testid=\"MusicTrackRow_Title\"][href^=\"/audio' + f + '\"]')) return true;"
+                    "}"
+                    "return false;",
+                    fids
                 ))
             except Exception:
                 return False
@@ -1023,20 +1049,32 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
 
         def _worker():
             url = ""
-            # 1) Если трек уже есть в текущем DOM (или ниже по скроллу на открытой странице)
+            # 1) Если трек уже есть в текущем DOM — играем мгновенно
             if self.driver and _has_track_in_dom(fid):
                 url = self._get_audio_url(fid) or ""
 
-            # 2) Если не нашли — перезапускаем поиск / открываем страницу вкладки и крутим до трека
-            if not url and self.driver and (pl_url or vk_query):
+            # 2) Если в браузере УЖЕ открыт этот же список (совпадает ключ вкладки или видны её треки) —
+            # просто прокручиваем текущую страницу до нужного трека БЕЗ перезапуска поиска
+            if not url and self.driver:
+                same_list = (
+                    (bool(cur_nav) and getattr(self, "_browser_loaded_key", None) == cur_nav and self._rows_present())
+                    or _any_in_dom(sample_fids)
+                )
+                if same_list:
+                    self._browser_loaded_key = cur_nav
+                    if _scroll_until_track(fid):
+                        url = self._get_audio_url(fid) or ""
+
+            # 3) Перезапускаем поиск ТОЛЬКО если в браузере открыт другой список/страница
+            if not url and self.driver and cur_nav:
                 try:
                     self._sig.status.emit("Открываю поиск ВК в браузере...")
-                    nav = (pl_url or vk_query).strip()
-                    if nav.startswith("http") or "vk.com" in nav or "vk.ru" in nav:
-                        self.driver.get(nav if nav.startswith("http") else "https://" + nav)
+                    if cur_nav.startswith("http") or "vk.com" in cur_nav or "vk.ru" in cur_nav:
+                        self.driver.get(cur_nav if cur_nav.startswith("http") else "https://" + cur_nav)
                     else:
-                        self._worker_search_navigate(nav)
+                        self._worker_search_navigate(cur_nav)
                     WebDriverWait(self.driver, 15).until(lambda _d: self._rows_present())
+                    self._browser_loaded_key = cur_nav
                     time.sleep(0.5)
                     if _scroll_until_track(fid):
                         url = self._get_audio_url(fid) or ""
