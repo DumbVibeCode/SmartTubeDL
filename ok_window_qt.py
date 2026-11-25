@@ -1199,22 +1199,45 @@ class OKSearchWindow(QWidget):
         if w is not None and hasattr(w, "play_audio_preview"):
             w.play_audio_preview(title, url, headers={"Referer": "https://ok.ru/"}, req_id=req_id)
 
-    def _preview_selected(self):
+    def _preview_selected(self, row: int | None = None):
         if self._mode == "video":
             return
         if not self.driver:
             self._sig.status.emit("Браузер ещё не готов")
             return
-        tracks = self._selected_tracks()
-        if not tracks:
+        tab = self._cur_tab()
+        tbl = tab.table
+        if row is None:
+            rows = sorted({idx.row() for idx in tbl.selectedIndexes()})
+            if not rows:
+                return
+            row = rows[0]
+        if row < 0 or row >= tbl.rowCount():
             return
-        t = tracks[0]
+        tbl.selectRow(row)
+        it0 = tbl.item(row, 0)
+        if it0:
+            tbl.scrollToItem(it0)
+        t = it0.data(Qt.ItemDataRole.UserRole) if it0 else None
+        if not isinstance(t, dict):
+            tracks = self._selected_tracks()
+            if not tracks:
+                return
+            t = tracks[0]
         tid = t.get("tid") or ""
         label = f"{t.get('artist', '')} — {t.get('title', '')}".strip(" —") or "OK.ru"
         if not tid:
             self._sig.status.emit("Для этого трека нет ID потока — обновите поиск")
             return
         w = self.window()
+        if w is not None and hasattr(w, "set_preview_navigation"):
+            def _step(delta: int):
+                r = row + delta
+                while 0 <= r < tbl.rowCount() and tbl.isRowHidden(r):
+                    r += delta
+                if 0 <= r < tbl.rowCount():
+                    self._preview_selected(row=r)
+            w.set_preview_navigation(lambda: _step(-1), lambda: _step(1))
         req_id = w.show_preview_loading(label) if (w is not None and hasattr(w, "show_preview_loading")) else 0
 
         def _worker():

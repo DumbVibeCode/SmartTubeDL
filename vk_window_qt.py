@@ -966,13 +966,37 @@ class VKSearchWindow(QWidget, VKParserMixin, VKDownloadMixin):
         if w is not None and hasattr(w, "play_audio_preview"):
             w.play_audio_preview(title, url, headers={"Referer": "https://vk.com/"}, req_id=req_id)
 
-    def _preview_one(self):
-        rows = self._selected_rows_data()
-        if not rows:
+    def _preview_one(self, row: int | None = None):
+        tbl = self._t()
+        if tbl is None:
             return
-        d = rows[0]
+        if row is None:
+            sel_rows = sorted({idx.row() for idx in tbl.selectedIndexes()})
+            if not sel_rows:
+                return
+            row = sel_rows[0]
+        if row < 0 or row >= tbl.rowCount():
+            return
+        tbl.selectRow(row)
+        it0 = tbl.item(row, 0)
+        if it0:
+            tbl.scrollToItem(it0)
+        d = it0.data(Qt.ItemDataRole.UserRole) if it0 else None
+        if not isinstance(d, dict):
+            rows = self._selected_rows_data()
+            if not rows:
+                return
+            d = rows[0]
         label = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —") or "ВКонтакте"
         w = self.window()
+        if w is not None and hasattr(w, "set_preview_navigation"):
+            def _step(delta: int):
+                r = row + delta
+                while 0 <= r < tbl.rowCount() and tbl.isRowHidden(r):
+                    r += delta
+                if 0 <= r < tbl.rowCount():
+                    self._preview_one(row=r)
+            w.set_preview_navigation(lambda: _step(-1), lambda: _step(1))
         direct = d.get("url") or ""
         if direct.startswith(("http://", "https://")):
             if w is not None and hasattr(w, "play_audio_preview"):
