@@ -420,11 +420,8 @@ class MailRuPage(QWidget):
         act_copy_owner.setEnabled(has_owner_url)
 
         act = menu.exec(tab.table.viewport().mapToGlobal(pos))
-        if act_play is not None and act == act_play and isinstance(first_data, dict) and first_data.get("url"):
-            title = f"{first_data.get('artist', '')} — {first_data.get('title', '')}".strip(" —") or "Mail.ru"
-            w = self.window()
-            if w is not None and hasattr(w, "play_audio_preview"):
-                w.play_audio_preview(title, first_data["url"], headers={"Referer": "https://my.mail.ru/"})
+        if act_play is not None and act == act_play and rows:
+            self._preview_row(tab, rows[0])
         elif act == act_main:
             self._on_tab_action()
         elif act == act_open_owner and has_owner_url:
@@ -450,6 +447,32 @@ class MailRuPage(QWidget):
             if lines:
                 QApplication.clipboard().setText("\n".join(lines))
                 self.status_label_set(f"Скопировано: {len(lines)}")
+
+    def _preview_row(self, tab: _MailRuTab, row: int):
+        """Запускает предпрослушивание указанной строки в таблице Mail.ru и подключает ⏮/⏭."""
+        if tab is None or tab.kind == "playlists":
+            return
+        total = tab.table.rowCount()
+        if row < 0 or row >= total:
+            return
+        it = tab.table.item(row, 0)
+        d = it.data(Qt.ItemDataRole.UserRole) if it else None
+        if not isinstance(d, dict) or not d.get("url"):
+            return
+        tab.table.selectRow(row)
+        tab.table.scrollToItem(it)
+        title = f"{d.get('artist', '')} — {d.get('title', '')}".strip(" —") or "Mail.ru"
+        w = self.window()
+        if w is not None and hasattr(w, "play_audio_preview"):
+            if hasattr(w, "set_preview_navigation"):
+                def _step(delta: int):
+                    r = row + delta
+                    while 0 <= r < tab.table.rowCount() and tab.table.isRowHidden(r):
+                        r += delta
+                    if 0 <= r < tab.table.rowCount():
+                        self._preview_row(tab, r)
+                w.set_preview_navigation(lambda: _step(-1), lambda: _step(1))
+            w.play_audio_preview(title, d["url"], headers={"Referer": "https://my.mail.ru/"})
 
     def _on_download(self):
         if self._busy:
@@ -1298,21 +1321,41 @@ class AudioPreviewBar(QFrame):
         self._cur_headers = None
         self._used_fallback = False
         self._pending_play = False
+        self._on_prev = None
+        self._on_next = None
         self._player = None
         self._audio = None
         self._fallback_ready.connect(self._on_fallback_ready)
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(12, 3, 12, 3)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
+
+        self.btn_prev = QPushButton("⏮")
+        self.btn_prev.setObjectName("historyBtn")
+        self.btn_prev.setProperty("secondary", True)
+        self.btn_prev.setFixedSize(26, 26)
+        self.btn_prev.setToolTip("Предыдущий трек")
+        self.btn_prev.setEnabled(False)
+        self.btn_prev.clicked.connect(self.play_prev)
+        lay.addWidget(self.btn_prev)
 
         self.btn_play = QPushButton("▶")
         self.btn_play.setObjectName("historyBtn")
         self.btn_play.setProperty("secondary", True)
         self.btn_play.setFixedSize(26, 26)
-        self.btn_play.setToolTip("Воспроизвести / Пауза")
+        self.btn_play.setToolTip("Воспроизвести / Пауза (Пробел)")
         self.btn_play.clicked.connect(self._toggle_play)
         lay.addWidget(self.btn_play)
+
+        self.btn_next = QPushButton("⏭")
+        self.btn_next.setObjectName("historyBtn")
+        self.btn_next.setProperty("secondary", True)
+        self.btn_next.setFixedSize(26, 26)
+        self.btn_next.setToolTip("Следующий трек")
+        self.btn_next.setEnabled(False)
+        self.btn_next.clicked.connect(self.play_next)
+        lay.addWidget(self.btn_next)
 
         self.btn_stop = QPushButton("⏹")
         self.btn_stop.setObjectName("historyBtn")
@@ -1408,6 +1451,21 @@ class AudioPreviewBar(QFrame):
         except Exception as e:
             log_message(f"WARNING AudioPreviewBar _sync_audio_device: {e}")
 
+    def set_navigation(self, on_prev=None, on_next=None):
+        """Регистрирует колбэки переключения на предыдущий/следующий трек."""
+        self._on_prev = on_prev
+        self._on_next = on_next
+        self.btn_prev.setEnabled(callable(on_prev))
+        self.btn_next.setEnabled(callable(on_next))
+
+    def play_prev(self):
+        if callable(self._on_prev):
+            self._on_prev()
+
+    def play_next(self):
+        if callable(self._on_next):
+            self._on_next()
+
     def _on_media_status_changed(self, status):
         from PyQt6.QtMultimedia import QMediaPlayer
         if self._pending_play and status in (
@@ -1417,6 +1475,9 @@ class AudioPreviewBar(QFrame):
             self._pending_play = False
             if self._player is not None and self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 self._player.play()
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if callable(self._on_next):
+                QTimer.singleShot(150, self._on_next)
 
     @staticmethod
     def _fmt_ms(ms: int) -> str:
@@ -1759,6 +1820,33 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(self._shortcut_new_tab)
         QShortcut(QKeySequence("Ctrl+W"), self).activated.connect(self._shortcut_close_tab)
 
+        # Пробел — пауза/продолжение мини-плеера (если фокус не в поле ввода и не на кнопке)
+        from PyQt6.QtWidgets import QApplication, QPlainTextEdit, QAbstractButton
+        from PyQt6.QtCore import QEvent
+
+        mw = self
+
+        class _SpaceFilter(QObject):
+            def eventFilter(self, obj, event):
+                if (
+                    event.type() == QEvent.Type.KeyPress
+                    and event.key() == Qt.Key.Key_Space
+                    and not event.modifiers()
+                    and mw.isVisible()
+                    and mw.preview_bar.isVisible()
+                ):
+                    fw = QApplication.focusWidget()
+                    if fw is not None and fw.window() is mw:
+                        if not isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractButton, QComboBox)):
+                            mw.preview_bar._toggle_play()
+                            return True
+                return False
+
+        self._space_filter = _SpaceFilter(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._space_filter)
+
     def _shortcut_focus_filter(self):
         idx = self.stack.currentIndex()
         w = self.stack.widget(idx)
@@ -1904,6 +1992,10 @@ class MainWindow(QMainWindow):
     def play_audio_preview(self, title: str, url: str, headers: dict | None = None, req_id: int | None = None):
         """Воспроизводит аудиопоток или локальный файл во встроенном мини-плеере."""
         self.preview_bar.play_url(title, url, headers=headers, req_id=req_id)
+
+    def set_preview_navigation(self, on_prev=None, on_next=None):
+        """Подключает кнопки ⏮/⏭ и автопереход к следующему треку."""
+        self.preview_bar.set_navigation(on_prev=on_prev, on_next=on_next)
 
     def open_youtube_video_list(self, url: str, mode: str = "channel", state: dict = None):
         """Открывает канал/плейлист как вкладку прямо внутри раздела YouTube."""
