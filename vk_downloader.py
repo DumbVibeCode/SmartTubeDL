@@ -98,12 +98,15 @@ class VKDownloadMixin:
         jobs = []
         for i, d in enumerate(rows, 1):
             num = d.get("row_num", i)
-            track_name = f"{d['artist']} - {d['title']}" if d['artist'] else d['title']
+            artist = d.get("artist", "")
+            title = d.get("title", "")
+            target_dir = _utils.resolve_download_folder(folder, source="VK", author=artist)
+            formatted = _utils.format_download_filename(title, author=artist, is_music=True)
             if is_wall_post:
-                base = _safe_name(f"{str(num).zfill(num_width)}. {track_name}") or f"track_{str(num).zfill(num_width)}"
+                base = _safe_name(f"{str(num).zfill(num_width)}. {formatted}") or f"track_{str(num).zfill(num_width)}"
             else:
-                base = _safe_name(track_name) or f"track_{i}"
-            path = os.path.join(folder, base + ".mp3")
+                base = formatted or f"track_{i}"
+            path = os.path.join(target_dir, base + ".mp3")
             cnt, orig = 1, path
             while os.path.exists(path):
                 path = f"{orig[:-4]} ({cnt}).mp3"

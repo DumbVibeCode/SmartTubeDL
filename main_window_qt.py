@@ -483,11 +483,12 @@ class MailRuPage(QWidget):
                 url = t.get("url", "")
                 self._sig.status.emit(f"Скачиваю {idx}/{total}: {artist} - {title}")
                 self._sig.progress.emit(int((idx - 1) / max(total, 1) * 100))
-                base = _utils.safe_filename(f"{artist} - {title}".strip(" -"), default="track")
-                path = os.path.join(folder, f"{base}.mp3")
+                target_dir = _utils.resolve_download_folder(folder, source="Mail.ru", author=artist)
+                base = _utils.format_download_filename(title, author=artist, is_music=True)
+                path = os.path.join(target_dir, f"{base}.mp3")
                 k = 2
                 while os.path.exists(path):
-                    path = os.path.join(folder, f"{base} ({k}).mp3")
+                    path = os.path.join(target_dir, f"{base} ({k}).mp3")
                     k += 1
                 try:
                     r = requests.get(
@@ -977,6 +978,50 @@ class SettingsPage(QWidget):
         self.chk_save_exit.toggled.connect(self._save)
         gl.addWidget(self.chk_save_exit)
 
+        # Подпапки и шаблоны имён файлов
+        sep_org = QFrame()
+        sep_org.setFrameShape(QFrame.Shape.HLine)
+        sep_org.setStyleSheet(f"color: {COLORS['border']};")
+        gl.addWidget(sep_org)
+
+        org_hdr = QLabel("Сортировка по подпапкам и шаблоны имён")
+        org_hdr.setStyleSheet(f"color: {COLORS['text_secondary']}; font-weight: bold;")
+        gl.addWidget(org_hdr)
+
+        self._subfolder_modes = [
+            ("none", "Всё в одну папку"),
+            ("source", "По источнику (YouTube / VK / OK / Mail.ru)"),
+            ("author", "По каналу / исполнителю"),
+            ("source_author", "Источник / Канал (исполнитель)"),
+        ]
+        self._filename_templates = [
+            ("default", "По умолчанию (Музыка: Автор - Название; YouTube: Название)"),
+            ("author_title", "Автор - Название"),
+            ("title_only", "Только название"),
+            ("date_title", "ГГГГ-ММ-ДД - Название"),
+        ]
+
+        r_org = QHBoxLayout()
+        r_org.addWidget(QLabel("Подпапки:"))
+        self.subfolder_combo = QComboBox()
+        for code, lbl in self._subfolder_modes:
+            self.subfolder_combo.addItem(lbl, code)
+        self.subfolder_combo.currentIndexChanged.connect(self._on_org_changed)
+        r_org.addWidget(self.subfolder_combo, 1)
+
+        r_org.addSpacing(14)
+        r_org.addWidget(QLabel("Имя файла:"))
+        self.filename_combo = QComboBox()
+        for code, lbl in self._filename_templates:
+            self.filename_combo.addItem(lbl, code)
+        self.filename_combo.currentIndexChanged.connect(self._on_org_changed)
+        r_org.addWidget(self.filename_combo, 1)
+        gl.addLayout(r_org)
+
+        self.org_preview_lbl = QLabel("")
+        self.org_preview_lbl.setProperty("secondary", True)
+        gl.addWidget(self.org_preview_lbl)
+
         # Источники поиска YouTube (перенесены с экрана поиска для чистоты)
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -1004,20 +1049,45 @@ class SettingsPage(QWidget):
         r_inv.addWidget(self.inv_edit, 1)
         gl.addLayout(r_inv)
 
+        self.sync_from_settings()
         gl.addStretch()
         tabs.addTab(gen, "Основные настройки")
         tabs.addTab(self._updater, "Обновления утилит")
         lay.addWidget(tabs, 1)
 
+    def _update_org_preview(self):
+        sub_mode = self.subfolder_combo.currentData() or "none"
+        tpl = self.filename_combo.currentData() or "default"
+        base_dir = settings.get("download_folder") or os.path.expanduser("~")
+        parts = [base_dir]
+        if sub_mode == "source":
+            parts.append("VK")
+        elif sub_mode == "author":
+            parts.append("Кино")
+        elif sub_mode == "source_author":
+            parts.extend(["VK", "Кино"])
+        fname = _utils.format_download_filename("Группа крови", author="Кино", is_music=True, template=tpl)
+        sample = os.path.join(*parts, f"{fname}.mp3")
+        self.org_preview_lbl.setText(f"Пример: {sample}")
+
+    def _on_org_changed(self):
+        self._update_org_preview()
+        self._save()
+
     def sync_from_settings(self):
         self.dir_edit.setText(settings.get("download_folder", ""))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+                  self.subfolder_combo, self.filename_combo,
                   self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
                   self.api_key_edit, self.inv_edit):
             w.blockSignals(True)
         self.fmt_combo.setCurrentText(settings.get("download_format", "mp4"))
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
         self.browser_combo.setCurrentText(settings.get("cookies_browser", "firefox"))
+        sub_idx = self.subfolder_combo.findData(settings.get("subfolder_mode", "none"))
+        self.subfolder_combo.setCurrentIndex(sub_idx if sub_idx >= 0 else 0)
+        tpl_idx = self.filename_combo.findData(settings.get("filename_template", "default"))
+        self.filename_combo.setCurrentIndex(tpl_idx if tpl_idx >= 0 else 0)
         self.chk_auto.setChecked(settings.get("auto_capture_enabled", True))
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
         self.chk_desc.setChecked(settings.get("download_with_description", False))
@@ -1025,9 +1095,11 @@ class SettingsPage(QWidget):
         self.api_key_edit.setText(settings.get("youtube_api_key", ""))
         self.inv_edit.setText(settings.get("invidious_url", "http://localhost:3000"))
         for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+                  self.subfolder_combo, self.filename_combo,
                   self.chk_auto, self.chk_conv, self.chk_desc, self.chk_save_exit,
                   self.api_key_edit, self.inv_edit):
             w.blockSignals(False)
+        self._update_org_preview()
 
     def _choose_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -1038,6 +1110,7 @@ class SettingsPage(QWidget):
             self.dir_edit.setText(folder)
             settings["download_folder"] = folder
             save_settings(settings)
+            self._update_org_preview()
             log_message(f"INFO Папка загрузки: {folder}")
             self.settings_changed.emit()
 
@@ -1045,6 +1118,8 @@ class SettingsPage(QWidget):
         settings["download_format"] = self.fmt_combo.currentText()
         settings["video_quality"] = self.qual_combo.currentText()
         settings["cookies_browser"] = self.browser_combo.currentText()
+        settings["subfolder_mode"] = self.subfolder_combo.currentData() or "none"
+        settings["filename_template"] = self.filename_combo.currentData() or "default"
         settings["auto_capture_enabled"] = self.chk_auto.isChecked()
         settings["conversion_enabled"] = self.chk_conv.isChecked()
         settings["download_with_description"] = self.chk_desc.isChecked()
