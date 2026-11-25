@@ -227,7 +227,9 @@ def download_video(url, from_queue=False):
     is_downloading = True
     _dl_utils.current_download_url = url
     _dl_utils.stop_requested = False
+    _dl_utils.cancel_requested = False
     _dl_utils.is_paused = False
+    _dl_utils.active_temp_files.clear()
     log_message(f"DEBUG Путь к cookies.txt: {os.path.abspath('cookies.txt')}")  # Логирование пути к cookies.txt
     log_message(f"DEBUG: Текущая директория: {os.getcwd()}")
     log_message(f"DEBUG: Наличие файла cookies.txt в текущей директории: {os.path.exists('cookies.txt')}")
@@ -314,7 +316,12 @@ def download_video(url, from_queue=False):
 
         video_title = info.get("title", "video")
         _dl_utils.queue_titles[url] = video_title
-        safe_title = _dl_utils.safe_filename(video_title, default="video")
+        author = info.get("channel") or info.get("uploader") or ""
+        src_name = "YouTube" if _is_yt else ("VK" if _is_vk_url else ("OK" if "ok.ru" in url.lower() else ""))
+        save_path = _dl_utils.resolve_download_folder(save_path, source=src_name, author=author)
+        safe_title = _dl_utils.format_download_filename(
+            video_title, author=author, date_str=info.get("upload_date", ""), is_music=False
+        )
 
         if settings["conversion_enabled"]:
             video_ext = settings["download_format"]
@@ -483,12 +490,25 @@ def download_video(url, from_queue=False):
         log_message(f"SUCCESS Загрузка завершена: {url}")
 
     except _UserStop:
-        _paused_by_user = True
-        add_to_queue_front(url)
-        _dl_utils.is_paused = True
-        _dl_utils.stop_requested = False
-        update_download_status("На паузе", 0)
-        log_message(f"INFO Загрузка приостановлена: {url}")
+        if _dl_utils.cancel_requested:
+            _paused_by_user = False
+            _dl_utils.cancel_requested = False
+            _dl_utils.stop_requested = False
+            _dl_utils.is_paused = False
+            if from_queue:
+                remove_from_queue(url)
+            # Даём yt-dlp закрыть файловые дескрипторы и удаляем недокачанные фрагменты
+            time.sleep(0.3)
+            removed = _dl_utils.cleanup_download_fragments()
+            update_download_status("Загрузка отменена", -1)
+            log_message(f"INFO Загрузка отменена и удалена из очереди: {url} (удалено фрагментов: {removed})")
+        else:
+            _paused_by_user = True
+            add_to_queue_front(url)
+            _dl_utils.is_paused = True
+            _dl_utils.stop_requested = False
+            update_download_status("На паузе", 0)
+            log_message(f"INFO Загрузка приостановлена: {url}")
 
     except Exception as e:
         error_message = f"ERROR Ошибка загрузки видео: {url}. Подробности: {e}"
@@ -503,13 +523,22 @@ def download_video(url, from_queue=False):
     finally:
         _dl_utils.current_download_url = ""
         if not _paused_by_user:
+            _dl_utils.active_temp_files.clear()
             on_download_complete()
         else:
             is_downloading = False
             _dl_utils.release_download()
 
 def progress_hook(d):
-    if _dl_utils.stop_requested:
+    try:
+        for key in ("tmpfilename", "filename"):
+            p = d.get(key)
+            if p:
+                _dl_utils.active_temp_files.add(p)
+    except Exception:
+        pass
+
+    if _dl_utils.cancel_requested or _dl_utils.stop_requested:
         raise _UserStop()
 
     try:

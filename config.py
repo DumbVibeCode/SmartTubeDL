@@ -31,6 +31,8 @@ DEFAULT_SETTINGS = {
     "debug_mode": False,
     "auto_check_updates": True,
     "last_update_check": 0,
+    "subfolder_mode": "none",
+    "filename_template": "default",
 }
 
 def format_size(size_bytes):

@@ -1155,11 +1155,13 @@ class OKSearchWindow(QWidget):
 
     def _download_stream(self, url: str, folder: str, artist: str, title: str) -> bool:
         import urllib.request
-        base = _safe_name(f"{artist} - {title}".strip(" -")) or "track"
-        path = os.path.join(folder, base + ".mp3")
+        import utils as _utils
+        target_dir = _utils.resolve_download_folder(folder, source="OK", author=artist)
+        base = _utils.format_download_filename(title, author=artist, is_music=True)
+        path = os.path.join(target_dir, base + ".mp3")
         k = 1
         while os.path.exists(path):
-            path = os.path.join(folder, f"{base} ({k}).mp3")
+            path = os.path.join(target_dir, f"{base} ({k}).mp3")
             k += 1
         try:
             req = urllib.request.Request(

@@ -183,13 +183,15 @@ class QueueWindow(QWidget):
             self._refresh()
             return
 
-        # Не даём удалить текущую YouTube-загрузку
-        if _utils.current_download_url in yt_urls:
-            QMessageBox.information(
-                self, "Нельзя удалить",
-                "Сначала поставьте загрузку на паузу, затем удалите."
-            )
-            return
+        # Если среди выбранных есть текущая активная YouTube-загрузка —
+        # отменяем её одной кнопкой (с удалением из очереди и очисткой фрагментов)
+        cur_yt = _utils.current_download_url
+        if cur_yt and cur_yt in yt_urls:
+            _utils.cancel_requested = True
+            _utils.stop_requested = True
+            _utils.update_status_ui("Отмена загрузки...", -1)
+            log_message(f"INFO Запрошена отмена и удаление текущей загрузки: {cur_yt}")
+            yt_urls = [u for u in yt_urls if u != cur_yt]
 
         queue = get_queue_urls()
         paused_url = queue[0] if (_utils.is_paused and queue) else None
@@ -199,6 +201,8 @@ class QueueWindow(QWidget):
             if url == paused_url:
                 _utils.is_paused = False
                 deleted_paused = True
+                removed = _utils.cleanup_download_fragments()
+                log_message(f"INFO Удалены фрагменты приостановленной загрузки: {removed}")
             remove_from_queue(url)
             log_message(f"INFO Удалено из очереди: {url}")
 
