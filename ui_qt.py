@@ -25,7 +25,7 @@ import styles as _styles
 from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
 from config import settings, save_settings
 from logger import log_message
-from i18n import tr
+from i18n import tr, translate_status
 from queues import add_to_queue, process_queue
 from utils import is_download_active
 import docker_manager
@@ -1258,6 +1258,7 @@ class SearchWindow(QMainWindow):
 
     def _set_status(self, text, status_type="info"):
         """Устанавливает текст статуса"""
+        text = translate_status(text)
         colors = {
             "info": COLORS["info"],
             "success": COLORS["success"],

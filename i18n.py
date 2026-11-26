@@ -507,3 +507,56 @@ def tr(key: str, **kwargs) -> str:
         except Exception:
             return text
     return text
+
+
+_STATUS_EXACT_EN = {
+    "Ожидание...": "Idle...",
+    "Готово!": "Done!",
+    "Готово": "Done",
+    "Готово к поиску": "Ready to search",
+    "Поиск...": "Searching...",
+    "Загрузка...": "Downloading...",
+    "На паузе": "Paused",
+    "Отмена загрузки...": "Cancelling download...",
+    "Загрузка отменена": "Download cancelled",
+    "Ничего не найдено": "Nothing found",
+    "Введите поисковый запрос!": "Enter a search query!",
+    "Открыта вкладка плейлиста": "Playlist tab opened",
+    "Открыта вкладка канала": "Channel tab opened",
+    "Укажите YouTube API Key или используйте альтернативный поиск": "Specify YouTube API Key or enable alternative search",
+    "Нет результатов для сохранения": "No results to save",
+    "URL скопирован": "URL copied",
+    "Открыто в браузере": "Opened in browser",
+    "URL не найден": "URL not found",
+    "Открыт видеоплеер": "Video player opened",
+    "Выберите видео для загрузки": "Select videos to download",
+    "Видео уже в очереди": "Already in queue",
+}
+
+_STATUS_PREFIX_EN = (
+    ("Найдено: ", "Found: "),
+    ("Восстановлено: ", "Restored: "),
+    ("Добавлено в очередь: ", "Added to queue: "),
+    ("Сохранено: ", "Saved: "),
+    ("Загружено: ", "Loaded: "),
+    ("Ошибка сохранения: ", "Save error: "),
+    ("Ошибка загрузки: ", "Load error: "),
+    ("Ошибка: ", "Error: "),
+    ("Фильтр: ", "Filter: "),
+)
+
+
+def translate_status(text: str) -> str:
+    """Переводит динамические статусные строки (для EN-режима)."""
+    if not text or get_language() != "en":
+        return text
+    s = str(text)
+    if s in _STATUS_EXACT_EN:
+        return _STATUS_EXACT_EN[s]
+    for ru_p, en_p in _STATUS_PREFIX_EN:
+        if s.startswith(ru_p):
+            rest = s[len(ru_p):]
+            rest = rest.replace(" из ", " of ").replace(" результатов", " results")
+            return en_p + rest
+    return s
+

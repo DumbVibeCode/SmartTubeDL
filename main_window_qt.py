@@ -25,7 +25,7 @@ from download_history import load_download_history
 from logger import log_message
 from queues import add_to_queue, process_queue, get_queue_count
 import utils as _utils
-from i18n import tr, is_youtube_only, set_language
+from i18n import tr, is_youtube_only, set_language, translate_status
 
 
 # ── Раздел: Mail.ru (полноценный поиск музыки и плейлистов + вкладки) ────────
@@ -2143,10 +2143,11 @@ class MainWindow(QMainWindow):
 
     def update_footer_status(self, status: str, progress: int = -1):
         speed = _utils.download_speed
+        disp = translate_status(status)
         if status == "Загрузка..." and speed and speed != "0 KB/s":
-            self.footer_status.setText(f"⬇ {status} ({speed})")
+            self.footer_status.setText(f"⬇ {disp} ({speed})")
         else:
-            self.footer_status.setText(status)
+            self.footer_status.setText(disp)
         if 0 <= progress < 100 and status not in ("Ожидание...", "На паузе", "Готово!"):
             self.footer_progress.setVisible(True)
             self.footer_progress.setValue(progress)
@@ -2166,7 +2167,7 @@ class MainWindow(QMainWindow):
         folder = settings.get("download_folder", "")
         short_dir = os.path.basename(folder.rstrip("\\/")) or folder
         self.btn_folder.setText(f"📁 {short_dir[:18]}")
-        self.btn_folder.setToolTip(f"Открыть папку: {folder}")
+        self.btn_folder.setToolTip(f"{tr('tip_open_folder')}: {folder}")
 
     def _on_quick_fmt_changed(self, text: str):
         if text == "MP3":
