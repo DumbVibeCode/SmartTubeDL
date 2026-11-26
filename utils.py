@@ -26,6 +26,23 @@ cancel_requested = False     # True = отменить текущую загру
 current_download_url = ""    # URL текущей активной загрузки
 is_paused = False            # True = загрузка поставлена на паузу
 active_temp_files = set()    # пути временных/недокачанных файлов текущей загрузки
+active_subprocesses = set()  # активные дочерние процессы (например, ffmpeg), чтобы гасить при выходе/отмене
+
+
+def kill_active_subprocesses() -> None:
+    """Принудительно завершает все активные дочерние процессы (ffmpeg и др.)."""
+    procs = list(active_subprocesses)
+    active_subprocesses.clear()
+    for p in procs:
+        try:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=1.5)
+                except Exception:
+                    p.kill()
+        except Exception:
+            pass
 
 
 def cleanup_download_fragments(paths=None) -> int:

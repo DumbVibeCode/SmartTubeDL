@@ -477,14 +477,93 @@ def download_video(url, from_queue=False, clip_range=None):
     if postprocessors:
         ydl_opts['postprocessors'] = postprocessors
 
-    if clip_range and len(clip_range) == 2:
+    def _download_clip_ffmpeg():
+        """Быстрая обрезка по таймкодам через управляемый ffmpeg (-ss до -i, -progress pipe:1)."""
+        import subprocess
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise RuntimeError("ffmpeg не найден — установите ffmpeg для обрезки фрагментов.")
+        s0, s1 = float(clip_range[0]), float(clip_range[1])
+        clip_dur = max(0.5, s1 - s0)
+
+        ex_opts = dict(ydl_opts)
+        ex_opts.pop("postprocessors", None)
+        ex_opts["quiet"] = True
+        with yt_dlp.YoutubeDL(ex_opts) as ydl:
+            dl_info = ydl.extract_info(url, download=False)
+        req_fmts = dl_info.get("requested_formats") or []
+        streams = []
+        for f in req_fmts:
+            if f.get("url"):
+                streams.append((f["url"], f.get("http_headers") or {}))
+        if not streams and dl_info.get("url"):
+            streams.append((dl_info["url"], dl_info.get("http_headers") or {}))
+        if not streams:
+            raise RuntimeError("Не удалось получить прямые ссылки потоков для обрезки.")
+
+        out_ext = "mp3" if is_mp3 else ("mp4" if settings.get("conversion_enabled", True) else (dl_info.get("ext") or "mkv"))
+        out_path = os.path.join(save_path, f"{unique_base}.{out_ext}")
+        _dl_utils.active_temp_files.add(out_path)
+
+        cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error"]
+        for s_url, hdrs in streams:
+            ua = hdrs.get("User-Agent")
+            if ua:
+                cmd.extend(["-user_agent", ua])
+            cmd.extend(["-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", s_url])
+
+        if len(streams) >= 2 and not is_mp3:
+            cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+        if is_mp3:
+            cmd.extend(["-vn", "-c:a", "libmp3lame", "-b:a", "192k"])
+        else:
+            cmd.extend(["-c", "copy"])
+            if out_ext == "mp4":
+                cmd.extend(["-movflags", "+faststart"])
+        cmd.extend(["-progress", "pipe:1", "-nostats", out_path])
+
+        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        log_message(f"INFO Обрезка фрагмента (ffmpeg fast-seek): {s0:.1f}s - {s1:.1f}s -> {os.path.basename(out_path)}")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=cf,
+        )
+        _dl_utils.active_subprocesses.add(proc)
         try:
-            from yt_dlp.utils import download_range_func
-            ydl_opts['download_ranges'] = download_range_func(None, [(float(clip_range[0]), float(clip_range[1]))])
-            # Без force_keyframes_at_cuts=True ffmpeg делает быстрый stream-copy без перекодирования CPU
-            log_message(f"INFO Обрезка по таймкодам (stream-copy): {clip_range[0]}s - {clip_range[1]}s")
-        except Exception as e:
-            log_message(f"WARNING Не удалось применить download_ranges: {e}")
+            for line in proc.stdout:
+                if _dl_utils.cancel_requested or _dl_utils.stop_requested:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    raise _UserStop()
+                line = line.strip()
+                if line.startswith("out_time_us="):
+                    try:
+                        us = int(line.split("=", 1)[1])
+                        cur_s = max(0.0, us / 1_000_000.0)
+                        pct = min(99, int(cur_s / clip_dur * 100))
+                        update_download_status("Загрузка...", pct)
+                    except ValueError:
+                        pass
+            proc.wait()
+            if proc.returncode != 0:
+                err_txt = (proc.stderr.read() or "").strip() if proc.stderr else ""
+                raise RuntimeError(f"ffmpeg вернул код {proc.returncode}: {err_txt[:300]}")
+            update_download_status("Готово!", 100)
+            return dl_info, out_path
+        finally:
+            _dl_utils.active_subprocesses.discard(proc)
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     _paused_by_user = False
     try:
@@ -494,6 +573,8 @@ def download_video(url, from_queue=False, clip_range=None):
         ydl_opts["progress_hooks"] = [progress_hook]
 
         def _do_download(extra_opts: dict):
+            if clip_range and len(clip_range) == 2:
+                return _download_clip_ffmpeg()
             opts = dict(ydl_opts)
             opts.update(extra_opts)
             with yt_dlp.YoutubeDL(opts) as ydl:

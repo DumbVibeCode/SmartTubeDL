@@ -905,6 +905,9 @@ class TrayIcon(QSystemTrayIcon):
                     if t.isRunning():
                         t.terminate()
 
+        # Завершаем активные дочерние процессы (например, ffmpeg при обрезке)
+        _utils.kill_active_subprocesses()
+
         # Закрываем браузеры VK и OK (Selenium), если они были открыты
         for win in (self.app.vk_window, self.app.ok_window):
             if win is not None and hasattr(win, "quit_browser"):
