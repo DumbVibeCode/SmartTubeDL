@@ -499,14 +499,28 @@ class UnifiedMusicSearchPage(QWidget):
                     time.sleep(1.5)
                     raw = vk_page._scroll_and_parse(0)
                     for t in raw:
+                        if isinstance(t, dict):
+                            artist = t.get("artist", "")
+                            title = t.get("title", "")
+                            dur = t.get("duration", "")
+                            owner = t.get("owner", "")
+                            url = t.get("url", "")
+                            fid = t.get("full_id", "")
+                        else:
+                            artist = t[0] if len(t) > 0 else ""
+                            title = t[1] if len(t) > 1 else ""
+                            dur = t[2] if len(t) > 2 else ""
+                            owner = t[3] if len(t) > 3 else ""
+                            url = t[4] if len(t) > 4 else ""
+                            fid = t[5] if len(t) > 5 else ""
                         items.append({
                             "source": "vk",
-                            "artist": t.get("artist", ""),
-                            "title": t.get("title", ""),
-                            "duration": t.get("duration", ""),
-                            "extra": t.get("owner", ""),
-                            "url": t.get("url", ""),
-                            "full_id": t.get("full_id", ""),
+                            "artist": artist,
+                            "title": title,
+                            "duration": dur,
+                            "extra": owner,
+                            "url": url,
+                            "full_id": fid,
                         })
                     note = f"ВК: {len(items)}"
 
