@@ -543,7 +543,14 @@ def download_video(url, from_queue=False, clip_range=None):
                         pass
                     raise _UserStop()
                 line = line.strip()
-                if line.startswith("out_time_us="):
+                if line.startswith("total_size="):
+                    try:
+                        sz = int(line.split("=", 1)[1])
+                        _dl_utils.global_downloaded = sz
+                        update_speed(sz)
+                    except ValueError:
+                        pass
+                elif line.startswith("out_time_us="):
                     try:
                         us = int(line.split("=", 1)[1])
                         cur_s = max(0.0, us / 1_000_000.0)
