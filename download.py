@@ -216,7 +216,7 @@ def _save_description(folder: str, file_name: str, description: str):
         log_message(f"WARNING описание .txt: {e}")
 
 
-def download_video(url, from_queue=False):
+def download_video(url, from_queue=False, clip_range=None):
     global is_downloading
 
     if not _dl_utils.try_acquire_download():
@@ -322,6 +322,9 @@ def download_video(url, from_queue=False):
         safe_title = _dl_utils.format_download_filename(
             video_title, author=author, date_str=info.get("upload_date", ""), is_music=False
         )
+        if clip_range and len(clip_range) == 2:
+            s0, s1 = int(clip_range[0]), int(clip_range[1])
+            safe_title = f"{safe_title} [{s0 // 60:02d}-{s0 % 60:02d}_{s1 // 60:02d}-{s1 % 60:02d}]"
 
         if settings["conversion_enabled"]:
             video_ext = settings["download_format"]
@@ -473,6 +476,15 @@ def download_video(url, from_queue=False):
 
     if postprocessors:
         ydl_opts['postprocessors'] = postprocessors
+
+    if clip_range and len(clip_range) == 2:
+        try:
+            from yt_dlp.utils import download_range_func
+            ydl_opts['download_ranges'] = download_range_func(None, [(float(clip_range[0]), float(clip_range[1]))])
+            ydl_opts['force_keyframes_at_cuts'] = True
+            log_message(f"INFO Обрезка по таймкодам: {clip_range[0]}s - {clip_range[1]}s")
+        except Exception as e:
+            log_message(f"WARNING Не удалось применить download_ranges: {e}")
 
     _paused_by_user = False
     try:

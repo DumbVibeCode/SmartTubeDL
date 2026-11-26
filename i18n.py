@@ -260,6 +260,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "yt_ctx_open_browser": "Открыть в браузере",
         "yt_ctx_watch": "Смотреть видео",
         "yt_ctx_show_desc": "Показать описание",
+        "yt_ctx_clip": "✂ Скачать фрагмент...",
+        "clip_title": "Скачать фрагмент по таймкодам",
+        "clip_start": "Начало (ММ:СС или ЧЧ:ММ:СС):",
+        "clip_end": "Конец (ММ:СС или ЧЧ:ММ:СС):",
+        "clip_btn": "Скачать фрагмент",
+        "clip_cancel": "Отмена",
+        "clip_err": "Укажите корректные таймкоды (начало должно быть меньше конца).",
 
         # Раздел «Очередь»
         "queue_title": "Очередь загрузок",
@@ -472,6 +479,13 @@ _STRINGS: dict[str, dict[str, str]] = {
         "yt_ctx_open_browser": "Open in Browser",
         "yt_ctx_watch": "Watch Video",
         "yt_ctx_show_desc": "Show Description",
+        "yt_ctx_clip": "✂ Download Clip...",
+        "clip_title": "Download Clip by Timestamps",
+        "clip_start": "Start (MM:SS or HH:MM:SS):",
+        "clip_end": "End (MM:SS or HH:MM:SS):",
+        "clip_btn": "Download Clip",
+        "clip_cancel": "Cancel",
+        "clip_err": "Enter valid timestamps (start must be less than end).",
 
         # Queue Page
         "queue_title": "Download Queue",
