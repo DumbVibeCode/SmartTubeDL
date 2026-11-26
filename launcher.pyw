@@ -74,12 +74,13 @@ def _is_running():
     return bool(_app_pids())
 
 
-def _start_app():
+def _start_app(edition: str = "full"):
     """Запускает программу отдельным процессом (переживает закрытие лаунчера)."""
     if _is_running():
         return False
+    ed = edition if edition in ("full", "youtube") else "full"
     subprocess.Popen(
-        [_PY, APP_SCRIPT],
+        [_PY, APP_SCRIPT, "--edition", ed],
         cwd=BASE_DIR,
         creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROC_GROUP,
         close_fds=True,
@@ -157,6 +158,7 @@ def _acquire_single_instance() -> bool:
 class Launcher:
     def __init__(self, app: QApplication):
         self.app = app
+        self._edition = self._load_edition()
         self._icon_cache = self._build_icon()
         self.tray = QSystemTrayIcon(self._icon())
         self.tray.setToolTip("YTD — лаунчер")
@@ -166,6 +168,31 @@ class Launcher:
         self.tray.activated.connect(self._on_activated)
         self._rebuild_menu()
         self.tray.show()
+
+    @staticmethod
+    def _state_path() -> str:
+        return os.path.join(BASE_DIR, "launcher_state.json")
+
+    def _load_edition(self) -> str:
+        try:
+            import json
+            p = self._state_path()
+            if os.path.isfile(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    ed = (json.load(f) or {}).get("edition", "full")
+                    if ed in ("full", "youtube"):
+                        return ed
+        except Exception:
+            pass
+        return "full"
+
+    def _save_edition(self) -> None:
+        try:
+            import json
+            with open(self._state_path(), "w", encoding="utf-8") as f:
+                json.dump({"edition": self._edition}, f, indent=2)
+        except Exception:
+            pass
 
     # ------- иконка (рисуем сами, чтобы отличалась от красной иконки программы)
     def _icon(self) -> QIcon:
@@ -209,9 +236,10 @@ class Launcher:
     def _rebuild_menu(self):
         self.menu.clear()
         running = _is_running()
+        ed_label = "Полная" if self._edition == "full" else "Только YouTube"
 
-        status = QAction(("● Программа запущена" if running
-                          else "○ Программа остановлена"), self.menu)
+        status = QAction((f"● Программа запущена ({ed_label})" if running
+                          else f"○ Программа остановлена ({ed_label})"), self.menu)
         status.setEnabled(False)
         self.menu.addAction(status)
         self.menu.addSeparator()
@@ -226,6 +254,21 @@ class Launcher:
         act_stop = self.menu.addAction("Остановить")
         act_stop.setEnabled(running)
         act_stop.triggered.connect(self._do_stop)
+
+        self.menu.addSeparator()
+
+        ed_hdr = self.menu.addAction("Версия программы:")
+        ed_hdr.setEnabled(False)
+
+        act_full = self.menu.addAction("  Полная (YouTube + VK / OK / Mail.ru)")
+        act_full.setCheckable(True)
+        act_full.setChecked(self._edition == "full")
+        act_full.triggered.connect(lambda: self._do_set_edition("full"))
+
+        act_yt = self.menu.addAction("  Только YouTube (EN / RU)")
+        act_yt.setCheckable(True)
+        act_yt.setChecked(self._edition == "youtube")
+        act_yt.triggered.connect(lambda: self._do_set_edition("youtube"))
 
         self.menu.addSeparator()
 
@@ -252,7 +295,7 @@ class Launcher:
         pass
 
     def _do_start(self):
-        if _start_app():
+        if _start_app(self._edition):
             self._notify("YTD", "Программа запущена")
         else:
             self._notify("YTD", "Программа уже запущена")
@@ -267,8 +310,16 @@ class Launcher:
         QTimer.singleShot(1500, self._restart_start)
 
     def _restart_start(self):
-        _start_app()
+        _start_app(self._edition)
         self._notify("YTD", "Программа перезапущена")
+
+    def _do_set_edition(self, edition: str):
+        if edition == self._edition:
+            return
+        self._edition = edition
+        self._save_edition()
+        if _is_running():
+            self._do_restart()
 
     def _do_toggle_autostart(self, checked: bool):
         ok = _set_autostart(checked)

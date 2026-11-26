@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QTextCharFormat, QColor, QFont, QTextCursor
 from PyQt6.QtCore import Qt, QTimer
 from logger import LOG_FILE, log_message
+from i18n import tr
 
 
 class DebugWindow(QWidget):
@@ -89,26 +90,26 @@ class DebugWindow(QWidget):
         self.btn_debug.clicked.connect(lambda: self._filter_logs("DEBUG"))
         btn_layout.addWidget(self.btn_debug)
 
-        self.btn_reset = QPushButton("Все")
+        self.btn_reset = QPushButton(tr("logs_btn_all"))
         self.btn_reset.clicked.connect(self._reset_filter)
         btn_layout.addWidget(self.btn_reset)
 
         btn_layout.addStretch()
 
         # Галочка переноса строк
-        self.wrap_checkbox = QCheckBox("Перенос строк")
+        self.wrap_checkbox = QCheckBox(tr("logs_chk_wrap"))
         self.wrap_checkbox.setChecked(True)
         self.wrap_checkbox.toggled.connect(self._toggle_word_wrap)
         btn_layout.addWidget(self.wrap_checkbox)
 
         # Кнопка очистки лога
-        self.btn_clear = QPushButton("Очистить лог")
+        self.btn_clear = QPushButton(tr("logs_btn_clear"))
         self.btn_clear.setProperty("secondary", True)
         self.btn_clear.clicked.connect(self._clear_log)
         btn_layout.addWidget(self.btn_clear)
 
         # Кнопка сворачивания
-        self.btn_minimize = QPushButton("Свернуть")
+        self.btn_minimize = QPushButton(tr("logs_btn_min"))
         self.btn_minimize.setProperty("secondary", True)
         self.btn_minimize.clicked.connect(self.showMinimized)
         btn_layout.addWidget(self.btn_minimize)

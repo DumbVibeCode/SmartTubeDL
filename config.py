@@ -36,6 +36,7 @@ DEFAULT_SETTINGS = {
     "fix_mp3_tags": True,
     "rate_limit_mbps": 0.0,
     "download_retries": 3,
+    "language": "auto",
 }
 
 def format_size(size_bytes):
