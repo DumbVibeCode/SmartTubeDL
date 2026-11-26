@@ -933,15 +933,15 @@ class HistoryPage(QWidget):
         has_local = bool(first_url) and os.path.isfile(first_url)
 
         menu = QMenu(self)
-        act_dl = menu.addAction("⬇ Скачать выбранные заново")
+        act_dl = menu.addAction(tr("ctx_dl_again"))
         act_dl.setEnabled(has_http)
-        act_reveal = menu.addAction("📂 Показать файл в Проводнике")
+        act_reveal = menu.addAction(tr("ctx_reveal_file"))
         act_reveal.setEnabled(has_local)
         menu.addSeparator()
-        act_copy_url = menu.addAction("Копировать ссылки / пути")
-        act_copy_title = menu.addAction("Копировать названия")
+        act_copy_url = menu.addAction(tr("ctx_copy_urls"))
+        act_copy_title = menu.addAction(tr("ctx_copy_titles"))
         menu.addSeparator()
-        act_del = menu.addAction("🗑 Удалить выбранные из истории")
+        act_del = menu.addAction(tr("ctx_del_history"))
 
         act = menu.exec(self.table.viewport().mapToGlobal(pos))
         if act == act_dl and has_http:

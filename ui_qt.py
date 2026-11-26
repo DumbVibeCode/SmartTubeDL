@@ -571,20 +571,20 @@ class SearchWindow(QMainWindow):
         params_row = QHBoxLayout()
         params_row.setSpacing(12)
 
-        params_row.addWidget(QLabel("Тип:"))
+        params_row.addWidget(QLabel(tr("yt_lbl_type")))
         self.type_combo = QComboBox()
         self.type_combo.addItems(["video", "channel", "playlist"])
         self.type_combo.setCurrentText(settings.get("search_type", "video"))
         self.type_combo.currentTextChanged.connect(self._on_type_changed)
         params_row.addWidget(self.type_combo)
 
-        params_row.addWidget(QLabel("Сортировка:"))
+        params_row.addWidget(QLabel(tr("yt_lbl_sort")))
         self.order_combo = QComboBox()
         self.order_combo.addItems(["relevance", "date", "rating", "viewCount", "title"])
         self.order_combo.setCurrentText(settings.get("sort_order", "relevance"))
         params_row.addWidget(self.order_combo)
 
-        params_row.addWidget(QLabel("Кол-во:"))
+        params_row.addWidget(QLabel(tr("yt_lbl_count")))
         self.max_combo = QComboBox()
         self.max_combo.addItems(["10", "20", "30", "50", "100", "200"])
         self.max_combo.setCurrentText(settings.get("max_results", "10"))
@@ -607,11 +607,11 @@ class SearchWindow(QMainWindow):
         self.check_ytdlp.stateChanged.connect(self._update_checkboxes)
         opts_row.addWidget(self.check_ytdlp)
 
-        self.check_thumbnails = QCheckBox("Превью")
+        self.check_thumbnails = QCheckBox(tr("yt_chk_thumbs"))
         self.check_thumbnails.setChecked(settings.get("show_thumbnails", False))
         opts_row.addWidget(self.check_thumbnails)
 
-        self.check_save = QCheckBox("Сохранять")
+        self.check_save = QCheckBox(tr("yt_chk_save"))
         self.check_save.setChecked(settings.get("save_settings_on_exit", False))
         opts_row.addWidget(self.check_save)
 
@@ -631,10 +631,10 @@ class SearchWindow(QMainWindow):
         self.invidious_input.setVisible(False)
 
         self.invidious_status_label = QLabel("●")
-        self.invidious_status_label.setToolTip("Статус Invidious")
+        self.invidious_status_label.setToolTip("Invidious")
         opts_row.addWidget(self.invidious_status_label)
 
-        self.invidious_toggle_btn = QPushButton("Запустить")
+        self.invidious_toggle_btn = QPushButton(tr("yt_btn_start"))
         self.invidious_toggle_btn.setProperty("secondary", True)
         self.invidious_toggle_btn.setMaximumWidth(100)
         self.invidious_toggle_btn.clicked.connect(self._toggle_invidious)
@@ -651,11 +651,9 @@ class SearchWindow(QMainWindow):
         # Строка фильтра по описаниям
         desc_row = QHBoxLayout()
         desc_row.setSpacing(8)
-        desc_row.addWidget(QLabel("Фильтр в описаниях:"))
+        desc_row.addWidget(QLabel(tr("yt_lbl_desc_filter")))
         self.desc_filter_input = QLineEdit()
-        self.desc_filter_input.setPlaceholderText(
-            "Слово или фраза в описании видео (оставьте пустым, чтобы не фильтровать)..."
-        )
+        self.desc_filter_input.setPlaceholderText(tr("yt_desc_filter_ph"))
         self.desc_filter_input.setText(settings.get("desc_filter", ""))
         self.desc_filter_input.setMaximumWidth(500)
         self.desc_filter_input.returnPressed.connect(self._on_search)
@@ -674,12 +672,12 @@ class SearchWindow(QMainWindow):
 
         _styles.attach_new_tab_button(
             self.tabs,
-            lambda: self._new_tab("Новая вкладка"),
-            tooltip="Новая вкладка (Ctrl+T)",
+            lambda: self._new_tab(tr("yt_tab_new")),
+            tooltip=f"{tr('yt_tab_new')} (Ctrl+T)",
         )
 
         # Начальная вкладка
-        self._new_tab("Поиск")
+        self._new_tab(tr("yt_tab_search"))
         layout.addWidget(self.tabs, 1)
 
         # ── Нижняя панель (статус + кнопки + лог) ──
@@ -693,25 +691,25 @@ class SearchWindow(QMainWindow):
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
 
-        self.status_label = QLabel("Готово к поиску")
+        self.status_label = QLabel(tr("yt_status_ready"))
         self.status_label.setProperty("secondary", True)
         self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']};")
         action_row.addWidget(self.status_label, 1)
 
-        save_btn = QPushButton("Сохранить список")
+        save_btn = QPushButton(tr("yt_btn_save_list"))
         save_btn.setProperty("secondary", True)
         save_btn.clicked.connect(self._save_results)
         action_row.addWidget(save_btn)
 
-        load_btn = QPushButton("Загрузить список")
+        load_btn = QPushButton(tr("yt_btn_load_list"))
         load_btn.setProperty("secondary", True)
         load_btn.clicked.connect(self._load_results)
         action_row.addWidget(load_btn)
 
-        self.log_toggle_btn = QPushButton("Лог")
+        self.log_toggle_btn = QPushButton("Log")
         self.log_toggle_btn.setVisible(False)
 
-        self.download_btn = QPushButton("⬇ Скачать выбранные")
+        self.download_btn = QPushButton(tr("yt_btn_dl_selected"))
         self.download_btn.setObjectName("searchBtn")
         self.download_btn.clicked.connect(self._on_download)
         action_row.addWidget(self.download_btn)
@@ -1277,21 +1275,21 @@ class SearchWindow(QMainWindow):
 
         menu = QMenu(self)
 
-        action_copy = menu.addAction("Копировать URL")
+        action_copy = menu.addAction(tr("yt_ctx_copy_url"))
         action_copy.triggered.connect(self._copy_url)
 
-        action_download = menu.addAction("Добавить в очередь")
+        action_download = menu.addAction(tr("yt_ctx_add_queue"))
         action_download.triggered.connect(self._on_download)
 
-        action_browser = menu.addAction("Открыть в браузере")
+        action_browser = menu.addAction(tr("yt_ctx_open_browser"))
         action_browser.triggered.connect(self._open_in_browser)
 
-        action_watch = menu.addAction("Смотреть видео")
+        action_watch = menu.addAction(tr("yt_ctx_watch"))
         action_watch.triggered.connect(self._watch_video)
 
         menu.addSeparator()
 
-        action_description = menu.addAction("Показать описание")
+        action_description = menu.addAction(tr("yt_ctx_show_desc"))
         action_description.triggered.connect(self._show_description)
 
         t = self._t()

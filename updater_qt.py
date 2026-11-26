@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 
 from config import settings, save_settings
 from logger import log_message
+from i18n import tr, is_youtube_only
 
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 _CHECK_INTERVAL_SEC = 7 * 24 * 3600  # 7 дней
@@ -126,7 +127,7 @@ class UpdaterWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Обновления утилит")
+        self.setWindowTitle(tr("upd_title"))
         self.resize(740, 460)
         self._busy = False
         self._sig = _UpdaterSignals()
@@ -143,7 +144,7 @@ class UpdaterWindow(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        header = QLabel("Версии и обновления утилит")
+        header = QLabel(tr("upd_title"))
         f = QFont()
         f.setPointSize(12)
         f.setBold(True)
@@ -151,13 +152,16 @@ class UpdaterWindow(QWidget):
         layout.addWidget(header)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Компонент", "Назначение", "Установлено", "Доступно", "Статус"]
-        )
+        self.table.setHorizontalHeaderLabels([
+            tr("upd_col_comp"), tr("upd_col_purpose"), tr("upd_col_installed"),
+            tr("upd_col_latest"), tr("upd_col_status")
+        ])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         hdr.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -170,27 +174,27 @@ class UpdaterWindow(QWidget):
         self.log_box.setReadOnly(True)
         self.log_box.setFont(QFont("Consolas", 9))
         self.log_box.setMaximumHeight(140)
-        self.log_box.setPlaceholderText("Здесь появится вывод процесса обновления...")
+        self.log_box.setPlaceholderText(tr("upd_log_ph"))
         layout.addWidget(self.log_box, 1)
 
         controls = QHBoxLayout()
-        self.chk_auto = QCheckBox("Автопроверка раз в 7 дней")
+        self.chk_auto = QCheckBox(tr("upd_chk_auto"))
         self.chk_auto.setChecked(settings.get("auto_check_updates", True))
         self.chk_auto.toggled.connect(self._toggle_auto)
         controls.addWidget(self.chk_auto)
 
         controls.addStretch()
 
-        self.btn_check = QPushButton("Проверить")
+        self.btn_check = QPushButton(tr("upd_btn_check"))
         self.btn_check.setProperty("secondary", True)
         self.btn_check.clicked.connect(self.check_versions)
         controls.addWidget(self.btn_check)
 
-        self.btn_update_pip = QPushButton("Обновить yt-dlp и модули")
+        self.btn_update_pip = QPushButton(tr("upd_btn_pip"))
         self.btn_update_pip.clicked.connect(self._update_pip_packages)
         controls.addWidget(self.btn_update_pip)
 
-        self.btn_update_winget = QPushButton("Обновить ffmpeg / Node (winget)")
+        self.btn_update_winget = QPushButton(tr("upd_btn_winget"))
         self.btn_update_winget.setProperty("secondary", True)
         self.btn_update_winget.setEnabled(bool(shutil.which("winget")))
         self.btn_update_winget.clicked.connect(self._update_winget_tools)
@@ -226,32 +230,52 @@ class UpdaterWindow(QWidget):
             return
         self._sig.busy_changed.emit(True)
         self.log_box.clear()
-        self._sig.log_line.emit("Проверяю установленные версии и PyPI...")
+        self._sig.log_line.emit(tr("upd_checking"))
 
         def _worker():
+            pkg_descs = {
+                "yt-dlp": tr("upd_desc_ytdlp_yt" if is_youtube_only() else "upd_desc_ytdlp_full"),
+                "yt-dlp-ejs": tr("upd_desc_ejs"),
+                "curl_cffi": tr("upd_desc_curl"),
+            }
             rows = []
             for pkg, desc in PIP_PACKAGES:
                 cur = _get_pip_version(pkg)
+                cur_disp = tr("upd_st_missing") if cur == "не установлен" else cur
                 latest = _get_pypi_latest(pkg)
                 if latest is None:
-                    status = "нет связи с PyPI"
+                    status = tr("upd_st_no_pypi")
                 elif is_newer_version(cur, latest):
-                    status = "есть обновление"
+                    status = tr("upd_st_avail")
                 else:
-                    status = "актуально"
-                rows.append((pkg, desc, cur, latest or "—", status))
+                    status = tr("upd_st_ok")
+                rows.append((pkg, pkg_descs.get(pkg, desc), cur_disp, latest or "—", status))
 
             ff_ver = _get_cli_version(["ffmpeg", "-version"], r"ffmpeg version ([^\s]+)")
-            rows.append(("ffmpeg", "Конвертация MP3 / MP4", ff_ver, "через winget", "установлен" if "не найден" not in ff_ver else "не найден"))
+            ff_ok = "не найден" not in ff_ver
+            rows.append((
+                "ffmpeg",
+                tr("upd_desc_ffmpeg"),
+                ff_ver if ff_ok else tr("upd_st_missing"),
+                tr("upd_via_winget"),
+                tr("upd_st_installed") if ff_ok else tr("upd_st_missing"),
+            ))
 
             node_ver = _get_cli_version(["node", "-v"], r"v?([0-9]+\.[0-9]+\.[0-9]+)")
-            rows.append(("Node.js", "Решение YouTube n-challenge", node_ver, "через winget", "установлен" if "не найден" not in node_ver else "не найден"))
+            node_ok = "не найден" not in node_ver
+            rows.append((
+                "Node.js",
+                tr("upd_desc_node"),
+                node_ver if node_ok else tr("upd_st_missing"),
+                tr("upd_via_winget"),
+                tr("upd_st_installed") if node_ok else tr("upd_st_missing"),
+            ))
 
             settings["last_update_check"] = int(time.time())
             save_settings(settings)
 
             self._sig.rows_ready.emit(rows)
-            self._sig.log_line.emit("Проверка завершена.")
+            self._sig.log_line.emit(tr("upd_done"))
             self._sig.busy_changed.emit(False)
 
         threading.Thread(target=_worker, daemon=True).start()
