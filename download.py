@@ -481,8 +481,8 @@ def download_video(url, from_queue=False, clip_range=None):
         try:
             from yt_dlp.utils import download_range_func
             ydl_opts['download_ranges'] = download_range_func(None, [(float(clip_range[0]), float(clip_range[1]))])
-            ydl_opts['force_keyframes_at_cuts'] = True
-            log_message(f"INFO Обрезка по таймкодам: {clip_range[0]}s - {clip_range[1]}s")
+            # Без force_keyframes_at_cuts=True ffmpeg делает быстрый stream-copy без перекодирования CPU
+            log_message(f"INFO Обрезка по таймкодам (stream-copy): {clip_range[0]}s - {clip_range[1]}s")
         except Exception as e:
             log_message(f"WARNING Не удалось применить download_ranges: {e}")
 
@@ -676,8 +676,14 @@ def progress_hook(d):
 
             total = _dl_utils.global_file_size
             downloaded = _dl_utils.global_downloaded
-            percent = (downloaded / total * 100) if total else 0
-            update_download_status("Загрузка...", int(percent), downloaded, total)
+            if total:
+                percent = downloaded / total * 100
+                update_download_status("Загрузка...", int(percent), downloaded, total)
+            elif downloaded:
+                from config import format_size
+                update_download_status(f"Загрузка... ({format_size(downloaded)})", -1, downloaded, 0)
+            else:
+                update_download_status("Загрузка...", 0, 0, 0)
 
         elif d["status"] == "finished":
             update_download_status("Готово!", 100, 0, 0)
