@@ -363,12 +363,24 @@ def download_video(url, from_queue=False):
 
     update_download_status("Загрузка...", 0)
 
+    audio_lang = str(settings.get("audio_track_lang", "auto") or "auto").strip().lower()
+    if _is_yt and audio_lang == "ru":
+        _audio_sel = "bestaudio[language^=ru]/bestaudio"
+    elif _is_yt and audio_lang == "en":
+        _audio_sel = "bestaudio[language^=en]/bestaudio"
+    elif _is_yt and audio_lang == "original":
+        _audio_sel = "bestaudio[format_note*=original]/bestaudio"
+    else:
+        _audio_sel = "bestaudio"
+
     quality_map = {
-        "1080p": "bestvideo[height<=1080]+bestaudio/best",
-        "720p": "bestvideo[height<=720]+bestaudio/best",
-        "480p": "bestvideo[height<=480]+bestaudio/best"
+        "Best":  f"bestvideo+{_audio_sel}/best",
+        "2160p": f"bestvideo[height<=2160]+{_audio_sel}/best",
+        "1440p": f"bestvideo[height<=1440]+{_audio_sel}/best",
+        "1080p": f"bestvideo[height<=1080]+{_audio_sel}/best",
+        "720p":  f"bestvideo[height<=720]+{_audio_sel}/best",
+        "480p":  f"bestvideo[height<=480]+{_audio_sel}/best",
     }
-    selected_quality = quality_map.get(settings["video_quality"], "best")
 
     # В outtmpl литеральный '%' надо экранировать как '%%'
     _outtmpl_base = unique_base.replace('%', '%%')
@@ -391,23 +403,76 @@ def download_video(url, from_queue=False):
     if _is_vk_url:
         ydl_opts.update(_vk_opts())
 
-    if settings["download_format"] == "mp3":
+    postprocessors = []
+    is_mp3 = settings["download_format"] == "mp3"
+    if is_mp3:
         # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
-        ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        if _is_yt and audio_lang in ("ru", "en"):
+            ydl_opts['format'] = f'bestaudio[language^={audio_lang}]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        elif _is_yt and audio_lang == "original":
+            ydl_opts['format'] = 'bestaudio[format_note*=original]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        else:
+            ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
         if settings.get("conversion_enabled", True):
-            ydl_opts['postprocessors'] = [{
+            postprocessors.append({
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
-            }]
+            })
     else:
-        ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
+        ydl_opts['format'] = quality_map.get(settings.get("video_quality", "1080p"), quality_map["Best"])
         if settings.get("conversion_enabled", True):
             ydl_opts['merge_output_format'] = 'mp4'
-            ydl_opts['postprocessors'] = [{
+            postprocessors.append({
                 'key': 'FFmpegVideoRemuxer',
                 'preferedformat': 'mp4',
-            }]
+            })
+
+    # Дополнительные опции YouTube (SponsorBlock, субтитры, главы, обложка)
+    if _is_yt:
+        if settings.get("sponsorblock_remove", False):
+            postprocessors.append({
+                'key': 'SponsorBlock',
+                'categories': ['sponsor', 'selfpromo', 'interaction'],
+                'when': 'after_filter',
+            })
+            postprocessors.append({
+                'key': 'ModifyChapters',
+                'remove_sponsor_segments': ['sponsor', 'selfpromo', 'interaction'],
+            })
+
+        subs_mode = str(settings.get("subtitles_mode", "none") or "none").lower()
+        if subs_mode in ("srt", "embed") and not is_mp3:
+            raw_langs = str(settings.get("subtitles_langs", "ru,en") or "ru,en")
+            langs = [x.strip() for x in raw_langs.split(",") if x.strip()] or ["en"]
+            ydl_opts['writesubtitles'] = True
+            ydl_opts['writeautomaticsub'] = True
+            ydl_opts['subtitleslangs'] = langs
+            ydl_opts['subtitlesformat'] = 'srt/best'
+            postprocessors.append({
+                'key': 'FFmpegSubtitlesConvertor',
+                'format': 'srt',
+            })
+            if subs_mode == "embed":
+                postprocessors.append({'key': 'FFmpegEmbedSubtitle'})
+
+        if settings.get("embed_chapters", True) and not is_mp3:
+            postprocessors.append({
+                'key': 'FFmpegMetadata',
+                'add_chapters': True,
+                'add_metadata': True,
+            })
+
+        if settings.get("embed_thumbnail", False):
+            ydl_opts['writethumbnail'] = True
+            postprocessors.append({
+                'key': 'FFmpegThumbnailsConvertor',
+                'format': 'jpg',
+            })
+            postprocessors.append({'key': 'EmbedThumbnail'})
+
+    if postprocessors:
+        ydl_opts['postprocessors'] = postprocessors
 
     _paused_by_user = False
     try:

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QListWidget, QListWidgetItem, QStackedWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QAbstractItemView, QComboBox, QCheckBox,
     QProgressBar, QTextEdit, QFileDialog, QMessageBox, QFrame, QTabWidget, QMenu,
-    QSlider
+    QSlider, QScrollArea
 )
 
 import styles as _styles
@@ -1145,7 +1145,7 @@ class SettingsPage(QWidget):
         r_fmt.addSpacing(20)
         r_fmt.addWidget(QLabel(tr("settings_quality_lbl")))
         self.qual_combo = QComboBox()
-        self.qual_combo.addItems(["1080p", "720p", "480p"])
+        self.qual_combo.addItems(["Best", "2160p", "1440p", "1080p", "720p", "480p"])
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
         self.qual_combo.currentTextChanged.connect(self._save)
         r_fmt.addWidget(self.qual_combo)
@@ -1212,6 +1212,66 @@ class SettingsPage(QWidget):
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
         self.chk_save_exit.toggled.connect(self._save)
         gl.addWidget(self.chk_save_exit)
+
+        # Дополнительные опции YouTube (SponsorBlock, субтитры, обложка, главы, аудиодорожка)
+        sep_ytp = QFrame()
+        sep_ytp.setFrameShape(QFrame.Shape.HLine)
+        sep_ytp.setStyleSheet(f"color: {COLORS['border']};")
+        gl.addWidget(sep_ytp)
+
+        ytp_hdr = QLabel(tr("settings_yt_pro_hdr"))
+        ytp_hdr.setStyleSheet(f"color: {COLORS['text_secondary']}; font-weight: bold;")
+        gl.addWidget(ytp_hdr)
+
+        r_ytp = QHBoxLayout()
+        r_ytp.addWidget(QLabel(tr("settings_subs_lbl")))
+        self.subs_combo = QComboBox()
+        for code, lbl in [
+            ("none", tr("subs_none")),
+            ("srt", tr("subs_srt")),
+            ("embed", tr("subs_embed")),
+        ]:
+            self.subs_combo.addItem(lbl, code)
+        self.subs_combo.currentIndexChanged.connect(self._save)
+        r_ytp.addWidget(self.subs_combo)
+
+        r_ytp.addSpacing(10)
+        r_ytp.addWidget(QLabel(tr("settings_subs_langs_lbl")))
+        self.subs_langs_edit = QLineEdit(settings.get("subtitles_langs", "ru,en"))
+        self.subs_langs_edit.setFixedWidth(84)
+        self.subs_langs_edit.setPlaceholderText("ru,en")
+        self.subs_langs_edit.editingFinished.connect(self._save)
+        r_ytp.addWidget(self.subs_langs_edit)
+
+        r_ytp.addSpacing(16)
+        r_ytp.addWidget(QLabel(tr("settings_audio_lang_lbl")))
+        self.audio_lang_combo = QComboBox()
+        for code, lbl in [
+            ("auto", tr("audio_lang_auto")),
+            ("original", tr("audio_lang_orig")),
+            ("ru", tr("audio_lang_ru")),
+            ("en", tr("audio_lang_en")),
+        ]:
+            self.audio_lang_combo.addItem(lbl, code)
+        self.audio_lang_combo.currentIndexChanged.connect(self._save)
+        r_ytp.addWidget(self.audio_lang_combo)
+        r_ytp.addStretch()
+        gl.addLayout(r_ytp)
+
+        self.chk_sponsorblock = QCheckBox(tr("settings_chk_sponsorblock"))
+        self.chk_sponsorblock.setChecked(settings.get("sponsorblock_remove", False))
+        self.chk_sponsorblock.toggled.connect(self._save)
+        gl.addWidget(self.chk_sponsorblock)
+
+        self.chk_thumb = QCheckBox(tr("settings_chk_thumb"))
+        self.chk_thumb.setChecked(settings.get("embed_thumbnail", False))
+        self.chk_thumb.toggled.connect(self._save)
+        gl.addWidget(self.chk_thumb)
+
+        self.chk_chapters = QCheckBox(tr("settings_chk_chapters"))
+        self.chk_chapters.setChecked(settings.get("embed_chapters", True))
+        self.chk_chapters.toggled.connect(self._save)
+        gl.addWidget(self.chk_chapters)
 
         # Подпапки и шаблоны имён файлов
         sep_org = QFrame()
@@ -1286,7 +1346,11 @@ class SettingsPage(QWidget):
 
         self.sync_from_settings()
         gl.addStretch()
-        tabs.addTab(gen, tr("settings_tab_main"))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(gen)
+        tabs.addTab(scroll, tr("settings_tab_main"))
         tabs.addTab(self._updater, tr("settings_tab_updates"))
         lay.addWidget(tabs, 1)
 
@@ -1329,12 +1393,17 @@ class SettingsPage(QWidget):
 
     def sync_from_settings(self):
         self.dir_edit.setText(settings.get("download_folder", ""))
-        for w in (self.lang_combo, self.fmt_combo, self.qual_combo, self.browser_combo,
-                  self.rate_combo, self.retries_combo,
-                  self.subfolder_combo, self.filename_combo,
-                  self.chk_auto, self.chk_conv, self.chk_fix_tags,
-                  self.chk_desc, self.chk_save_exit,
-                  self.api_key_edit, self.inv_edit):
+        widgets = (
+            self.lang_combo, self.fmt_combo, self.qual_combo, self.browser_combo,
+            self.rate_combo, self.retries_combo,
+            self.subs_combo, self.subs_langs_edit, self.audio_lang_combo,
+            self.subfolder_combo, self.filename_combo,
+            self.chk_auto, self.chk_conv, self.chk_fix_tags,
+            self.chk_sponsorblock, self.chk_thumb, self.chk_chapters,
+            self.chk_desc, self.chk_save_exit,
+            self.api_key_edit, self.inv_edit,
+        )
+        for w in widgets:
             w.blockSignals(True)
         lang_idx = self.lang_combo.findData(settings.get("language", "auto"))
         self.lang_combo.setCurrentIndex(lang_idx if lang_idx >= 0 else 0)
@@ -1345,6 +1414,11 @@ class SettingsPage(QWidget):
         self.rate_combo.setCurrentIndex(rate_idx if rate_idx >= 0 else 0)
         ret_idx = self.retries_combo.findData(int(settings.get("download_retries", 3) or 0))
         self.retries_combo.setCurrentIndex(ret_idx if ret_idx >= 0 else 2)
+        subs_idx = self.subs_combo.findData(settings.get("subtitles_mode", "none"))
+        self.subs_combo.setCurrentIndex(subs_idx if subs_idx >= 0 else 0)
+        self.subs_langs_edit.setText(settings.get("subtitles_langs", "ru,en"))
+        aud_idx = self.audio_lang_combo.findData(settings.get("audio_track_lang", "auto"))
+        self.audio_lang_combo.setCurrentIndex(aud_idx if aud_idx >= 0 else 0)
         sub_idx = self.subfolder_combo.findData(settings.get("subfolder_mode", "none"))
         self.subfolder_combo.setCurrentIndex(sub_idx if sub_idx >= 0 else 0)
         tpl_idx = self.filename_combo.findData(settings.get("filename_template", "default"))
@@ -1352,16 +1426,14 @@ class SettingsPage(QWidget):
         self.chk_auto.setChecked(settings.get("auto_capture_enabled", True))
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
         self.chk_fix_tags.setChecked(settings.get("fix_mp3_tags", True))
+        self.chk_sponsorblock.setChecked(settings.get("sponsorblock_remove", False))
+        self.chk_thumb.setChecked(settings.get("embed_thumbnail", False))
+        self.chk_chapters.setChecked(settings.get("embed_chapters", True))
         self.chk_desc.setChecked(settings.get("download_with_description", False))
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
         self.api_key_edit.setText(settings.get("youtube_api_key", ""))
         self.inv_edit.setText(settings.get("invidious_url", "http://localhost:3000"))
-        for w in (self.lang_combo, self.fmt_combo, self.qual_combo, self.browser_combo,
-                  self.rate_combo, self.retries_combo,
-                  self.subfolder_combo, self.filename_combo,
-                  self.chk_auto, self.chk_conv, self.chk_fix_tags,
-                  self.chk_desc, self.chk_save_exit,
-                  self.api_key_edit, self.inv_edit):
+        for w in widgets:
             w.blockSignals(False)
         self._update_org_preview()
 
@@ -1384,6 +1456,12 @@ class SettingsPage(QWidget):
         settings["cookies_browser"] = self.browser_combo.currentText()
         settings["rate_limit_mbps"] = float(self.rate_combo.currentData() or 0.0)
         settings["download_retries"] = int(self.retries_combo.currentData() if self.retries_combo.currentData() is not None else 3)
+        settings["subtitles_mode"] = self.subs_combo.currentData() or "none"
+        settings["subtitles_langs"] = self.subs_langs_edit.text().strip() or "ru,en"
+        settings["audio_track_lang"] = self.audio_lang_combo.currentData() or "auto"
+        settings["sponsorblock_remove"] = self.chk_sponsorblock.isChecked()
+        settings["embed_thumbnail"] = self.chk_thumb.isChecked()
+        settings["embed_chapters"] = self.chk_chapters.isChecked()
         settings["subfolder_mode"] = self.subfolder_combo.currentData() or "none"
         settings["filename_template"] = self.filename_combo.currentData() or "default"
         settings["auto_capture_enabled"] = self.chk_auto.isChecked()
@@ -1862,7 +1940,7 @@ class MainWindow(QMainWindow):
         fl.addWidget(self.btn_pause)
 
         self.quick_fmt = QComboBox()
-        self.quick_fmt.addItems(["MP4 1080p", "MP4 720p", "MP4 480p", "MP3"])
+        self.quick_fmt.addItems(["MP4 Best", "MP4 2160p", "MP4 1440p", "MP4 1080p", "MP4 720p", "MP4 480p", "MP3"])
         self.quick_fmt.setFixedHeight(28)
         self.quick_fmt.currentTextChanged.connect(self._on_quick_fmt_changed)
         fl.addWidget(self.quick_fmt)
