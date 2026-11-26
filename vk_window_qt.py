@@ -340,7 +340,7 @@ class _VKPlaylistTab(QWidget):
         hdr.setHighlightSections(False)
 
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(28)
+        self.table.verticalHeader().setDefaultSectionSize(24)
 
         layout.addWidget(self.table, 1)
 

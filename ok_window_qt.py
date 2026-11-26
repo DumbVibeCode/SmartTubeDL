@@ -367,6 +367,7 @@ class _OKTab(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         if on_ctx_menu:
             self.table.customContextMenuRequested.connect(on_ctx_menu)

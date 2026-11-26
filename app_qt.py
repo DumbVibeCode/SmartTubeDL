@@ -198,6 +198,7 @@ class HistoryWindow(QWidget):
         self.table.setAlternatingRowColors(False)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
 
         # Растягиваем колонку "Название"
         table_header = self.table.horizontalHeader()
