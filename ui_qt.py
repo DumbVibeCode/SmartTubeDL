@@ -25,6 +25,7 @@ import styles as _styles
 from styles import STYLESHEET_MINIMAL as STYLESHEET, COLORS_MINIMAL as COLORS
 from config import settings, save_settings
 from logger import log_message
+from i18n import tr
 from queues import add_to_queue, process_queue
 from utils import is_download_active
 import docker_manager
@@ -421,7 +422,7 @@ class _ResultTab(QWidget):
         self.table = QTableWidget()
         self.table.setObjectName("resultsTable")
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Название", "Канал", "Длительность"])
+        self.table.setHorizontalHeaderLabels([tr("yt_col_title"), tr("yt_col_channel"), tr("yt_col_duration")])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -445,7 +446,7 @@ class _ResultTab(QWidget):
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(16, 4, 16, 4)
         self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("Фильтр по названию, каналу...")
+        self.filter_input.setPlaceholderText(tr("yt_filter_ph"))
         filter_row.addWidget(self.filter_input)
         layout.addLayout(filter_row)
 
@@ -506,7 +507,7 @@ class SearchWindow(QMainWindow):
 
         self.search_input = QLineEdit()
         self.search_input.setObjectName("searchInput")
-        self.search_input.setPlaceholderText("Поиск на YouTube...")
+        self.search_input.setPlaceholderText(tr("yt_search_ph"))
         self.search_input.setText(settings.get("last_search_query", ""))
         self.search_input.returnPressed.connect(self._on_search)
         search_row.addWidget(self.search_input, 1)
@@ -524,16 +525,16 @@ class SearchWindow(QMainWindow):
         self.history_btn.setObjectName("historyBtn")
         self.history_btn.setProperty("secondary", True)
         self.history_btn.setFixedWidth(26)
-        self.history_btn.setToolTip("История запросов")
+        self.history_btn.setToolTip(tr("yt_tip_history"))
         self.history_btn.clicked.connect(self._show_history_menu)
         search_row.addWidget(self.history_btn)
 
-        self.search_btn = QPushButton("Найти")
+        self.search_btn = QPushButton(tr("yt_btn_search"))
         self.search_btn.setObjectName("searchBtn")
         self.search_btn.clicked.connect(self._on_search)
         search_row.addWidget(self.search_btn)
 
-        self.settings_btn = QPushButton("Настройки")
+        self.settings_btn = QPushButton(tr("yt_btn_settings"))
         self.settings_btn.setProperty("secondary", True)
         self.settings_btn.setCheckable(True)
         self.settings_btn.clicked.connect(self._toggle_settings)
@@ -544,7 +545,7 @@ class SearchWindow(QMainWindow):
         self.theme_btn.setObjectName("historyBtn")
         self.theme_btn.setProperty("secondary", True)
         self.theme_btn.setFixedWidth(28)
-        self.theme_btn.setToolTip("Переключить тёмную/светлую тему")
+        self.theme_btn.setToolTip(tr("yt_tip_theme"))
         self.theme_btn.clicked.connect(self._toggle_theme)
         search_row.addWidget(self.theme_btn)
 

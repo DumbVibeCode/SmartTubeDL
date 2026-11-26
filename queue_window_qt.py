@@ -16,6 +16,7 @@ from queues import (
     clear_queue_file, move_in_queue, process_queue
 )
 from logger import log_message
+from i18n import tr
 
 
 def _display_title(url: str) -> str:
@@ -36,13 +37,13 @@ class QueueWindow(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Очередь загрузок")
+        self.setWindowTitle(tr("queue_title"))
         self.setGeometry(100, 100, 700, 450)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        header = QLabel("Очередь загрузок")
+        header = QLabel(tr("queue_title"))
         header_font = QFont()
         header_font.setPointSize(12)
         header_font.setBold(True)
@@ -51,7 +52,7 @@ class QueueWindow(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Статус", "Название"])
+        self.table.setHorizontalHeaderLabels([tr("queue_col_status"), tr("queue_col_title")])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -72,11 +73,11 @@ class QueueWindow(QWidget):
 
         btn_layout = QHBoxLayout()
 
-        self.pause_btn = QPushButton("Пауза")
+        self.pause_btn = QPushButton(tr("queue_btn_pause"))
         self.pause_btn.clicked.connect(self._toggle_pause)
         btn_layout.addWidget(self.pause_btn)
 
-        self.delete_btn = QPushButton("Удалить выбранное")
+        self.delete_btn = QPushButton(tr("queue_btn_delete"))
         self.delete_btn.setProperty("secondary", True)
         self.delete_btn.clicked.connect(self._delete_selected)
         btn_layout.addWidget(self.delete_btn)
@@ -84,34 +85,31 @@ class QueueWindow(QWidget):
         self.up_btn = QPushButton("▲")
         self.up_btn.setObjectName("historyBtn")
         self.up_btn.setProperty("secondary", True)
-        self.up_btn.setToolTip("Поднять выше в очереди")
+        self.up_btn.setToolTip("▲")
         self.up_btn.clicked.connect(lambda: self._move_selected(-1))
         btn_layout.addWidget(self.up_btn)
 
         self.down_btn = QPushButton("▼")
         self.down_btn.setObjectName("historyBtn")
         self.down_btn.setProperty("secondary", True)
-        self.down_btn.setToolTip("Опустить ниже в очереди")
+        self.down_btn.setToolTip("▼")
         self.down_btn.clicked.connect(lambda: self._move_selected(1))
         btn_layout.addWidget(self.down_btn)
 
         btn_layout.addSpacing(8)
 
-        import_btn = QPushButton("Импорт (.txt)")
+        import_btn = QPushButton(tr("queue_btn_import"))
         import_btn.setProperty("secondary", True)
-        import_btn.setToolTip("Добавить ссылки из текстового файла в очередь")
         import_btn.clicked.connect(self._import_queue)
         btn_layout.addWidget(import_btn)
 
-        export_btn = QPushButton("Экспорт (.txt)")
+        export_btn = QPushButton(tr("queue_btn_export"))
         export_btn.setProperty("secondary", True)
-        export_btn.setToolTip("Сохранить ссылки очереди в текстовый файл")
         export_btn.clicked.connect(self._export_queue)
         btn_layout.addWidget(export_btn)
 
-        clear_btn = QPushButton("Очистить")
+        clear_btn = QPushButton(tr("queue_btn_clear"))
         clear_btn.setProperty("secondary", True)
-        clear_btn.setToolTip("Очистить ожидающие загрузки")
         clear_btn.clicked.connect(self._clear_queue)
         btn_layout.addWidget(clear_btn)
 
@@ -138,22 +136,22 @@ class QueueWindow(QWidget):
 
         # YouTube
         if is_dl:
-            rows.append(("↓ Загружается", current_url))
+            rows.append((tr("queue_st_dl"), current_url))
             for url in queue_urls:
-                rows.append(("⏳ Ожидание", url))
+                rows.append((tr("queue_st_wait"), url))
         elif is_paused and queue_urls:
-            rows.append(("⏸ На паузе", queue_urls[0]))
+            rows.append((tr("queue_st_pause"), queue_urls[0]))
             for url in queue_urls[1:]:
-                rows.append(("⏳ Ожидание", url))
+                rows.append((tr("queue_st_wait"), url))
         else:
             for url in queue_urls:
-                rows.append(("⏳ Ожидание", url))
+                rows.append((tr("queue_st_wait"), url))
 
         # VK (показываем отдельной группой)
         if current_vk:
-            rows.append(("↓ Загружается", current_vk))
+            rows.append((tr("queue_st_dl"), current_vk))
         for item in vk_queue:
-            rows.append(("⏳ Ожидание", item["key"]))
+            rows.append((tr("queue_st_wait"), item["key"]))
 
         selected_before = set(self._selected_urls())
 
@@ -168,13 +166,13 @@ class QueueWindow(QWidget):
                 self.table.selectRow(i)
 
         if is_paused:
-            self.pause_btn.setText("Возобновить")
+            self.pause_btn.setText(tr("queue_btn_resume"))
             self.pause_btn.setEnabled(True)
         elif is_dl:
-            self.pause_btn.setText("Пауза")
+            self.pause_btn.setText(tr("queue_btn_pause"))
             self.pause_btn.setEnabled(True)
         else:
-            self.pause_btn.setText("Пауза")
+            self.pause_btn.setText(tr("queue_btn_pause"))
             self.pause_btn.setEnabled(False)
 
     def _selected_urls(self) -> list[str]:

@@ -310,8 +310,10 @@ class YouTubeDownloaderApp(QApplication):
         # Tray-приложение: не завершать при закрытии последнего окна
         self.setQuitOnLastWindowClosed(False)
 
-        # Загружаем настройки
+        # Загружаем настройки и инициализируем язык/редакцию
         settings.update(load_settings())
+        import i18n
+        i18n.set_language(settings.get("language", "auto"))
 
         # Применяем стиль Fusion и тему (тёмную/светлую) из настроек
         self.setStyle("Fusion")
@@ -727,50 +729,46 @@ class TrayIcon(QSystemTrayIcon):
 
     def _create_menu(self) -> QMenu:
         """Создаёт контекстное меню трея"""
+        from i18n import tr, is_youtube_only
         menu = QMenu()
 
         # === Основные действия ===
-        action_folder = menu.addAction("Выбрать папку")
+        action_folder = menu.addAction(tr("tray_settings"))
         action_folder.triggered.connect(self.app.show_settings_dialog)
 
-        action_history = menu.addAction("История загрузок")
+        action_history = menu.addAction(tr("tray_history"))
         action_history.triggered.connect(self.app.show_history_window)
 
-        action_queue = menu.addAction("Очередь загрузок")
+        action_queue = menu.addAction(tr("tray_queue"))
         action_queue.triggered.connect(self.app.show_queue_window)
 
-        action_search = menu.addAction("Поиск на YouTube")
+        action_search = menu.addAction(tr("tray_youtube"))
         action_search.triggered.connect(self.app.show_search_window)
 
-        action_vk = menu.addAction("Поиск ВКонтакте")
-        action_vk.triggered.connect(self.app.show_vk_search_window)
+        if not is_youtube_only():
+            action_vk = menu.addAction(tr("tray_vk"))
+            action_vk.triggered.connect(self.app.show_vk_search_window)
 
-        action_ok = menu.addAction("Одноклассники")
-        action_ok.triggered.connect(self.app.show_ok_search_window)
+            action_ok = menu.addAction(tr("tray_ok"))
+            action_ok.triggered.connect(self.app.show_ok_search_window)
 
-        action_direct = menu.addAction("Скачать по ссылке")
-        action_direct.triggered.connect(self.app.show_direct_download_dialog)
-
-        action_bulk = menu.addAction("Скачать по ссылкам (пачкой)")
+        action_bulk = menu.addAction(tr("tray_links"))
         action_bulk.triggered.connect(self.app.show_bulk_download_dialog)
 
-        action_debug = menu.addAction("Режим отладки")
+        action_debug = menu.addAction(tr("tray_logs"))
         action_debug.triggered.connect(self.app.show_debug_window)
-
-        action_updates = menu.addAction("Обновления утилит")
-        action_updates.triggered.connect(self.app.show_updater_window)
 
         menu.addSeparator()
 
         # === Формат ===
-        menu.addAction("Формат:").setEnabled(False)
+        menu.addAction(tr("tray_format") + ":").setEnabled(False)
 
-        action_mp3 = menu.addAction("  Музыка (MP3)")
+        action_mp3 = menu.addAction("  MP3")
         action_mp3.setCheckable(True)
         action_mp3.setChecked(settings.get("download_format") == "mp3")
         action_mp3.triggered.connect(lambda: self._set_format("mp3"))
 
-        action_mp4 = menu.addAction("  Видео (MP4)")
+        action_mp4 = menu.addAction("  MP4")
         action_mp4.setCheckable(True)
         action_mp4.setChecked(settings.get("download_format") == "mp4")
         action_mp4.triggered.connect(lambda: self._set_format("mp4"))
@@ -780,7 +778,7 @@ class TrayIcon(QSystemTrayIcon):
         menu.addSeparator()
 
         # === Качество ===
-        menu.addAction("Качество:").setEnabled(False)
+        menu.addAction(tr("tray_quality") + ":").setEnabled(False)
 
         is_video = settings.get("download_format") == "mp4"
 
@@ -807,19 +805,19 @@ class TrayIcon(QSystemTrayIcon):
         menu.addSeparator()
 
         # === Настройки ===
-        action_auto = menu.addAction("Автоперехват ссылок")
+        action_auto = menu.addAction(tr("tray_auto_capture"))
         action_auto.setCheckable(True)
         action_auto.setChecked(settings.get("auto_capture_enabled", True))
         action_auto.triggered.connect(self._toggle_auto_capture)
         self.action_auto = action_auto
 
-        action_convert = menu.addAction("Конвертация")
+        action_convert = menu.addAction(tr("tray_convert"))
         action_convert.setCheckable(True)
         action_convert.setChecked(settings.get("conversion_enabled", True))
         action_convert.triggered.connect(self._toggle_conversion)
         self.action_convert = action_convert
 
-        action_desc = menu.addAction("Скачивать с описаниями")
+        action_desc = menu.addAction(tr("tray_desc"))
         action_desc.setCheckable(True)
         action_desc.setChecked(settings.get("download_with_description", False))
         action_desc.triggered.connect(self._toggle_description)
@@ -829,9 +827,9 @@ class TrayIcon(QSystemTrayIcon):
 
         # === Статус ===
         queue_count = get_queue_count()
-        status_text = f"Статус: {self.download_status}"
+        status_text = f"{self.download_status}"
         if queue_count > 0:
-            status_text += f" (в очереди: {queue_count})"
+            status_text += f" ({queue_count})"
 
         action_status = menu.addAction(status_text)
         action_status.setEnabled(False)
@@ -840,10 +838,10 @@ class TrayIcon(QSystemTrayIcon):
         menu.addSeparator()
 
         # === Перезапуск и Выход ===
-        action_restart = menu.addAction("Перезапустить")
+        action_restart = menu.addAction(tr("tray_restart"))
         action_restart.triggered.connect(self._restart_app)
 
-        action_exit = menu.addAction("Выход")
+        action_exit = menu.addAction(tr("tray_exit"))
         action_exit.triggered.connect(self._exit_app)
 
         return menu

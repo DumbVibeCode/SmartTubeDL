@@ -25,6 +25,7 @@ from download_history import load_download_history
 from logger import log_message
 from queues import add_to_queue, process_queue, get_queue_count
 import utils as _utils
+from i18n import tr, is_youtube_only, set_language
 
 
 # ── Раздел: Mail.ru (полноценный поиск музыки и плейлистов + вкладки) ────────
@@ -612,44 +613,36 @@ class LinksPage(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(10)
 
-        hdr = QLabel("Загрузка по ссылкам (одиночная или пачкой)")
+        hdr = QLabel(tr("links_title"))
         f = QFont()
         f.setPointSize(12)
         f.setBold(True)
         hdr.setFont(f)
         lay.addWidget(hdr)
 
-        hint = QLabel(
-            "Вставьте одну или несколько ссылок (по одной в строке или через пробел).\n"
-            "Поддерживаются: YouTube (видео, каналы, плейлисты), ВКонтакте, Одноклассники, Mail.ru, Неизвестный Гений."
-        )
+        hint = QLabel(tr("links_hint_yt" if is_youtube_only() else "links_hint_full"))
         hint.setStyleSheet(f"color: {COLORS['text_secondary']};")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
         self.text_edit = QTextEdit()
-        self.text_edit.setPlaceholderText(
-            "https://youtu.be/...\n"
-            "https://www.youtube.com/@channel/videos\n"
-            "https://vkvideo.ru/video-...\n"
-            "https://my.mail.ru/music/playlists/..."
-        )
+        self.text_edit.setPlaceholderText(tr("links_placeholder_yt" if is_youtube_only() else "links_placeholder_full"))
         lay.addWidget(self.text_edit, 1)
 
         btns = QHBoxLayout()
-        btn_paste = QPushButton("Вставить из буфера")
+        btn_paste = QPushButton(tr("links_paste_btn"))
         btn_paste.setProperty("secondary", True)
         btn_paste.clicked.connect(self._paste)
         btns.addWidget(btn_paste)
 
-        btn_clear = QPushButton("Очистить")
+        btn_clear = QPushButton(tr("links_clear_btn"))
         btn_clear.setProperty("secondary", True)
         btn_clear.clicked.connect(self.text_edit.clear)
         btns.addWidget(btn_clear)
 
         btns.addStretch()
 
-        self.btn_go = QPushButton("Запустить загрузку")
+        self.btn_go = QPushButton(tr("links_add_btn"))
         self.btn_go.clicked.connect(self._run)
         btns.addWidget(self.btn_go)
         lay.addLayout(btns)
@@ -727,7 +720,7 @@ class HistoryPage(QWidget):
         lay.setSpacing(8)
 
         top = QHBoxLayout()
-        hdr = QLabel("История загрузок")
+        hdr = QLabel(tr("history_title"))
         f = QFont()
         f.setPointSize(12)
         f.setBold(True)
@@ -736,29 +729,35 @@ class HistoryPage(QWidget):
         top.addStretch()
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Поиск по названию...")
+        self.search_input.setPlaceholderText(tr("history_search_ph"))
         self.search_input.setMaximumWidth(260)
         self.search_input.textChanged.connect(self._apply_filter)
         top.addWidget(self.search_input)
 
         self.source_combo = QComboBox()
-        self.source_combo.addItems(["Все источники", "YouTube", "ВКонтакте", "Одноклассники", "Mail.ru"])
+        self.source_combo.addItems([tr("history_all_sources"), "YouTube", "ВКонтакте", "Одноклассники", "Mail.ru"])
         self.source_combo.currentTextChanged.connect(self._apply_filter)
+        if is_youtube_only():
+            self.source_combo.setVisible(False)
         top.addWidget(self.source_combo)
 
         self.fmt_combo = QComboBox()
-        self.fmt_combo.addItems(["Все форматы", "MP4", "MP3"])
+        self.fmt_combo.addItems([tr("history_all_formats"), "MP4", "MP3"])
         self.fmt_combo.currentTextChanged.connect(self._apply_filter)
         top.addWidget(self.fmt_combo)
 
-        btn_refresh = QPushButton("Обновить")
+        btn_refresh = QPushButton(tr("btn_refresh"))
         btn_refresh.setProperty("secondary", True)
         btn_refresh.clicked.connect(lambda: self.reload(force=True))
         top.addWidget(btn_refresh)
         lay.addLayout(top)
 
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Дата", "Источник", "Название", "Формат", "Длительность"])
+        self.table.setHorizontalHeaderLabels([
+            tr("col_date"), tr("col_source"), tr("col_title"), tr("col_format"), tr("col_duration")
+        ])
+        if is_youtube_only():
+            self.table.setColumnHidden(1, True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -785,22 +784,21 @@ class HistoryPage(QWidget):
         lay.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
-        btn_dl = QPushButton("Скачать выбранные")
+        btn_dl = QPushButton(tr("btn_dl_selected"))
         btn_dl.clicked.connect(self._download_selected)
         btns.addWidget(btn_dl)
 
-        btn_folder = QPushButton("Открыть папку загрузок")
+        btn_folder = QPushButton(tr("btn_open_dl_folder"))
         btn_folder.setProperty("secondary", True)
         btn_folder.clicked.connect(self._open_folder)
         btns.addWidget(btn_folder)
 
-        btn_export = QPushButton("Экспорт (.txt)")
+        btn_export = QPushButton(tr("btn_export_txt"))
         btn_export.setProperty("secondary", True)
-        btn_export.setToolTip("Сохранить ссылки выбранных (или всех отфильтрованных) записей в .txt")
         btn_export.clicked.connect(self._export_links)
         btns.addWidget(btn_export)
 
-        btn_del = QPushButton("Удалить выбранные")
+        btn_del = QPushButton(tr("btn_delete_selected"))
         btn_del.setProperty("secondary", True)
         btn_del.clicked.connect(self._delete_selected)
         btns.addWidget(btn_del)
@@ -891,7 +889,9 @@ class HistoryPage(QWidget):
             rfmt = str(entry.get("format", "N/A")).upper()
             if q and q not in title.lower():
                 continue
-            if src_filter != "Все источники" and src != src_filter:
+            if is_youtube_only() and src != "YouTube":
+                continue
+            if src_filter != tr("history_all_sources") and src != src_filter:
                 continue
             if fmt in ("MP4", "MP3") and rfmt != fmt:
                 continue
@@ -913,7 +913,7 @@ class HistoryPage(QWidget):
                 self.table.setItem(row, 4, QTableWidgetItem(dur))
         finally:
             self.table.setUpdatesEnabled(True)
-        self.count_lbl.setText(f"Показано: {len(filtered)} из {len(self._entries)}")
+        self.count_lbl.setText(tr("history_shown", shown=len(filtered), total=len(self._entries)))
 
     def _selected_rows(self) -> list[int]:
         return sorted({idx.row() for idx in self.table.selectedIndexes()})
@@ -1101,18 +1101,41 @@ class SettingsPage(QWidget):
 
         # Папка загрузок
         r_dir = QHBoxLayout()
-        r_dir.addWidget(QLabel("Папка загрузок:"))
+        r_dir.addWidget(QLabel(tr("settings_folder_lbl")))
         self.dir_edit = QLineEdit(settings.get("download_folder", ""))
         self.dir_edit.setReadOnly(True)
         r_dir.addWidget(self.dir_edit, 1)
-        btn_browse = QPushButton("Выбрать...")
+        btn_browse = QPushButton(tr("btn_browse"))
         btn_browse.clicked.connect(self._choose_folder)
         r_dir.addWidget(btn_browse)
         gl.addLayout(r_dir)
 
+        # Язык интерфейса
+        r_lang = QHBoxLayout()
+        r_lang.addWidget(QLabel(tr("settings_lang_lbl")))
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItem(tr("settings_lang_auto"), "auto")
+        self.lang_combo.addItem("Русский", "ru")
+        self.lang_combo.addItem("English", "en")
+        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
+        r_lang.addWidget(self.lang_combo)
+
+        self.lang_restart_lbl = QLabel(tr("settings_restart_hint"))
+        self.lang_restart_lbl.setProperty("secondary", True)
+        self.lang_restart_lbl.setVisible(False)
+        r_lang.addWidget(self.lang_restart_lbl)
+
+        self.lang_restart_btn = QPushButton(tr("settings_restart_btn"))
+        self.lang_restart_btn.setProperty("secondary", True)
+        self.lang_restart_btn.setVisible(False)
+        self.lang_restart_btn.clicked.connect(self._request_restart)
+        r_lang.addWidget(self.lang_restart_btn)
+        r_lang.addStretch()
+        gl.addLayout(r_lang)
+
         # Формат и качество
         r_fmt = QHBoxLayout()
-        r_fmt.addWidget(QLabel("Формат:"))
+        r_fmt.addWidget(QLabel(tr("settings_format_lbl")))
         self.fmt_combo = QComboBox()
         self.fmt_combo.addItems(["mp4", "mp3"])
         self.fmt_combo.setCurrentText(settings.get("download_format", "mp4"))
@@ -1120,7 +1143,7 @@ class SettingsPage(QWidget):
         r_fmt.addWidget(self.fmt_combo)
 
         r_fmt.addSpacing(20)
-        r_fmt.addWidget(QLabel("Качество видео:"))
+        r_fmt.addWidget(QLabel(tr("settings_quality_lbl")))
         self.qual_combo = QComboBox()
         self.qual_combo.addItems(["1080p", "720p", "480p"])
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
@@ -1128,7 +1151,7 @@ class SettingsPage(QWidget):
         r_fmt.addWidget(self.qual_combo)
 
         r_fmt.addSpacing(20)
-        r_fmt.addWidget(QLabel("Браузер для cookies YouTube:"))
+        r_fmt.addWidget(QLabel(tr("settings_cookies_lbl")))
         self.browser_combo = QComboBox()
         self.browser_combo.addItems(["firefox", "chrome", "edge", ""])
         self.browser_combo.setCurrentText(settings.get("cookies_browser", "firefox"))
@@ -1139,23 +1162,23 @@ class SettingsPage(QWidget):
 
         # Лимит скорости и авто-повторы при обрыве
         r_net = QHBoxLayout()
-        r_net.addWidget(QLabel("Лимит скорости (YouTube):"))
+        r_net.addWidget(QLabel(tr("settings_rate_lbl")))
         self.rate_combo = QComboBox()
         for val, lbl in [
-            (0.0, "Без ограничений"),
-            (0.5, "0.5 МБ/с"),
-            (1.0, "1 МБ/с"),
-            (2.0, "2 МБ/с"),
-            (5.0, "5 МБ/с"),
-            (10.0, "10 МБ/с"),
-            (20.0, "20 МБ/с"),
+            (0.0, tr("settings_rate_unlimited")),
+            (0.5, "0.5 MB/s"),
+            (1.0, "1 MB/s"),
+            (2.0, "2 MB/s"),
+            (5.0, "5 MB/s"),
+            (10.0, "10 MB/s"),
+            (20.0, "20 MB/s"),
         ]:
             self.rate_combo.addItem(lbl, val)
         self.rate_combo.currentIndexChanged.connect(self._save)
         r_net.addWidget(self.rate_combo)
 
         r_net.addSpacing(20)
-        r_net.addWidget(QLabel("Повторов при обрыве:"))
+        r_net.addWidget(QLabel(tr("settings_retries_lbl")))
         self.retries_combo = QComboBox()
         for cnt in (0, 2, 3, 5, 10):
             self.retries_combo.addItem(str(cnt), cnt)
@@ -1165,27 +1188,27 @@ class SettingsPage(QWidget):
         gl.addLayout(r_net)
 
         # Чекбоксы поведения
-        self.chk_auto = QCheckBox("Автоперехват ссылок YouTube из буфера обмена")
+        self.chk_auto = QCheckBox(tr("settings_chk_auto"))
         self.chk_auto.setChecked(settings.get("auto_capture_enabled", True))
         self.chk_auto.toggled.connect(self._save)
         gl.addWidget(self.chk_auto)
 
-        self.chk_conv = QCheckBox("Включить конвертацию (MP3 / MP4)")
+        self.chk_conv = QCheckBox(tr("settings_chk_conv"))
         self.chk_conv.setChecked(settings.get("conversion_enabled", True))
         self.chk_conv.toggled.connect(self._save)
         gl.addWidget(self.chk_conv)
 
-        self.chk_fix_tags = QCheckBox("Дописывать / чинить ID3-теги MP3 (UTF-16, если пустые или битые)")
+        self.chk_fix_tags = QCheckBox(tr("settings_chk_tags"))
         self.chk_fix_tags.setChecked(settings.get("fix_mp3_tags", True))
         self.chk_fix_tags.toggled.connect(self._save)
         gl.addWidget(self.chk_fix_tags)
 
-        self.chk_desc = QCheckBox("Скачивать с описаниями (сохранять .txt рядом)")
+        self.chk_desc = QCheckBox(tr("settings_chk_desc"))
         self.chk_desc.setChecked(settings.get("download_with_description", False))
         self.chk_desc.toggled.connect(self._save)
         gl.addWidget(self.chk_desc)
 
-        self.chk_save_exit = QCheckBox("Сохранять настройки при выходе")
+        self.chk_save_exit = QCheckBox(tr("settings_chk_save_exit"))
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
         self.chk_save_exit.toggled.connect(self._save)
         gl.addWidget(self.chk_save_exit)
@@ -1196,25 +1219,25 @@ class SettingsPage(QWidget):
         sep_org.setStyleSheet(f"color: {COLORS['border']};")
         gl.addWidget(sep_org)
 
-        org_hdr = QLabel("Сортировка по подпапкам и шаблоны имён")
+        org_hdr = QLabel(tr("settings_org_hdr"))
         org_hdr.setStyleSheet(f"color: {COLORS['text_secondary']}; font-weight: bold;")
         gl.addWidget(org_hdr)
 
         self._subfolder_modes = [
-            ("none", "Всё в одну папку"),
-            ("source", "По источнику (YouTube / VK / OK / Mail.ru)"),
-            ("author", "По каналу / исполнителю"),
-            ("source_author", "Источник / Канал (исполнитель)"),
+            ("none", tr("sub_none")),
+            ("source", tr("sub_source_yt" if is_youtube_only() else "sub_source_full")),
+            ("author", tr("sub_author")),
+            ("source_author", tr("sub_source_author")),
         ]
         self._filename_templates = [
-            ("default", "По умолчанию (Музыка: Автор - Название; YouTube: Название)"),
-            ("author_title", "Автор - Название"),
-            ("title_only", "Только название"),
-            ("date_title", "ГГГГ-ММ-ДД - Название"),
+            ("default", tr("tpl_default_yt" if is_youtube_only() else "tpl_default")),
+            ("author_title", tr("tpl_author_title")),
+            ("title_only", tr("tpl_title_only")),
+            ("date_title", tr("tpl_date_title")),
         ]
 
         r_org = QHBoxLayout()
-        r_org.addWidget(QLabel("Подпапки:"))
+        r_org.addWidget(QLabel(tr("settings_subfolders_lbl")))
         self.subfolder_combo = QComboBox()
         for code, lbl in self._subfolder_modes:
             self.subfolder_combo.addItem(lbl, code)
@@ -1222,7 +1245,7 @@ class SettingsPage(QWidget):
         r_org.addWidget(self.subfolder_combo, 1)
 
         r_org.addSpacing(14)
-        r_org.addWidget(QLabel("Имя файла:"))
+        r_org.addWidget(QLabel(tr("settings_filename_lbl")))
         self.filename_combo = QComboBox()
         for code, lbl in self._filename_templates:
             self.filename_combo.addItem(lbl, code)
@@ -1240,7 +1263,7 @@ class SettingsPage(QWidget):
         sep.setStyleSheet(f"color: {COLORS['border']};")
         gl.addWidget(sep)
 
-        yt_hdr = QLabel("YouTube API / Invidious (необязательно — поиск работает и через yt-dlp)")
+        yt_hdr = QLabel(tr("settings_yt_api_hdr"))
         yt_hdr.setStyleSheet(f"color: {COLORS['text_secondary']}; font-weight: bold;")
         gl.addWidget(yt_hdr)
 
@@ -1248,7 +1271,7 @@ class SettingsPage(QWidget):
         r_api.addWidget(QLabel("YouTube API Key:"))
         self.api_key_edit = QLineEdit(settings.get("youtube_api_key", ""))
         self.api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_edit.setPlaceholderText("AIza... (опционально)")
+        self.api_key_edit.setPlaceholderText("AIza... (optional)")
         self.api_key_edit.editingFinished.connect(self._save)
         r_api.addWidget(self.api_key_edit, 1)
         gl.addLayout(r_api)
@@ -1263,24 +1286,42 @@ class SettingsPage(QWidget):
 
         self.sync_from_settings()
         gl.addStretch()
-        tabs.addTab(gen, "Основные настройки")
-        tabs.addTab(self._updater, "Обновления утилит")
+        tabs.addTab(gen, tr("settings_tab_main"))
+        tabs.addTab(self._updater, tr("settings_tab_updates"))
         lay.addWidget(tabs, 1)
+
+    def _on_lang_changed(self):
+        val = self.lang_combo.currentData() or "auto"
+        settings["language"] = val
+        set_language(val)
+        save_settings(settings)
+        self.lang_restart_lbl.setVisible(True)
+        self.lang_restart_btn.setVisible(True)
+
+    def _request_restart(self):
+        w = self.window()
+        app_ref = getattr(w, "app_ref", None)
+        if app_ref is not None and hasattr(app_ref, "tray"):
+            app_ref.tray._restart_app()
 
     def _update_org_preview(self):
         sub_mode = self.subfolder_combo.currentData() or "none"
         tpl = self.filename_combo.currentData() or "default"
         base_dir = settings.get("download_folder") or os.path.expanduser("~")
         parts = [base_dir]
+        if is_youtube_only():
+            src_ex, auth_ex, title_ex, ext_ex, is_mus = "YouTube", "Channel", "My Video", "mp4", False
+        else:
+            src_ex, auth_ex, title_ex, ext_ex, is_mus = "VK", "Кино", "Группа крови", "mp3", True
         if sub_mode == "source":
-            parts.append("VK")
+            parts.append(src_ex)
         elif sub_mode == "author":
-            parts.append("Кино")
+            parts.append(auth_ex)
         elif sub_mode == "source_author":
-            parts.extend(["VK", "Кино"])
-        fname = _utils.format_download_filename("Группа крови", author="Кино", is_music=True, template=tpl)
-        sample = os.path.join(*parts, f"{fname}.mp3")
-        self.org_preview_lbl.setText(f"Пример: {sample}")
+            parts.extend([src_ex, auth_ex])
+        fname = _utils.format_download_filename(title_ex, author=auth_ex, is_music=is_mus, template=tpl)
+        sample = os.path.join(*parts, f"{fname}.{ext_ex}")
+        self.org_preview_lbl.setText(tr("settings_example", path=sample))
 
     def _on_org_changed(self):
         self._update_org_preview()
@@ -1288,13 +1329,15 @@ class SettingsPage(QWidget):
 
     def sync_from_settings(self):
         self.dir_edit.setText(settings.get("download_folder", ""))
-        for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+        for w in (self.lang_combo, self.fmt_combo, self.qual_combo, self.browser_combo,
                   self.rate_combo, self.retries_combo,
                   self.subfolder_combo, self.filename_combo,
                   self.chk_auto, self.chk_conv, self.chk_fix_tags,
                   self.chk_desc, self.chk_save_exit,
                   self.api_key_edit, self.inv_edit):
             w.blockSignals(True)
+        lang_idx = self.lang_combo.findData(settings.get("language", "auto"))
+        self.lang_combo.setCurrentIndex(lang_idx if lang_idx >= 0 else 0)
         self.fmt_combo.setCurrentText(settings.get("download_format", "mp4"))
         self.qual_combo.setCurrentText(settings.get("video_quality", "1080p"))
         self.browser_combo.setCurrentText(settings.get("cookies_browser", "firefox"))
@@ -1313,7 +1356,7 @@ class SettingsPage(QWidget):
         self.chk_save_exit.setChecked(settings.get("save_settings_on_exit", True))
         self.api_key_edit.setText(settings.get("youtube_api_key", ""))
         self.inv_edit.setText(settings.get("invidious_url", "http://localhost:3000"))
-        for w in (self.fmt_combo, self.qual_combo, self.browser_combo,
+        for w in (self.lang_combo, self.fmt_combo, self.qual_combo, self.browser_combo,
                   self.rate_combo, self.retries_combo,
                   self.subfolder_combo, self.filename_combo,
                   self.chk_auto, self.chk_conv, self.chk_fix_tags,
@@ -1688,23 +1731,47 @@ class AudioPreviewBar(QFrame):
 class MainWindow(QMainWindow):
     """Единое главное окно SmartTubeDL (UI v2): Sidebar + StackedWidget + Footer Bar."""
 
-    IDX_YOUTUBE  = 0
-    IDX_VK       = 1
-    IDX_OK       = 2
-    IDX_MAILRU   = 3
-    IDX_MUSIC    = 4
-    IDX_LINKS    = 5
-    IDX_QUEUE    = 6
-    IDX_HISTORY  = 7
-    IDX_SETTINGS = 8
-    IDX_LOGS     = 9
-
     def __init__(self, app_ref):
         super().__init__()
         self.app_ref = app_ref
         self.setWindowTitle("SmartTubeDL")
         self.setMinimumSize(1020, 660)
         self.resize(1220, 760)
+
+        # Динамический набор разделов в зависимости от редакции (full / youtube)
+        if is_youtube_only():
+            self._section_defs = [
+                ("youtube",  tr("nav_youtube")),
+                ("links",    tr("nav_links")),
+                ("queue",    tr("nav_queue")),
+                ("history",  tr("nav_history")),
+                ("settings", tr("nav_settings")),
+                ("logs",     tr("nav_logs")),
+            ]
+        else:
+            self._section_defs = [
+                ("youtube",  tr("nav_youtube")),
+                ("vk",       tr("nav_vk")),
+                ("ok",       tr("nav_ok")),
+                ("mailru",   tr("nav_mailru")),
+                ("music",    tr("nav_music")),
+                ("links",    tr("nav_links")),
+                ("queue",    tr("nav_queue")),
+                ("history",  tr("nav_history")),
+                ("settings", tr("nav_settings")),
+                ("logs",     tr("nav_logs")),
+            ]
+        idx_map = {key: i for i, (key, _lbl) in enumerate(self._section_defs)}
+        self.IDX_YOUTUBE  = idx_map.get("youtube", -1)
+        self.IDX_VK       = idx_map.get("vk", -1)
+        self.IDX_OK       = idx_map.get("ok", -1)
+        self.IDX_MAILRU   = idx_map.get("mailru", -1)
+        self.IDX_MUSIC    = idx_map.get("music", -1)
+        self.IDX_LINKS    = idx_map.get("links", -1)
+        self.IDX_QUEUE    = idx_map.get("queue", -1)
+        self.IDX_HISTORY  = idx_map.get("history", -1)
+        self.IDX_SETTINGS = idx_map.get("settings", -1)
+        self.IDX_LOGS     = idx_map.get("logs", -1)
 
         self.youtube_page = None
         self.vk_page = None
@@ -1752,18 +1819,7 @@ class MainWindow(QMainWindow):
 
         self.nav = QListWidget()
         self.nav.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._nav_items = [
-            "▶  YouTube",
-            "🎵  ВКонтакте",
-            "🟠  Одноклассники",
-            "✉  Mail.ru",
-            "🔎  Поиск музыки",
-            "🔗  По ссылкам",
-            "📥  Очередь",
-            "🕘  История",
-            "⚙  Настройки",
-            "📋  Логи",
-        ]
+        self._nav_items = [lbl for _key, lbl in self._section_defs]
         for label in self._nav_items:
             self.nav.addItem(QListWidgetItem(label))
         self.nav.currentRowChanged.connect(self._on_nav_changed)
@@ -1790,7 +1846,7 @@ class MainWindow(QMainWindow):
         fl.setContentsMargins(12, 4, 12, 4)
         fl.setSpacing(8)
 
-        self.footer_status = QLabel("Ожидание...")
+        self.footer_status = QLabel(tr("status_idle"))
         fl.addWidget(self.footer_status, 1)
 
         self.footer_progress = QProgressBar()
@@ -1799,7 +1855,7 @@ class MainWindow(QMainWindow):
         self.footer_progress.setVisible(False)
         fl.addWidget(self.footer_progress)
 
-        self.btn_pause = QPushButton("⏸ Пауза")
+        self.btn_pause = QPushButton(tr("btn_pause"))
         self.btn_pause.setProperty("secondary", True)
         self.btn_pause.setFixedHeight(28)
         self.btn_pause.clicked.connect(self._toggle_pause)
@@ -1814,7 +1870,7 @@ class MainWindow(QMainWindow):
         self.btn_folder = QPushButton()
         self.btn_folder.setProperty("secondary", True)
         self.btn_folder.setFixedHeight(28)
-        self.btn_folder.setToolTip("Открыть папку загрузок в Проводнике")
+        self.btn_folder.setToolTip(tr("tip_open_folder"))
         self.btn_folder.clicked.connect(self._open_download_folder)
         fl.addWidget(self.btn_folder)
 
@@ -2037,6 +2093,8 @@ class MainWindow(QMainWindow):
 
     def switch_to(self, idx: int):
         """Открывает главное окно и переключает на указанный раздел."""
+        if idx < 0 or idx >= self.nav.count():
+            return
         self.nav.setCurrentRow(idx)
         self.show()
         self.raise_()
@@ -2153,17 +2211,18 @@ class MainWindow(QMainWindow):
 
     def _refresh_footer_meta(self):
         q_cnt = get_queue_count() + len(_utils.vk_queue)
-        item = self.nav.item(self.IDX_QUEUE)
-        if item is not None:
-            item.setText(f"📥  Очередь ({q_cnt})" if q_cnt > 0 else "📥  Очередь")
+        if self.IDX_QUEUE >= 0:
+            item = self.nav.item(self.IDX_QUEUE)
+            if item is not None:
+                item.setText(tr("nav_queue_n", n=q_cnt) if q_cnt > 0 else tr("nav_queue"))
         if _utils.is_paused:
-            self.btn_pause.setText("▶ Продолжить")
+            self.btn_pause.setText(tr("btn_resume"))
             self.btn_pause.setEnabled(True)
         elif _utils.is_download_active():
-            self.btn_pause.setText("⏸ Пауза")
+            self.btn_pause.setText(tr("btn_pause"))
             self.btn_pause.setEnabled(True)
         else:
-            self.btn_pause.setText("⏸ Пауза")
+            self.btn_pause.setText(tr("btn_pause"))
             self.btn_pause.setEnabled(False)
 
     def _open_download_folder(self):
