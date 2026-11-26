@@ -30,7 +30,8 @@ active_subprocesses = set()  # активные дочерние процесс�
 
 
 def kill_active_subprocesses() -> None:
-    """Принудительно завершает все активные дочерние процессы (ffmpeg и др.)."""
+    """Принудительно завершает все активные дочерние процессы (ffmpeg, node и др.)."""
+    import subprocess
     procs = list(active_subprocesses)
     active_subprocesses.clear()
     for p in procs:
@@ -41,6 +42,30 @@ def kill_active_subprocesses() -> None:
                     p.wait(timeout=1.5)
                 except Exception:
                     p.kill()
+        except Exception:
+            pass
+
+    # На Windows дополнительно гасим всех прямых потомков текущего процесса (например, ffmpeg из yt-dlp)
+    if os.name == "nt":
+        try:
+            my_pid = os.getpid()
+            cf = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            ps = (
+                f"Get-CimInstance Win32_Process -Filter 'ParentProcessId={my_pid}' | "
+                "ForEach-Object { $_.ProcessId }"
+            )
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps],
+                capture_output=True, text=True, timeout=5, creationflags=cf,
+            ).stdout
+            for token in out.split():
+                if token.strip().isdigit():
+                    cpid = int(token.strip())
+                    if cpid != my_pid:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(cpid), "/T", "/F"],
+                            capture_output=True, timeout=5, creationflags=cf,
+                        )
         except Exception:
             pass
 
