@@ -57,7 +57,10 @@ class _MailRuTab(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setSortingEnabled(True)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         if on_ctx:
@@ -759,7 +762,9 @@ class HistoryPage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
+        self.table.setAlternatingRowColors(False)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(24)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_ctx_menu)
@@ -1687,11 +1692,12 @@ class MainWindow(QMainWindow):
     IDX_VK       = 1
     IDX_OK       = 2
     IDX_MAILRU   = 3
-    IDX_LINKS    = 4
-    IDX_QUEUE    = 5
-    IDX_HISTORY  = 6
-    IDX_SETTINGS = 7
-    IDX_LOGS     = 8
+    IDX_MUSIC    = 4
+    IDX_LINKS    = 5
+    IDX_QUEUE    = 6
+    IDX_HISTORY  = 7
+    IDX_SETTINGS = 8
+    IDX_LOGS     = 9
 
     def __init__(self, app_ref):
         super().__init__()
@@ -1704,6 +1710,7 @@ class MainWindow(QMainWindow):
         self.vk_page = None
         self.ok_page = None
         self.mailru_page = None
+        self.music_page = None
         self.links_page = None
         self.queue_page = None
         self.history_page = None
@@ -1750,6 +1757,7 @@ class MainWindow(QMainWindow):
             "🎵  ВКонтакте",
             "🟠  Одноклассники",
             "✉  Mail.ru",
+            "🔎  Поиск музыки",
             "🔗  По ссылкам",
             "📥  Очередь",
             "🕘  История",
@@ -1860,6 +1868,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "preview_bar"):
             self.preview_bar.apply_theme()
 
+        if getattr(self, "_shortcuts_ready", False):
+            return
+        self._shortcuts_ready = True
+
         # Единые горячие клавиши для всех разделов: Ctrl+F (фильтр), Ctrl+T (новая вкладка), Ctrl+W (закрыть вкладку)
         QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._shortcut_focus_filter)
         QShortcut(QKeySequence("Ctrl+T"), self).activated.connect(self._shortcut_new_tab)
@@ -1907,6 +1919,8 @@ class MainWindow(QMainWindow):
             target = getattr(cur, "filter_input", None) or getattr(self.ok_page, "filter_input", None)
         elif idx == self.IDX_MAILRU and self.mailru_page:
             target = self.mailru_page.filter_input
+        elif idx == self.IDX_MUSIC and self.music_page:
+            target = self.music_page.filter_input
         elif idx == self.IDX_HISTORY and self.history_page:
             target = self.history_page.search_input
         if target is not None:
@@ -1923,6 +1937,8 @@ class MainWindow(QMainWindow):
             self.ok_page._new_tab("")
         elif idx == self.IDX_MAILRU and self.mailru_page:
             self.mailru_page._new_tab("")
+        elif idx == self.IDX_MUSIC and self.music_page:
+            self.music_page._new_tab("")
 
     def _shortcut_close_tab(self):
         idx = self.stack.currentIndex()
@@ -1934,6 +1950,8 @@ class MainWindow(QMainWindow):
             self.ok_page._close_tab(self.ok_page.tabs.currentIndex())
         elif idx == self.IDX_MAILRU and self.mailru_page and self.mailru_page.tabs.count() > 1:
             self.mailru_page._close_tab(self.mailru_page.tabs.currentIndex())
+        elif idx == self.IDX_MUSIC and self.music_page and self.music_page.tabs.count() > 1:
+            self.music_page._close_tab(self.music_page.tabs.currentIndex())
 
     def _ensure_page(self, idx: int) -> QWidget:
         """Лениво создаёт страницу раздела при первом обращении."""
@@ -1958,6 +1976,11 @@ class MainWindow(QMainWindow):
         elif idx == self.IDX_MAILRU and self.mailru_page is None:
             w = MailRuPage()
             self.mailru_page = w
+            self._replace_stack_widget(idx, w)
+        elif idx == self.IDX_MUSIC and self.music_page is None:
+            from music_search_qt import UnifiedMusicSearchPage
+            w = UnifiedMusicSearchPage(self)
+            self.music_page = w
             self._replace_stack_widget(idx, w)
         elif idx == self.IDX_LINKS and self.links_page is None:
             w = LinksPage(
