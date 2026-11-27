@@ -1282,6 +1282,9 @@ class SearchWindow(QMainWindow):
         action_download = menu.addAction(tr("yt_ctx_add_queue"))
         action_download.triggered.connect(self._on_download)
 
+        action_clip = menu.addAction(tr("yt_ctx_clip"))
+        action_clip.triggered.connect(self._download_clip)
+
         action_browser = menu.addAction(tr("yt_ctx_open_browser"))
         action_browser.triggered.connect(self._open_in_browser)
 
@@ -1306,6 +1309,77 @@ class SearchWindow(QMainWindow):
         t = self._t()
         item = t.item(row, 0) if t else None
         return (item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    @staticmethod
+    def _parse_timecode(raw: str) -> float | None:
+        s = (raw or "").strip()
+        if not s:
+            return None
+        parts = s.split(":")
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            return None
+        if any(n < 0 for n in nums):
+            return None
+        if len(nums) == 1:
+            return nums[0]
+        if len(nums) == 2:
+            return nums[0] * 60 + nums[1]
+        if len(nums) == 3:
+            return nums[0] * 3600 + nums[1] * 60 + nums[2]
+        return None
+
+    def _download_clip(self):
+        """Открывает диалог обрезки по таймкодам и скачивает выбранный фрагмент."""
+        rows = self._get_selected_rows()
+        if not rows:
+            return
+        url = self._url_for_row(rows[0])
+        if not url:
+            self._set_status("URL не найден", "warning")
+            return
+        t = self._t()
+        dur_hint = t.item(rows[0], 2).text().strip() if (t and t.item(rows[0], 2)) else "01:00"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("clip_title"))
+        dlg.setFixedWidth(340)
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(8)
+
+        lay.addWidget(QLabel(tr("clip_start")))
+        ed_start = QLineEdit("00:00")
+        lay.addWidget(ed_start)
+
+        lay.addWidget(QLabel(tr("clip_end")))
+        ed_end = QLineEdit(dur_hint if ":" in dur_hint else "01:00")
+        lay.addWidget(ed_end)
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btn_cancel = QPushButton(tr("clip_cancel"))
+        btn_cancel.setProperty("secondary", True)
+        btn_cancel.clicked.connect(dlg.reject)
+        btns.addWidget(btn_cancel)
+        btn_ok = QPushButton(tr("clip_btn"))
+        btn_ok.clicked.connect(dlg.accept)
+        btns.addWidget(btn_ok)
+        lay.addLayout(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        s0 = self._parse_timecode(ed_start.text())
+        s1 = self._parse_timecode(ed_end.text())
+        if s0 is None or s1 is None or s0 >= s1:
+            QMessageBox.warning(self, tr("clip_title"), tr("clip_err"))
+            return
+
+        from download import download_video
+        threading.Thread(
+            target=download_video, args=(url, False, (s0, s1)), daemon=True
+        ).start()
+        self._set_status(f"Загрузка... ({ed_start.text().strip()} – {ed_end.text().strip()})", "info")
 
     def _desc_for_row(self, row: int) -> str:
         t = self._t()

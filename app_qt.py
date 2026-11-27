@@ -781,26 +781,14 @@ class TrayIcon(QSystemTrayIcon):
         menu.addAction(tr("tray_quality") + ":").setEnabled(False)
 
         is_video = settings.get("download_format") == "mp4"
-
-        action_1080 = menu.addAction("  1080p")
-        action_1080.setCheckable(True)
-        action_1080.setChecked(settings.get("video_quality") == "1080p")
-        action_1080.setEnabled(is_video)
-        action_1080.triggered.connect(lambda: self._set_quality("1080p"))
-
-        action_720 = menu.addAction("  720p")
-        action_720.setCheckable(True)
-        action_720.setChecked(settings.get("video_quality") == "720p")
-        action_720.setEnabled(is_video)
-        action_720.triggered.connect(lambda: self._set_quality("720p"))
-
-        action_480 = menu.addAction("  480p")
-        action_480.setCheckable(True)
-        action_480.setChecked(settings.get("video_quality") == "480p")
-        action_480.setEnabled(is_video)
-        action_480.triggered.connect(lambda: self._set_quality("480p"))
-
-        self.quality_actions = [action_1080, action_720, action_480]
+        self.quality_actions = []
+        for q_val in ("Best", "2160p", "1440p", "1080p", "720p", "480p"):
+            act_q = menu.addAction(f"  {q_val}")
+            act_q.setCheckable(True)
+            act_q.setChecked(settings.get("video_quality") == q_val)
+            act_q.setEnabled(is_video)
+            act_q.triggered.connect(lambda _=False, q=q_val: self._set_quality(q))
+            self.quality_actions.append(act_q)
 
         menu.addSeparator()
 
@@ -916,6 +904,9 @@ class TrayIcon(QSystemTrayIcon):
                     t.wait(500)
                     if t.isRunning():
                         t.terminate()
+
+        # Завершаем активные дочерние процессы (например, ffmpeg при обрезке)
+        _utils.kill_active_subprocesses()
 
         # Закрываем браузеры VK и OK (Selenium), если они были открыты
         for win in (self.app.vk_window, self.app.ok_window):

@@ -216,7 +216,7 @@ def _save_description(folder: str, file_name: str, description: str):
         log_message(f"WARNING описание .txt: {e}")
 
 
-def download_video(url, from_queue=False):
+def download_video(url, from_queue=False, clip_range=None):
     global is_downloading
 
     if not _dl_utils.try_acquire_download():
@@ -322,6 +322,9 @@ def download_video(url, from_queue=False):
         safe_title = _dl_utils.format_download_filename(
             video_title, author=author, date_str=info.get("upload_date", ""), is_music=False
         )
+        if clip_range and len(clip_range) == 2:
+            s0, s1 = int(clip_range[0]), int(clip_range[1])
+            safe_title = f"{safe_title} [{s0 // 60:02d}-{s0 % 60:02d}_{s1 // 60:02d}-{s1 % 60:02d}]"
 
         if settings["conversion_enabled"]:
             video_ext = settings["download_format"]
@@ -363,12 +366,24 @@ def download_video(url, from_queue=False):
 
     update_download_status("Загрузка...", 0)
 
+    audio_lang = str(settings.get("audio_track_lang", "auto") or "auto").strip().lower()
+    if _is_yt and audio_lang == "ru":
+        _audio_sel = "bestaudio[language^=ru]/bestaudio"
+    elif _is_yt and audio_lang == "en":
+        _audio_sel = "bestaudio[language^=en]/bestaudio"
+    elif _is_yt and audio_lang == "original":
+        _audio_sel = "bestaudio[format_note*=original]/bestaudio"
+    else:
+        _audio_sel = "bestaudio"
+
     quality_map = {
-        "1080p": "bestvideo[height<=1080]+bestaudio/best",
-        "720p": "bestvideo[height<=720]+bestaudio/best",
-        "480p": "bestvideo[height<=480]+bestaudio/best"
+        "Best":  f"bestvideo+{_audio_sel}/best",
+        "2160p": f"bestvideo[height<=2160]+{_audio_sel}/best",
+        "1440p": f"bestvideo[height<=1440]+{_audio_sel}/best",
+        "1080p": f"bestvideo[height<=1080]+{_audio_sel}/best",
+        "720p":  f"bestvideo[height<=720]+{_audio_sel}/best",
+        "480p":  f"bestvideo[height<=480]+{_audio_sel}/best",
     }
-    selected_quality = quality_map.get(settings["video_quality"], "best")
 
     # В outtmpl литеральный '%' надо экранировать как '%%'
     _outtmpl_base = unique_base.replace('%', '%%')
@@ -391,23 +406,171 @@ def download_video(url, from_queue=False):
     if _is_vk_url:
         ydl_opts.update(_vk_opts())
 
-    if settings["download_format"] == "mp3":
+    postprocessors = []
+    is_mp3 = settings["download_format"] == "mp3"
+    if is_mp3:
         # Не ограничиваем клиентов — yt-dlp сам выберет тот, что даёт audio-only
-        ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        if _is_yt and audio_lang in ("ru", "en"):
+            ydl_opts['format'] = f'bestaudio[language^={audio_lang}]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        elif _is_yt and audio_lang == "original":
+            ydl_opts['format'] = 'bestaudio[format_note*=original]/bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
+        else:
+            ydl_opts['format'] = 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio'
         if settings.get("conversion_enabled", True):
-            ydl_opts['postprocessors'] = [{
+            postprocessors.append({
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
                 'preferredquality': '192',
-            }]
+            })
     else:
-        ydl_opts['format'] = quality_map.get(settings["video_quality"], "best")
+        ydl_opts['format'] = quality_map.get(settings.get("video_quality", "1080p"), quality_map["Best"])
         if settings.get("conversion_enabled", True):
             ydl_opts['merge_output_format'] = 'mp4'
-            ydl_opts['postprocessors'] = [{
+            postprocessors.append({
                 'key': 'FFmpegVideoRemuxer',
                 'preferedformat': 'mp4',
-            }]
+            })
+
+    # Дополнительные опции YouTube (SponsorBlock, субтитры, главы, обложка)
+    if _is_yt:
+        if settings.get("sponsorblock_remove", False):
+            postprocessors.append({
+                'key': 'SponsorBlock',
+                'categories': ['sponsor', 'selfpromo', 'interaction'],
+                'when': 'after_filter',
+            })
+            postprocessors.append({
+                'key': 'ModifyChapters',
+                'remove_sponsor_segments': ['sponsor', 'selfpromo', 'interaction'],
+            })
+
+        subs_mode = str(settings.get("subtitles_mode", "none") or "none").lower()
+        if subs_mode in ("srt", "embed") and not is_mp3:
+            raw_langs = str(settings.get("subtitles_langs", "ru,en") or "ru,en")
+            langs = [x.strip() for x in raw_langs.split(",") if x.strip()] or ["en"]
+            ydl_opts['writesubtitles'] = True
+            ydl_opts['writeautomaticsub'] = True
+            ydl_opts['subtitleslangs'] = langs
+            ydl_opts['subtitlesformat'] = 'srt/best'
+            postprocessors.append({
+                'key': 'FFmpegSubtitlesConvertor',
+                'format': 'srt',
+            })
+            if subs_mode == "embed":
+                postprocessors.append({'key': 'FFmpegEmbedSubtitle'})
+
+        if settings.get("embed_chapters", True) and not is_mp3:
+            postprocessors.append({
+                'key': 'FFmpegMetadata',
+                'add_chapters': True,
+                'add_metadata': True,
+            })
+
+        if settings.get("embed_thumbnail", False):
+            ydl_opts['writethumbnail'] = True
+            postprocessors.append({
+                'key': 'FFmpegThumbnailsConvertor',
+                'format': 'jpg',
+            })
+            postprocessors.append({'key': 'EmbedThumbnail'})
+
+    if postprocessors:
+        ydl_opts['postprocessors'] = postprocessors
+
+    def _download_clip_ffmpeg():
+        """Быстрая обрезка по таймкодам через управляемый ffmpeg (-ss до -i, -progress pipe:1)."""
+        import subprocess
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            raise RuntimeError("ffmpeg не найден — установите ffmpeg для обрезки фрагментов.")
+        s0, s1 = float(clip_range[0]), float(clip_range[1])
+        clip_dur = max(0.5, s1 - s0)
+
+        ex_opts = dict(ydl_opts)
+        ex_opts.pop("postprocessors", None)
+        ex_opts["quiet"] = True
+        with yt_dlp.YoutubeDL(ex_opts) as ydl:
+            dl_info = ydl.extract_info(url, download=False)
+        req_fmts = dl_info.get("requested_formats") or []
+        streams = []
+        for f in req_fmts:
+            if f.get("url"):
+                streams.append((f["url"], f.get("http_headers") or {}))
+        if not streams and dl_info.get("url"):
+            streams.append((dl_info["url"], dl_info.get("http_headers") or {}))
+        if not streams:
+            raise RuntimeError("Не удалось получить прямые ссылки потоков для обрезки.")
+
+        out_ext = "mp3" if is_mp3 else ("mp4" if settings.get("conversion_enabled", True) else (dl_info.get("ext") or "mkv"))
+        out_path = os.path.join(save_path, f"{unique_base}.{out_ext}")
+        _dl_utils.active_temp_files.add(out_path)
+
+        cmd = [ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error"]
+        for s_url, hdrs in streams:
+            ua = hdrs.get("User-Agent")
+            if ua:
+                cmd.extend(["-user_agent", ua])
+            cmd.extend(["-ss", f"{s0:.3f}", "-to", f"{s1:.3f}", "-i", s_url])
+
+        if len(streams) >= 2 and not is_mp3:
+            cmd.extend(["-map", "0:v:0", "-map", "1:a:0"])
+        if is_mp3:
+            cmd.extend(["-vn", "-c:a", "libmp3lame", "-b:a", "192k"])
+        else:
+            cmd.extend(["-c", "copy"])
+            if out_ext == "mp4":
+                cmd.extend(["-movflags", "+faststart"])
+        cmd.extend(["-progress", "pipe:1", "-nostats", out_path])
+
+        cf = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        log_message(f"INFO Обрезка фрагмента (ffmpeg fast-seek): {s0:.1f}s - {s1:.1f}s -> {os.path.basename(out_path)}")
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=cf,
+        )
+        _dl_utils.active_subprocesses.add(proc)
+        try:
+            for line in proc.stdout:
+                if _dl_utils.cancel_requested or _dl_utils.stop_requested:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    raise _UserStop()
+                line = line.strip()
+                if line.startswith("total_size="):
+                    try:
+                        sz = int(line.split("=", 1)[1])
+                        _dl_utils.global_downloaded = sz
+                        update_speed(sz)
+                    except ValueError:
+                        pass
+                elif line.startswith("out_time_us="):
+                    try:
+                        us = int(line.split("=", 1)[1])
+                        cur_s = max(0.0, us / 1_000_000.0)
+                        pct = min(99, int(cur_s / clip_dur * 100))
+                        update_download_status("Загрузка...", pct)
+                    except ValueError:
+                        pass
+            proc.wait()
+            if proc.returncode != 0:
+                err_txt = (proc.stderr.read() or "").strip() if proc.stderr else ""
+                raise RuntimeError(f"ffmpeg вернул код {proc.returncode}: {err_txt[:300]}")
+            update_download_status("Готово!", 100)
+            return dl_info, out_path
+        finally:
+            _dl_utils.active_subprocesses.discard(proc)
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     _paused_by_user = False
     try:
@@ -417,6 +580,8 @@ def download_video(url, from_queue=False):
         ydl_opts["progress_hooks"] = [progress_hook]
 
         def _do_download(extra_opts: dict):
+            if clip_range and len(clip_range) == 2:
+                return _download_clip_ffmpeg()
             opts = dict(ydl_opts)
             opts.update(extra_opts)
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -599,8 +764,14 @@ def progress_hook(d):
 
             total = _dl_utils.global_file_size
             downloaded = _dl_utils.global_downloaded
-            percent = (downloaded / total * 100) if total else 0
-            update_download_status("Загрузка...", int(percent), downloaded, total)
+            if total:
+                percent = downloaded / total * 100
+                update_download_status("Загрузка...", int(percent), downloaded, total)
+            elif downloaded:
+                from config import format_size
+                update_download_status(f"Загрузка... ({format_size(downloaded)})", -1, downloaded, 0)
+            else:
+                update_download_status("Загрузка...", 0, 0, 0)
 
         elif d["status"] == "finished":
             update_download_status("Готово!", 100, 0, 0)

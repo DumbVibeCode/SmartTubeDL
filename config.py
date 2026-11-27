@@ -37,6 +37,12 @@ DEFAULT_SETTINGS = {
     "rate_limit_mbps": 0.0,
     "download_retries": 3,
     "language": "auto",
+    "sponsorblock_remove": False,
+    "subtitles_mode": "none",
+    "subtitles_langs": "ru,en",
+    "embed_thumbnail": False,
+    "embed_chapters": True,
+    "audio_track_lang": "auto",
 }
 
 def format_size(size_bytes):
