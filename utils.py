@@ -14,6 +14,7 @@ global_downloaded = 0
 download_speed = "0 KB/s"
 last_update_time = time.time()
 last_downloaded_bytes = 0
+_speed_samples = []  # скользящее окно (timestamp, bytes) для сглаживания скорости
 
 save_settings_var = None
 
@@ -188,6 +189,7 @@ def reset_progress() -> None:
     download_speed = "0 KB/s"
     last_update_time = time.time()
     last_downloaded_bytes = 0
+    _speed_samples.clear()
 
 # Кэш названий для очереди {url: title}
 queue_titles: dict = {}
@@ -219,21 +221,49 @@ def decode_html_entities(text):
 
 def format_speed(speed_bytes):
     """Форматирует скорость в читаемый вид"""
+    if speed_bytes <= 0:
+        return "0 KB/s"
     if speed_bytes < 1024:
-        return f"{speed_bytes} B/s"
+        return f"{int(speed_bytes)} B/s"
     elif speed_bytes < 1024 * 1024:
         return f"{speed_bytes / 1024:.1f} KB/s"
     else:
         return f"{speed_bytes / (1024 * 1024):.1f} MB/s"
 
 def update_speed(downloaded_bytes):
-    """Обновляет скорость загрузки"""
+    """Обновляет скорость загрузки по скользящему окну (~5 сек),
+    чтобы скорость не скакала в ноль при пакетной записи (ffmpeg/muxer)."""
     global download_speed, last_update_time, last_downloaded_bytes
     current_time = time.time()
-    time_diff = current_time - last_update_time
-    if time_diff >= 1:
-        speed_bytes = (downloaded_bytes - last_downloaded_bytes) / time_diff
-        download_speed = format_speed(speed_bytes)
+    # Если начался новый поток (например, аудио после видео), сбрасываем окно
+    if downloaded_bytes < last_downloaded_bytes:
+        _speed_samples.clear()
+        last_downloaded_bytes = downloaded_bytes
+        last_update_time = current_time
+        _speed_samples.append((current_time, downloaded_bytes))
+        return
+
+    if not _speed_samples:
+        _speed_samples.append((current_time, downloaded_bytes))
+        last_downloaded_bytes = downloaded_bytes
+        last_update_time = current_time
+        return
+
+    # Добавляем точку при росте байтов или раз в >= 0.5 сек
+    if downloaded_bytes > _speed_samples[-1][1] or (current_time - _speed_samples[-1][0]) >= 0.5:
+        _speed_samples.append((current_time, downloaded_bytes))
+
+    # Оставляем точки в пределах последних 5 секунд (минимум одну опорную точку)
+    cutoff = current_time - 5.0
+    while len(_speed_samples) > 2 and _speed_samples[1][0] <= cutoff:
+        _speed_samples.pop(0)
+
+    if current_time - last_update_time >= 0.8:
+        base_t, base_b = _speed_samples[0]
+        dt = current_time - base_t
+        if dt > 0:
+            speed_bytes = max(0.0, (downloaded_bytes - base_b) / dt)
+            download_speed = format_speed(speed_bytes)
         last_update_time = current_time
         last_downloaded_bytes = downloaded_bytes
 
